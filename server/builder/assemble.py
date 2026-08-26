@@ -165,8 +165,18 @@ def build(script: dict, style_key: str, vo: dict, project_dir: Path) -> dict:
 """
     js_block = "\n  ".join(js)
     # gsap 内联(外链脚本被内置服务器按 text/html 下发会被 Chrome 拒绝执行)
+    # 并把 gsap 内部的 Math.random/Date.now 替换为确定性实现(lint: non_deterministic_code)
     gsap_path = VENDOR_DIR / "gsap.min.js"
-    gsap_inline = gsap_path.read_text(encoding="utf-8") if gsap_path.exists() else ""
+    gsap_inline = ""
+    if gsap_path.exists():
+        gsap_raw = gsap_path.read_text(encoding="utf-8")
+        gsap_raw = gsap_raw.replace("Math.random", "_hfRand")
+        gsap_raw = gsap_raw.replace("Date.now", "_hfNow")
+        gsap_inline = (
+            "var _hfRand=(function(){{var s=1234567;return function(){{"
+            "s=(s*1664525+1013904223)>>>0;return s/4294967296;}};}})();"
+            "var _hfNow=function(){{return 0;}};"
+        ) + gsap_raw
     index_html = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
