@@ -46,6 +46,7 @@ def _restore_players():
 PLAYERS: dict[str, subprocess.Popen] = {}   # job_id -> play 进程
 SLOT_USED: dict[str, int] = {}              # job_id -> play 端口槽
 STUDIOS: dict[str, int] = {}                # job_id -> Studio 端口(preview --background 为托管会话)
+_studio_starting: set = set()                 # 正在后台拉起 Studio 的任务(防重复)
 STUDIO_SLOT_USED: dict[str, int] = {}
 STUDIO_SLOT_BASE = 4150
 STUDIO_SLOTS = 4
@@ -83,8 +84,11 @@ def stage_build(job):
     target = int(job.state.get("duration_sec", 120))
     # 语速保持 1.0(自然说话语速,不随内容缩放)
     speed = 1.0
-    job.set(progress="配音合成中(本地 CosyVoice3,自然语速)")
-    vo = tts.synthesize_frames(script["frames"], style["voice"], p["vo"], speed=speed)
+    provider = job.state.get("voice_engine") or "cosyvoice3"
+    voice = job.state.get("voice") or style["voice"]
+    eng_names = {"cosyvoice3": "本地 CosyVoice3", "qwen3tts": "本地 Qwen3-TTS", "doubao": "豆包 seed-tts-2.0"}
+    job.set(progress=f"配音合成中({eng_names.get(provider, provider)},自然语速)")
+    vo = tts.synthesize_frames(script["frames"], voice, p["vo"], speed=speed, provider=provider)
     engines = {}
     for v in vo.values():
         engines[v.get("engine", "unknown")] = engines.get(v.get("engine", "unknown"), 0) + 1
@@ -233,6 +237,15 @@ def start_studio(job):
     raise RuntimeError(f"Studio 启动超时(端口 {port})")
 
 
+def _start_studio_bg(job):
+    try:
+        start_studio(job)
+    except Exception:
+        pass
+    finally:
+        _studio_starting.discard(job.id)
+
+
 def stop_studio(job):
     if job and job.id in STUDIOS:
         STUDIOS.pop(job.id, None)
@@ -266,6 +279,11 @@ def api_styles():
         "palettes": dim(styles.PALETTES),
         "backgrounds": dim(styles.BACKGROUNDS),
         "motions": dim(styles.MOTIONS),
+        "voice_engines": [
+            {"key": "cosyvoice3", "name": "本地 CosyVoice3", "voices": ["male", "female", "male_narrator"]},
+            {"key": "qwen3tts", "name": "本地 Qwen3-TTS", "voices": ["male", "female", "male_narrator"]},
+            {"key": "doubao", "name": "豆包 seed-tts-2.0(云)", "voices": tts.DOUBAO_VOICES},
+        ],
     }
 
 
@@ -273,7 +291,10 @@ def api_styles():
 async def api_create(file: UploadFile = File(None), style: str = Form(None),
                      duration: int = Form(120), text: str = Form(""),
                      font: str = Form(None), palette: str = Form(None),
-                     bg: str = Form(None), motion: str = Form(None)):
+                     bg: str = Form(None), motion: str = Form(None),
+                     voice_engine: str = Form("cosyvoice3"), voice: str = Form(None)):
+    if voice_engine not in ("cosyvoice3", "qwen3tts", "doubao"):
+        raise HTTPException(400, f"未知配音引擎:{voice_engine}")
     combo = styles.resolve_combo(style, font, palette, bg, motion)
     duration = max(30, min(600, duration))
     text = (text or "").strip()
@@ -286,6 +307,8 @@ async def api_create(file: UploadFile = File(None), style: str = Form(None),
             raise HTTPException(400, "文件超过 20MB")
         job = create_job(style or "", duration, filename)
         job.state["combo"] = combo
+        job.state["voice_engine"] = voice_engine
+        job.state["voice"] = voice or ""
         ext = "." + filename.lower().rsplit(".", 1)[-1]
         (job.dir / ("input" + ext)).write_bytes(data)
     elif len(text) >= 50:
@@ -293,6 +316,8 @@ async def api_create(file: UploadFile = File(None), style: str = Form(None),
             raise HTTPException(400, "文本超过 20 万字上限")
         job = create_job(style or "", duration, "粘贴文本.txt")
         job.state["combo"] = combo
+        job.state["voice_engine"] = voice_engine
+        job.state["voice"] = voice or ""
         job.dir.joinpath("input.txt").write_text(text, encoding="utf-8")
     else:
         raise HTTPException(400, "请上传文件或粘贴不少于 50 字的文本")
@@ -362,10 +387,9 @@ def api_job(job_id: str):
         d["player_port"] = SLOT_USED.get(job.id)
         sp = STUDIOS.get(job.id)
         if sp is None or _port_free(sp):
-            try:
-                start_studio(job)
-            except Exception:
-                pass
+            if job.id not in _studio_starting:
+                _studio_starting.add(job.id)
+                threading.Thread(target=_start_studio_bg, args=(job,), daemon=True).start()
         d["studio_port"] = STUDIOS.get(job.id)
     return d
 
@@ -464,16 +488,13 @@ async def api_studio(job_id: str, path: str, request: Request):
         raise HTTPException(400, "非法路径")
     if job_id not in STUDIOS or _port_free(STUDIOS[job_id]):
         job = get_job(job_id)
-        if job and job.status == "preview":
-            try:
-                start_studio(job)
-            except Exception:
-                pass
-        if job_id in STUDIOS and not _port_free(STUDIOS[job_id]):
-            return await _studio_proxy(job_id, path, request, STUDIOS[job_id])
+        if job and job.status == "preview" and job_id not in _studio_starting:
+            _studio_starting.add(job_id)
+            # 后台拉起(不能阻塞事件循环,否则全站 502)
+            threading.Thread(target=_start_studio_bg, args=(job,), daemon=True).start()
         return Response(
-            content=_player_msg("Studio 未启动", "等待构建完成或稍后刷新,服务会自动恢复。"),
-            status_code=404, media_type="text/html")
+            content=_player_msg("Studio 启动中", "页面会自动重试,请稍候。"),
+            status_code=503, media_type="text/html")
     return await _studio_proxy(job_id, path, request, STUDIO_SLOT_USED[job_id])
 
 

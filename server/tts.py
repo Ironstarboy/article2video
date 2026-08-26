@@ -49,7 +49,63 @@ FALLBACK_VOICE = None  # edge-tts 已禁用(仅本地 CosyVoice3)
 # edge-tts 已禁用:所有音色仅由本地 CosyVoice3 合成
 
 
+import os as _os
+
+def _load_doubao_key() -> str:
+    """豆包 ARK key 不入库:优先环境变量,其次服务器本地密钥文件。"""
+    k = _os.environ.get("TTV_DOUBAO_KEY", "").strip()
+    if k:
+        return k
+    try:
+        from pathlib import Path
+        p = Path("/mnt/workspace/ttv/.secrets/doubao.key")
+        if p.exists():
+            return p.read_text().strip()
+    except Exception:
+        pass
+    return ""
+
+DOUBAO_KEY = _load_doubao_key()
+DOUBAO_URL = "https://openspeech.bytedance.com/api/v3/plan/tts/unidirectional"
+DOUBAO_HEADERS = {
+    "Authorization": f"Bearer;{DOUBAO_KEY}",
+    "X-Api-App-Key": DOUBAO_KEY,
+    "X-Api-Access-Key": DOUBAO_KEY,
+    "X-Api-Resource-Id": "seed-tts-2.0",
+    "Content-Type": "application/json",
+}
+# 豆包 seed-tts-2.0 常用音色候选(账号开通后若个别不可用,可自行增删)
+DOUBAO_VOICES = [
+    "zh_female_vv_uranus_bigtts",       # 女声沉稳(新闻播报)
+    "zh_male_qingrun_moon_bigtts",      # 男声清润
+    "zh_female_shuangkuaisisi_moon_bigtts",  # 女声轻快
+    "zh_male_wennuanahu_moon_bigtts",   # 男声温暖
+]
+
+
+def _synth_local_url(text: str, voice: str, out: Path, speed: float, url: str) -> bool:
+    """本地 TTS 服务(CosyVoice3:8016 / Qwen3-TTS:8017)。成功返回 True。"""
+    import time as _t
+    for attempt in range(3):
+        try:
+            import httpx
+            r = httpx.post(f"{url}/tts", json={"text": text, "voice": voice, "speed": speed},
+                           timeout=httpx.Timeout(300.0, connect=3.0))
+            if r.status_code == 200:
+                wav = out.with_suffix(".wav")
+                wav.write_bytes(r.content)
+                subprocess.run(["ffmpeg", "-y", "-i", str(wav), "-ar", "44100", "-ac", "1",
+                                "-b:a", "128k", str(out)], capture_output=True, timeout=120)
+                wav.unlink(missing_ok=True)
+                return out.exists() and audio_duration(out) > 0.2
+        except Exception:
+            pass
+        _t.sleep(2.0 * (attempt + 1))
+    return False
+
+
 def _synth_local(text: str, voice: str, out: Path, speed: float = 1.0) -> bool:
+    return _synth_local_url(text, voice, out, speed, LOCAL_TTS_URL)
     """本地 CosyVoice3 服务(127.0.0.1:8016)。成功返回 True。"""
     import time as _t
     for attempt in range(2):
@@ -77,15 +133,30 @@ def _synth_local(text: str, voice: str, out: Path, speed: float = 1.0) -> bool:
         return False
 
 
-def _synth_with_fallback(text: str, voice: str, out: Path, speed: float = 1.0) -> str:
-    """合成引擎:仅使用本地 CosyVoice3(重试 3 次),失败则静音占位并标记 silence。
-    不使用任何外部 TTS 服务(edge-tts 已移除)。"""
-    for attempt in range(3):
-        if _synth_local(text, voice, out, speed):
-            return "cosyvoice3"
-        import time
-        time.sleep(2.0 * (attempt + 1))
-    # 静音占位(时长按 3.0 字/秒估算),保证渲染流程不中断;状态中标记 silence
+def _synth_doubao(text: str, voice: str, out: Path) -> bool:
+    """豆包 seed-tts-2.0 云 API(HTTP 单向流)。"""
+    try:
+        import httpx
+        body = {
+            "model": "seed-tts-2.0",
+            "audio": {"voice_type": voice, "encoding": "mp3", "rate": 24000},
+            "input": {"text": text},
+        }
+        r = httpx.post(DOUBAO_URL, headers=DOUBAO_HEADERS, json=body,
+                       timeout=httpx.Timeout(120.0, connect=10.0))
+        if r.status_code != 200:
+            return False
+        raw = out.with_suffix(".raw.mp3")
+        raw.write_bytes(r.content)
+        subprocess.run(["ffmpeg", "-y", "-i", str(raw), "-ar", "44100", "-ac", "1",
+                        "-b:a", "128k", str(out)], capture_output=True, timeout=120)
+        raw.unlink(missing_ok=True)
+        return out.exists() and audio_duration(out) > 0.2
+    except Exception:
+        return False
+
+
+def _silence_placeholder(text: str, out: Path) -> str:
     est = max(2.0, len(text) / 3.0 + 1.0)
     subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
                     "-t", f"{est:.2f}", "-ar", "44100", "-ac", "1", str(out)],
@@ -93,7 +164,26 @@ def _synth_with_fallback(text: str, voice: str, out: Path, speed: float = 1.0) -
     return "silence"
 
 
-def synthesize_frames(frames: list[dict], voice: str, audio_dir: Path, speed: float = 1.0) -> dict:
+def _synth_with_fallback(text: str, voice: str, out: Path, speed: float = 1.0,
+                         provider: str = "cosyvoice3") -> str:
+    """按选定引擎合成;失败回落本地 CosyVoice3;再失败静音占位。"""
+    if provider == "doubao":
+        if _synth_doubao(text, voice, out):
+            return "doubao"
+    elif provider == "qwen3tts":
+        if _synth_local_url(text, voice, out, speed, "http://127.0.0.1:8017"):
+            return "qwen3tts"
+    else:
+        if _synth_local(text, voice, out, speed):
+            return "cosyvoice3"
+    # 回落到本地 CosyVoice3(除非本来就是它)
+    if provider != "cosyvoice3" and _synth_local(text, voice, out, speed):
+        return "cosyvoice3"
+    return _silence_placeholder(text, out)
+
+
+def synthesize_frames(frames: list[dict], voice: str, audio_dir: Path, speed: float = 1.0,
+                       provider: str = "cosyvoice3") -> dict:
     """为所有帧合成旁白 → {frame_index: {path, duration, engine, words:[(word, t0, t1)]}}。
 
     返回后由调用方根据真实时长重算帧 duration。
@@ -105,7 +195,7 @@ def synthesize_frames(frames: list[dict], voice: str, audio_dir: Path, speed: fl
 
     for idx, text in texts:
         out = audio_dir / f"vo_{idx:02d}.mp3"
-        engine = _synth_with_fallback(text, voice, out, speed)
+        engine = _synth_with_fallback(text, voice, out, speed, provider)
         result[idx] = {"engine": engine}
 
     for idx, text in texts:
