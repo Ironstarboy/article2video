@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>理论文章转视频 · VideoLab</title>
+<style>
+/* ── 设计规范:编辑部气质 ──
+   结构色 深藏蓝 #1E3A5F | 强调色 赭红 #A61B29 | 纸感暖白 #F8F6F3
+   圆角系统:卡片 8 / 控件 6 / 标签 999 | 单一强调色全页锁定 */
+@font-face{font-family:'SongWeb';src:url("./assets/fonts/SourceHanSerifCN-Heavy.otf") format("opentype");font-display:swap;}
+@font-face{font-family:'SansWeb';src:url("./assets/fonts/NotoSansSC-Regular.otf") format("opentype");font-display:swap;}
+@font-face{font-family:'SansBoldWeb';src:url("./assets/fonts/NotoSansSC-Bold.otf") format("opentype");font-display:swap;}
+:root{
+  --navy:#1E3A5F; --navy-deep:#152A45; --red:#A61B29; --red-deep:#8C1420;
+  --paper:#F8F6F3; --card:#FFFFFF; --ink:#2D2D2D; --muted:#6B6B6B;
+  --line:#E5E0D8; --line-strong:#D8D2C8; --ok:#2F7D5C; --err:#B3261E;
+}
+*{box-sizing:border-box;}
+body{margin:0;font-family:'SansWeb','PingFang SC','Microsoft YaHei',sans-serif;background:var(--paper);color:var(--ink);}
+header{background:var(--navy);color:#fff;padding:16px 0;}
+header .bar{max-width:1080px;margin:0 auto;padding:0 24px;display:flex;align-items:baseline;justify-content:space-between;}
+header h1{margin:0;font-family:'SongWeb','SimSun','Songti SC',serif;font-size:22px;font-weight:600;letter-spacing:3px;}
+header .sub{font-size:12.5px;color:rgba(255,255,255,.72);letter-spacing:1px;}
+header .sub b{font-weight:400;color:#fff;}
+main{max-width:1080px;margin:0 auto;padding:36px 24px 72px;}
+.step{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:30px 34px;margin-bottom:22px;}
+.step-head{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:24px;}
+.step-head h2{margin:0;font-family:'SongWeb','SimSun','Songti SC',serif;font-size:21px;font-weight:600;letter-spacing:1.5px;}
+.step-head .no{font-family:'SongWeb','SimSun',serif;font-size:15px;color:var(--red);}
+.hint{color:var(--muted);font-size:13px;margin:0 0 20px;line-height:1.7;}
+/* 模式切换 */
+.modetabs{display:flex;border:1px solid var(--line-strong);border-radius:6px;overflow:hidden;width:fit-content;margin-bottom:18px;}
+.mtab{padding:10px 24px;font-size:14px;border:none;background:var(--card);cursor:pointer;color:var(--muted);font-family:inherit;}
+.mtab.sel{background:var(--navy);color:#fff;}
+/* 上传区 */
+#drop{border:1.5px dashed var(--line-strong);border-radius:8px;padding:56px 24px;text-align:center;cursor:pointer;background:#FCFBF9;transition:border-color .2s,background .2s;}
+#drop:hover{border-color:var(--navy);}
+#drop.on{border-color:var(--red);background:#FBF5F4;}
+#drop .icon{width:44px;height:44px;margin:0 auto 18px;border:1.5px solid var(--line-strong);border-radius:8px;position:relative;}
+#drop .icon::before{content:"";position:absolute;left:50%;top:10px;bottom:10px;width:1.5px;background:var(--muted);transform:translateX(-50%);}
+#drop .icon::after{content:"";position:absolute;top:50%;left:10px;right:10px;height:1.5px;background:var(--muted);transform:translateY(-50%);}
+#drop:hover .icon{border-color:var(--navy);}
+#drop .big{font-size:15px;color:var(--ink);margin-bottom:8px;}
+#drop .small{color:var(--muted);font-size:12.5px;}
+#fileinfo{margin-top:14px;font-size:13.5px;color:var(--ink);display:none;}
+#fileinfo b{color:var(--navy);font-family:'SansBoldWeb','PingFang SC',sans-serif;}
+#textinput{width:100%;min-height:240px;border:1.5px solid var(--line-strong);border-radius:6px;padding:16px;font-size:14px;line-height:1.9;resize:vertical;font-family:inherit;background:#FCFBF9;color:var(--ink);}
+#textinput::placeholder{color:var(--muted);}
+#textinput:focus{outline:none;border-color:var(--navy);background:#fff;}
+/* 风格卡 */
+.styles{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
+.style-card{border:1.5px solid var(--line);border-radius:8px;padding:0 0 18px;cursor:pointer;background:var(--card);transition:border-color .15s,box-shadow .15s;overflow:hidden;}
+.style-card:hover{border-color:var(--line-strong);}
+.style-card.sel{border-color:var(--red);box-shadow:0 0 0 2px rgba(166,27,41,.10);}
+.style-card .band{display:flex;height:10px;margin-bottom:18px;}
+.style-card .band span{flex:1;}
+.style-card h3{margin:0 18px 8px;font-family:'SongWeb','SimSun','Songti SC',serif;font-size:16.5px;font-weight:600;}
+.style-card p{margin:0 18px;font-size:12.5px;color:var(--muted);line-height:1.75;}
+.style-card .pick{display:none;margin:14px 18px 0;font-size:12px;color:var(--red);}
+.style-card.sel .pick{display:block;}
+/* 时长与提交 */
+.dur-row{display:flex;align-items:center;gap:20px;}
+#dur{flex:1;height:4px;border-radius:2px;background:var(--line-strong);outline:none;-webkit-appearance:none;appearance:none;}
+#dur::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--red);border:3px solid #fff;box-shadow:0 0 0 1px var(--red);cursor:pointer;}
+#dur::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:var(--red);border:3px solid #fff;box-shadow:0 0 0 1px var(--red);cursor:pointer;}
+#durval{font-family:'SongWeb','SimSun',serif;font-size:26px;color:var(--red);min-width:120px;text-align:right;}
+#durval small{font-size:13px;color:var(--muted);font-family:'SansWeb',sans-serif;margin-left:4px;}
+button.primary{margin-top:30px;width:100%;padding:15px;font-size:16px;border:none;border-radius:6px;color:#fff;background:var(--navy);cursor:pointer;letter-spacing:5px;font-family:'SansBoldWeb','PingFang SC',sans-serif;transition:background .15s,transform .1s;}
+button.primary:hover{background:var(--navy-deep);}
+button.primary:active{transform:translateY(1px);}
+button.primary:disabled{background:var(--line-strong);color:#fff;cursor:not-allowed;letter-spacing:5px;}
+/* 预览页 */
+.banner{border:1px solid var(--line);border-radius:8px;padding:15px 22px;margin-bottom:22px;font-size:14px;display:flex;align-items:center;gap:12px;background:var(--card);}
+.banner .spin{width:14px;height:14px;border:2px solid var(--line-strong);border-top-color:var(--navy);border-radius:50%;animation:rot 1s linear infinite;}
+@keyframes rot{to{transform:rotate(360deg);}}
+.banner.ok{border-left:3px solid var(--ok);}
+.banner.err{border-left:3px solid var(--err);}
+.columns{display:grid;grid-template-columns:1.15fr 1fr;gap:22px;align-items:start;}
+@media(max-width:980px){.columns{grid-template-columns:1fr;}.styles{grid-template-columns:1fr;}}
+.panel h3{font-family:'SongWeb','SimSun','Songti SC',serif;font-size:17px;margin:0 0 14px;padding-bottom:12px;border-bottom:1px solid var(--line);}
+.meta{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;}
+.meta .chip{background:#F1EEE8;border:1px solid var(--line);color:var(--navy);border-radius:999px;padding:4px 14px;font-size:12.5px;}
+pre.analysis{white-space:pre-wrap;font-size:13px;line-height:1.85;color:#3A3A3A;background:#FCFBF9;border:1px solid var(--line);border-radius:6px;padding:16px;margin:0 0 16px;font-family:'SansWeb','PingFang SC',sans-serif;}
+table.frames{width:100%;border-collapse:collapse;font-size:12.5px;}
+table.frames th,table.frames td{border-bottom:1px solid var(--line);padding:8px;text-align:left;vertical-align:top;}
+table.frames th{color:var(--muted);font-weight:400;background:#FCFBF9;}
+table.frames td .t{display:inline-block;background:#F1EEE8;color:var(--red);border-radius:4px;padding:1px 8px;font-size:11.5px;}
+.player-box{background:#101820;border-radius:8px;overflow:hidden;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#8CA0B3;font-size:14px;}
+.player-box iframe,.player-box video{width:100%;height:100%;border:none;display:block;}
+.btnrow{display:flex;gap:14px;margin-top:18px;}
+.btnrow button{flex:1;padding:13px;font-size:14.5px;border-radius:6px;border:1.5px solid var(--navy);background:var(--card);color:var(--navy);cursor:pointer;font-family:'SansBoldWeb','PingFang SC',sans-serif;}
+.btnrow button.primary{border:none;background:var(--navy);color:#fff;letter-spacing:2px;margin-top:0;}
+.btnrow button:disabled{opacity:.4;cursor:not-allowed;}
+#dl{display:none;margin-top:16px;text-align:center;}
+#dl a{color:var(--navy);font-size:14px;}
+.hidden{display:none !important;}
+.back{display:inline-block;margin-bottom:20px;color:var(--navy);font-size:14px;text-decoration:none;}
+footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:#9A948B;font-size:12px;text-align:center;}
+
+.presets{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:26px;}
+@media(max-width:980px){.presets{grid-template-columns:1fr;}}
+.preset-btn{padding:0 0 16px;border:1.5px solid var(--line);border-radius:8px;background:var(--card);cursor:pointer;font-family:inherit;text-align:left;overflow:hidden;transition:border-color .15s,box-shadow .15s;}
+.preset-btn:hover{border-color:var(--line-strong);}
+.preset-btn.sel{border-color:var(--red);box-shadow:0 0 0 2px rgba(166,27,41,.10);}
+.preset-btn .band{display:flex;height:8px;margin-bottom:14px;}
+.preset-btn .band span{flex:1;}
+.preset-btn .pt{margin:0 16px 6px;font-family:'SongWeb','SimSun',serif;font-size:15.5px;color:var(--ink);}
+.preset-btn.sel .pt{color:var(--red);}
+.preset-btn .pd{margin:0 16px;font-size:12px;color:var(--muted);line-height:1.6;}
+.preset-btn .pick{margin:12px 16px 0;font-size:12px;color:var(--red);display:none;}
+.preset-btn.sel .pick{display:block;}
+.dimrow{margin-bottom:20px;}
+.dimrow .dl{font-size:13px;color:var(--muted);margin-bottom:9px;}
+.dimrow .dl b{color:var(--ink);font-weight:600;margin-right:4px;}
+.dim-chips{display:flex;flex-wrap:wrap;gap:10px;}
+.dim-chip{border:1.5px solid var(--line);border-radius:8px;background:var(--card);cursor:pointer;font-family:inherit;text-align:center;padding:10px 14px;min-width:104px;transition:border-color .15s,box-shadow .15s;}
+.dim-chip:hover{border-color:var(--line-strong);}
+.dim-chip.sel{border-color:var(--navy);box-shadow:0 0 0 2px rgba(30,58,95,.10);}
+.dim-chip .vis{height:34px;display:flex;align-items:center;justify-content:center;margin-bottom:8px;}
+.dim-chip .nm{font-size:13px;color:var(--ink);}
+.dim-chip.sel .nm{color:var(--navy);font-weight:600;}
+.dim-chip .sw{display:flex;gap:4px;}
+.dim-chip .sw span{width:22px;height:30px;border-radius:3px;border:1px solid rgba(0,0,0,.08);}
+.dim-chip .fp{font-size:15px;color:var(--ink);}
+.dim-chip .fp.song{font-family:'SongWeb','SimSun',serif;}
+.dim-chip .fp.sans{font-family:'SansBoldWeb','PingFang SC',sans-serif;}
+.dim-chip .mi{font-size:17px;color:var(--muted);letter-spacing:1px;}
+.dim-chip .ds{font-size:11px;color:var(--muted);line-height:1.5;margin-top:2px;}
+
+.columns{display:grid;grid-template-columns:1fr;gap:22px;align-items:start;}
+@media(max-width:980px){.styles{grid-template-columns:1fr;}}
+@media(max-width:640px){
+  .step{padding:20px 16px;}
+  .columns,.video-row{margin-top:16px;}
+  .studio-box{height:56vw;}
+  .player-box{aspect-ratio:16/9;}
+  header .bar{padding:0 16px;}
+  .vtabs{flex-wrap:wrap;}
+}
+.video-row{margin-top:22px;}
+.vtabs{display:flex;gap:0;margin-bottom:14px;border-bottom:1px solid var(--line);}
+.vtab{padding:10px 22px;font-size:14px;border:none;background:transparent;cursor:pointer;color:var(--muted);font-family:inherit;border-bottom:2px solid transparent;}
+.vtab.sel{color:var(--navy);border-bottom-color:var(--navy);font-weight:600;}
+.studio-box{background:#0b1220;border-radius:8px;overflow:hidden;height:860px;display:flex;align-items:center;justify-content:center;color:#8CA0B3;font-size:14px;}
+.studio-box iframe{width:100%;height:100%;border:none;display:block;}
+
+.editrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;}
+.editrow input[type=text]{flex:1;min-width:240px;border:1.5px solid var(--line-strong);border-radius:6px;padding:9px 12px;font-size:13.5px;font-family:inherit;}
+.smallbtn{padding:9px 16px;font-size:13px;border-radius:6px;border:1.5px solid var(--navy);background:var(--card);color:var(--navy);cursor:pointer;font-family:inherit;}
+.smallbtn:disabled{opacity:.4;cursor:not-allowed;}
+table.frames input,table.frames textarea,table.frames select{width:100%;border:1.5px solid var(--line-strong);border-radius:4px;padding:5px 8px;font-size:12.5px;font-family:inherit;background:#fff;}
+table.frames textarea{resize:vertical;min-height:52px;}
+table.frames input[type=number]{width:64px;}
+.fmt-row{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--muted);}
+.fmt-row select{border:1.5px solid var(--line-strong);border-radius:6px;padding:6px 10px;font-family:inherit;font-size:13.5px;}
+.edit-box{margin-bottom:14px;display:none;}
+.edit-box textarea{width:100%;min-height:70px;border:1.5px solid var(--line-strong);border-radius:6px;padding:10px;font-size:13px;font-family:inherit;margin-bottom:8px;resize:vertical;}
+.edit-box label{font-size:12.5px;color:var(--muted);display:block;margin-bottom:4px;}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>理论文章转视频</h1>
+    <div class="sub"><b>VideoLab</b> · 政论视频创作工作台</div>
+  </div>
+</header>
+<main>
+
+<!-- ═══════════ 第一级页面:创作配置 ═══════════ -->
+<div id="view-upload">
+  <div class="step">
+    <div class="step-head"><h2>文章内容</h2><span class="no">壹</span></div>
+    <div class="modetabs">
+      <button type="button" class="mtab sel" id="mtab-file">上传文件</button>
+      <button type="button" class="mtab" id="mtab-text">粘贴文字</button>
+    </div>
+    <div id="drop">
+      <div class="icon"></div>
+      <div class="big">点击选择文件,或拖拽到此处</div>
+      <div class="small">支持 txt · markdown · docx,不超过 20MB</div>
+    </div>
+    <input type="file" id="file" accept=".txt,.md,.markdown,.docx" class="hidden"/>
+    <div id="fileinfo">已选择:<b id="fname"></b>(<span id="fsize"></span>)</div>
+    <textarea id="textinput" class="hidden" placeholder="把文章全文粘贴到这里(不少于 50 字)。支持人民日报评论、马院论文等理论长文,分析引擎将自动梳理论证结构并改写为视频旁白。"></textarea>
+  </div>
+
+  <div class="step">
+    <div class="step-head"><h2>视频风格</h2><span class="no">贰</span></div>
+    <p class="hint">可快速套用经典预设,或按字体 / 配色 / 背景 / 动效四个维度自由组合。</p>
+    <div class="presets" id="presets"></div>
+    <div id="dims"></div>
+  </div>
+
+  <div class="step">
+    <div class="step-head"><h2>时长与生成</h2><span class="no">叁</span></div>
+    <div class="dur-row">
+      <input type="range" id="dur" min="30" max="600" step="30" value="120"/>
+      <span id="durval">2<small>分钟</small></span>
+    </div>
+    <button class="primary" id="submit" disabled>开始分析</button>
+  </div>
+</div>
+
+<!-- ═══════════ 第二级页面:预览 ═══════════ -->
+<div id="view-preview" class="hidden">
+  <a class="back" href="./">返回创作页</a>
+  <div class="banner" id="banner"><span class="spin" id="banner-spin"></span><span id="banner-text">加载中…</span></div>
+  <div class="columns">
+    <div>
+      <div class="step panel" style="padding:24px 26px;">
+        <h3>分析结果</h3>
+        <div class="meta" id="meta-chips"></div>
+        <div id="analysis-body"><pre class="analysis">分析中,请稍候…</pre></div>
+      </div>
+    </div>
+    <div>
+      <div class="step panel" style="padding:24px 26px;">
+        <h3>逐帧脚本</h3>
+        <div class="editrow">
+          <button type="button" class="smallbtn" id="btn-edit">编辑脚本</button>
+          <button type="button" class="smallbtn" id="btn-save-script" style="display:none;">保存并重新构建</button>
+        </div>
+        <div class="edit-box" id="edit-box">
+          <label>标题</label><textarea id="edit-title"></textarea>
+          <label>核心论点</label><textarea id="edit-core"></textarea>
+          <label>大纲分析</label><textarea id="edit-outline"></textarea>
+          <label>视频结构</label><textarea id="edit-structure"></textarea>
+        </div>
+        <div id="frames-body"><pre class="analysis">分析完成后显示逐帧脚本。</pre></div>
+        <div class="editrow" style="margin-top:14px;">
+          <input type="text" id="revise-input" placeholder="用一句话描述修改要求,如:把第三帧旁白改得更凝练、数据帧换成对比帧…"/>
+          <button type="button" class="smallbtn" id="btn-revise">AI 按建议修改</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="step panel video-row" style="padding:24px 26px;">
+    <h3>视频预览</h3>
+    <div class="vtabs">
+      <button type="button" class="vtab sel" id="vtab-player">播放器</button>
+      <button type="button" class="vtab" id="vtab-studio">Studio 编辑器(完整功能)</button>
+    </div>
+    <div class="player-box" id="player-box" style="display:none;">构建后在此预览</div>
+    <div class="studio-box" id="studio-box" style="display:none;">点击「Studio 编辑器」标签后加载</div>
+    <div class="btnrow">
+      <button id="btn-build" disabled>构建预览</button>
+      <span class="fmt-row">格式
+        <select id="fmt">
+          <option value="mp4">MP4</option>
+          <option value="mkv">MKV</option>
+          <option value="mov">MOV</option>
+          <option value="webm">WebM</option>
+        </select>
+      </span>
+      <button id="btn-render" class="primary" disabled>渲染成片</button>
+    </div>
+    <div id="dl"><a id="dl-link" target="_blank">下载成片(MP4)</a></div>
+  </div>
+</div>
+
+</main>
+<footer>VideoLab · 理论文章转视频 · 内容由 DeepSeek 分析引擎与 HyperFrames 渲染引擎生成</footer>
+<script>
+const $ = s => document.querySelector(s);
+let jobId = null, timer = null, chosenStyle = null, scriptData = null, editMode = false;
+const STYLE_META = {
+  "solemn-red": {desc:"政论经典。中国红点睛、金色仪式感,庄重开阔,适用时政评论与重大主题。", colors:["#FAFAF8","#C8161D","#8F1118","#C9A063"]},
+  "academic-ink": {desc:"书香学术。宣纸米白、黛青墨韵、朱砂印章,适用马院论文与学术理论文章。", colors:["#F6F1E4","#1F4E5F","#16394A","#8B5E34"]},
+  "modern-blue": {desc:"时代前沿。科技蓝与琥珀高亮,数据可视化,适用改革、科技与新质生产力话题。", colors:["#F5F8FC","#0A4DA3","#0A2A5E","#FFB400"]},
+};
+
+/* ── 上传页逻辑 ── */
+let chosenCombo = {font:"song-title",palette:"china-red",bg:"orbit",motion:"dignified"};
+chosenStyle = "solemn-red";
+const DIM_MAP = {fonts:"font",palettes:"palette",backgrounds:"bg",motions:"motion"};
+function refreshChips(data){
+  for (const [k,v] of Object.entries(chosenCombo)) {
+    const box = $("#dim-"+k);
+    if (!box) continue;
+    box.querySelectorAll(".dim-chip").forEach(x=>{
+      const key = x.getAttribute("data-key");
+      x.classList.toggle("sel", key === v);
+    });
+  }
+}
+const PALETTE_SWATCHES = {
+  "china-red": ["#FAFAF8","#C8161D","#8F1118","#C9A063"],
+  "ink-green": ["#F6F1E4","#1F4E5F","#16394A","#8B5E34"],
+  "tech-blue": ["#F5F8FC","#0A4DA3","#0A2A5E","#FFB400"],
+  "editor-navy": ["#F8F6F3","#A61B29","#1E3A5F","#B08A4E"],
+};
+const BG_THUMBS = {
+  "orbit": '<svg width="52" height="30" viewBox="0 0 52 30"><circle cx="40" cy="12" r="10" fill="none" stroke="#C9A063" stroke-width="1"/><circle cx="40" cy="12" r="6" fill="none" stroke="#C9A063" stroke-width="1"/><path d="M0 26 H52" stroke="#E5E0D8"/></svg>',
+  "wash": '<svg width="52" height="30" viewBox="0 0 52 30"><path d="M0 24 Q12 16 26 22 T52 20" fill="none" stroke="#5F5A50" stroke-width="1.4"/><path d="M0 27 Q14 21 26 25 T52 24" fill="none" stroke="#9A9384" stroke-width="1"/></svg>',
+  "tech": '<svg width="52" height="30" viewBox="0 0 52 30"><path d="M2 26 L16 18 L28 22 L50 6" fill="none" stroke="#0A4DA3" stroke-width="1.4"/><circle cx="50" cy="6" r="2.4" fill="#FFB400"/></svg>',
+  "minimal": '<svg width="52" height="30" viewBox="0 0 52 30"><path d="M0 26 H52" stroke="#E5E0D8"/><path d="M4 4 V26" stroke="#A61B29" stroke-width="1.6"/></svg>',
+};
+const MOTION_ICONS = {"dignified":"➤ 缓", "brisk":"➤➤ 快", "still":"· 静"};
+function renderStyles(){
+  fetch("./api/styles").then(r=>r.json()).then(data=>{
+    const pb = $("#presets"); pb.innerHTML = "";
+    data.presets.forEach(p=>{
+      const b = document.createElement("button");
+      b.type="button"; b.className="preset-btn"+(p.key==="solemn-red" ? " sel":"");
+      const sw = PALETTE_SWATCHES[p.combo.palette] || ["#ccc","#ccc","#ccc","#ccc"];
+      b.innerHTML = '<div class="band">'+sw.map(c=>'<span style="background:'+c+'"></span>').join("")+'</div>'+
+        '<div class="pt"></div><div class="pd"></div><div class="pick">已选择此风格</div>';
+      const dname = (dim, key) => ((data[dim]||[]).find(o=>o.key===key)||{}).name || key;
+      b.querySelector(".pt").textContent = p.name;
+      b.querySelector(".pd").textContent = [dname("fonts",p.combo.font), dname("palettes",p.combo.palette), dname("backgrounds",p.combo.bg), dname("motions",p.combo.motion)].join(" · ");
+      b.onclick = ()=>{ pb.querySelectorAll(".preset-btn").forEach(x=>x.classList.remove("sel"));
+        b.classList.add("sel"); chosenCombo = {...p.combo}; chosenStyle = p.key; refreshChips(data); };
+      pb.appendChild(b);
+    });
+    const db = $("#dims"); db.innerHTML = "";
+    const dims = [["font","字体",data.fonts],["palette","配色",data.palettes],
+                  ["bg","背景",data.backgrounds],["motion","动效",data.motions]];
+    dims.forEach(([key,label,opts])=>{
+      const row = document.createElement("div"); row.className="dimrow";
+      row.innerHTML = '<div class="dl"><b>'+label+'</b></div><div class="dim-chips" id="dim-'+key+'"></div>';
+      db.appendChild(row);
+      const box = row.querySelector(".dim-chips");
+      opts.forEach(o=>{
+        const c = document.createElement("button"); c.type="button";
+        c.className="dim-chip"; c.title=o.desc;
+        c.setAttribute("data-key", o.key);
+        const vis = document.createElement("div"); vis.className="vis";
+        if (key==="palette") {
+          vis.innerHTML = '<div class="sw">'+(PALETTE_SWATCHES[o.key]||["#ccc","#ccc","#ccc","#ccc"]).map(x=>'<span style="background:'+x+'"></span>').join("")+'</div>';
+        } else if (key==="font") {
+          const fp = document.createElement("div");
+          fp.className = "fp " + (o.key==="all-sans" ? "sans" : "song");
+          fp.textContent = "理论文章";
+          vis.appendChild(fp);
+        } else if (key==="bg") {
+          vis.innerHTML = BG_THUMBS[o.key] || "";
+        } else {
+          const mi = document.createElement("div"); mi.className="mi";
+          mi.textContent = MOTION_ICONS[o.key] || o.key;
+          vis.appendChild(mi);
+        }
+        const nm = document.createElement("div"); nm.className="nm"; nm.textContent = o.name;
+        const ds = document.createElement("div"); ds.className="ds"; ds.textContent = o.desc;
+        c.appendChild(vis); c.appendChild(nm); c.appendChild(ds);
+        c.onclick = ()=>{ box.querySelectorAll(".dim-chip").forEach(x=>x.classList.remove("sel"));
+          c.classList.add("sel"); chosenCombo[key] = o.key; chosenStyle = null;
+          pb.querySelectorAll(".preset-btn").forEach(x=>x.classList.remove("sel")); };
+        box.appendChild(c);
+      });
+    });
+    refreshChips(data);
+  }).catch(()=>{ $("#dims").innerHTML = '<p class="hint">风格接口加载失败,请刷新重试。</p>'; });
+}
+renderStyles();
+
+const drop = $("#drop"), fileInput = $("#file");
+drop.onclick = ()=>fileInput.click();
+["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("on");}));
+["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("on");}));
+drop.addEventListener("drop",e=>{ if(e.dataTransfer.files.length) pickFile(e.dataTransfer.files[0]); });
+fileInput.onchange = ()=>{ if(fileInput.files.length) pickFile(fileInput.files[0]); };
+
+let picked = null, mode = "file";
+function setMode(m){
+  mode = m;
+  $("#mtab-file").classList.toggle("sel", m==="file");
+  $("#mtab-text").classList.toggle("sel", m==="text");
+  $("#drop").classList.toggle("hidden", m!=="file");
+  $("#fileinfo").classList.toggle("hidden", m!=="file" || !picked);
+  $("#textinput").classList.toggle("hidden", m!=="text");
+  updateSubmit();
+}
+function updateSubmit(){
+  $("#submit").disabled = mode==="file" ? !picked : $("#textinput").value.trim().length < 50;
+}
+$("#mtab-file").onclick = ()=>setMode("file");
+$("#mtab-text").onclick = ()=>setMode("text");
+$("#textinput").oninput = updateSubmit;
+function pickFile(f){
+  picked = f;
+  $("#fname").textContent = f.name;
+  $("#fsize").textContent = (f.size/1024/1024).toFixed(2)+" MB";
+  $("#fileinfo").style.display = "block";
+  updateSubmit();
+}
+const dur = $("#dur");
+dur.oninput = ()=>{ $("#durval").innerHTML = Math.round(dur.value/60*10)/10 + "<small>分钟</small>"; };
+$("#submit").onclick = ()=>{
+  if ($("#submit").disabled) return;
+  const fd = new FormData();
+  if (mode === "file") { fd.append("file", picked); }
+  else { fd.append("text", $("#textinput").value.trim()); }
+  if (chosenStyle) { fd.append("style", chosenStyle); }
+  fd.append("font", chosenCombo.font);
+  fd.append("palette", chosenCombo.palette);
+  fd.append("bg", chosenCombo.bg);
+  fd.append("motion", chosenCombo.motion);
+  fd.append("duration", dur.value);
+  const btn = $("#submit");
+  btn.disabled = true; btn.textContent = "提交中…";
+  fetch("./api/jobs", {method:"POST", body:fd})
+    .then(r=>r.json())
+    .then(j=>{ location.href = "./?job=" + j.job_id; })
+    .catch(err=>{ alert("提交失败:"+err); btn.disabled=false; btn.textContent="开始分析"; });
+};
+
+/* ── 预览页逻辑 ── */
+const q = new URLSearchParams(location.search);
+jobId = q.get("job");
+if (jobId) {
+  $("#view-upload").classList.add("hidden");
+  $("#view-preview").classList.remove("hidden");
+  poll();
+  timer = setInterval(poll, 2500);
+}
+const STATUS_TEXT = {
+  uploaded:"已上传,排队分析", analyzing:"分析中", analyzed:"分析完成,可构建预览",
+  building:"构建中(配音与组装)", preview:"预览就绪", rendering:"渲染中(约 5-20 分钟)", rendered:"成片完成", failed:"出错",
+};
+function poll(){
+  fetch("./api/jobs/" + jobId).then(r=>r.json()).then(j=>{
+    const b = $("#banner");
+    b.className = "banner" + (j.status==="failed" ? " err" : (["analyzed","preview","rendered"].includes(j.status) ? " ok":""));
+    $("#banner-spin").style.display = ["analyzing","building","rendering","uploaded"].includes(j.status) ? "" : "none";
+    $("#banner-text").textContent = (STATUS_TEXT[j.status]||j.status) + (j.progress ? ":" + j.progress : "");
+    if (j.status==="failed") $("#banner-text").textContent = "失败:" + j.error;
+    updateActions(j);
+    if (j.script) renderScript(j);
+  }).catch(()=>{});
+}
+function updateActions(j){
+  const bb = $("#btn-build"), rb = $("#btn-render");
+  bb.disabled = !["analyzed","preview","rendered","failed"].includes(j.status);
+  bb.textContent = j.status==="preview" ? "重新构建" : "构建预览";
+  rb.disabled = j.status!=="preview";
+  rb.textContent = "渲染成片";
+  if (j.status==="preview" && !$("#player-box").querySelector("iframe")) {
+    const f = document.createElement("iframe");
+    f.src = "./api/player/" + j.job_id + "/";
+    $("#player-box").innerHTML = "";
+    $("#player-box").appendChild(f);
+  }
+  if (j.status==="preview") {
+    $("#vtab-player").style.display = "";
+    $("#vtab-studio").style.display = "";
+  }
+  if (j.status==="rendered" && j.has_video) {
+    $("#dl").style.display = "block";
+    $("#dl-link").href = "./api/jobs/" + j.job_id + "/video";
+    const f = $("#player-box").querySelector("iframe");
+    if (f) { f.remove(); const v=document.createElement("video"); v.src=$("#dl-link").href; v.controls=true; v.style.cssText="width:100%;height:100%;"; $("#player-box").appendChild(v); }
+    switchTab("player");
+  }
+}
+const STYLE_NAMES = {"solemn-red":"庄重肃穆 · 中国红","academic-ink":"清雅学术 · 墨黛青","modern-blue":"现代锐意 · 科技蓝"};
+function el(tag, cls, text){
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;   // textContent 防 XSS
+  return e;
+}
+function renderScript(j){
+  const s = j.script;
+  if (!s || s === scriptData) return;
+  scriptData = s;
+  const chipsBox = $("#meta-chips");
+  chipsBox.innerHTML = "";
+  if (s.style_recommendation) {
+    const c = el("span", "chip");
+    c.appendChild(document.createTextNode("推荐风格:" + (STYLE_NAMES[s.style_recommendation.style] || s.style_recommendation.style) + "(" + (s.style_recommendation.reason || "") + ")"));
+    chipsBox.appendChild(c);
+  }
+  if (s.duration_sec) chipsBox.appendChild(el("span", "chip", "总时长:" + s.duration_sec + " 秒"));
+  if (s.credits && s.credits.source) chipsBox.appendChild(el("span", "chip", "来源:" + s.credits.source));
+  const a = s.analysis || {};
+  const pre = el("pre", "analysis");
+  pre.appendChild(document.createTextNode(
+    "标题:" + (s.title || "") + (s.subtitle ? (" / " + s.subtitle) : "") + "\n\n" +
+    "核心论点:" + (a.core_argument || "") + "\n\n" +
+    "大纲分析:\n" + (a.outline || "") + "\n\n" +
+    "视频结构:\n" + (a.structure || "") + "\n\n" +
+    "可视觉化元素:\n" + ((a.key_visuals || []).map((v, i) => (i + 1) + ". " + v).join("\n") || "")));
+  const ab = $("#analysis-body");
+  ab.innerHTML = "";
+  ab.appendChild(pre);
+  const fb = $("#frames-body");
+  if (editMode) { renderEditable(s); return; }
+  const table = document.createElement("table");
+  table.className = "frames";
+  const head = document.createElement("tr");
+  ["#","类型","画面","旁白","时长","转场"].forEach(h => head.appendChild(el("th", null, h)));
+  table.appendChild(head);
+  s.frames.forEach(f=>{
+    const tr = document.createElement("tr");
+    tr.appendChild(el("td", null, String(f.index)));
+    const td1 = document.createElement("td");
+    td1.appendChild(el("span", "t", f.type));
+    tr.appendChild(td1);
+    tr.appendChild(el("td", null, f.scene || ""));
+    tr.appendChild(el("td", null, f.voiceover || "静帧"));
+    tr.appendChild(el("td", null, f.duration + "s"));
+    tr.appendChild(el("td", null, f.transition_in));
+    table.appendChild(tr);
+  });
+  fb.innerHTML = "";
+  fb.appendChild(table);
+}
+function renderEditable(s){
+  const a = s.analysis || {};
+  $("#edit-box").style.display = "block";
+  $("#edit-title").value = s.title || "";
+  $("#edit-core").value = a.core_argument || "";
+  $("#edit-outline").value = a.outline || "";
+  $("#edit-structure").value = a.structure || "";
+  const fb = $("#frames-body");
+  fb.innerHTML = "";
+  const table = document.createElement("table");
+  table.className = "frames";
+  const head = document.createElement("tr");
+  ["#","类型","画面","旁白(15-75字)","时长(s)","转场"].forEach(h=>head.appendChild(el("th", null, h)));
+  table.appendChild(head);
+  s.frames.forEach((f,i)=>{
+    const tr = document.createElement("tr");
+    tr.appendChild(el("td", null, String(f.index)));
+    tr.appendChild(el("td", null, f.type));
+    const td1 = document.createElement("td");
+    const es = document.createElement("input"); es.type="text"; es.id="es"+i; es.value = f.scene || "";
+    td1.appendChild(es); tr.appendChild(td1);
+    const td2 = document.createElement("td");
+    const ev = document.createElement("textarea"); ev.id="ev"+i; ev.value = f.voiceover || "";
+    td2.appendChild(ev); tr.appendChild(td2);
+    const td3 = document.createElement("td");
+    const ed = document.createElement("input"); ed.type="number"; ed.id="ed"+i; ed.value = f.duration; ed.min="3"; ed.max="60"; ed.step="0.5";
+    td3.appendChild(ed); tr.appendChild(td3);
+    const td4 = document.createElement("td");
+    const et = document.createElement("select"); et.id="et"+i;
+    ["cut","crossfade","push_up"].forEach(t=>{ const o=document.createElement("option"); o.value=t; o.textContent=t; if(t===f.transition_in) o.selected=true; et.appendChild(o); });
+    td4.appendChild(et); tr.appendChild(td4);
+    table.appendChild(tr);
+  });
+  fb.appendChild(table);
+}
+function collectScript(){
+  const s = JSON.parse(JSON.stringify(scriptData));
+  s.title = $("#edit-title").value.trim() || s.title;
+  s.analysis.core_argument = $("#edit-core").value.trim();
+  s.analysis.outline = $("#edit-outline").value.trim();
+  s.analysis.structure = $("#edit-structure").value.trim();
+  s.frames.forEach((f,i)=>{
+    f.scene = $("#es"+i).value.trim();
+    f.voiceover = $("#ev"+i).value.trim();
+    f.duration = parseFloat($("#ed"+i).value) || f.duration;
+    f.transition_in = $("#et"+i).value;
+  });
+  return s;
+}
+/* 视频区 tab:播放器 / Studio */
+let currentTab = "player";
+function switchTab(t){
+  currentTab = t;
+  $("#vtab-player").classList.toggle("sel", t==="player");
+  $("#vtab-studio").classList.toggle("sel", t==="studio");
+  const isRendered = $("#player-box").querySelector("video");
+  $("#player-box").style.display = (t==="player" && !isRendered) ? "" : (t==="player" ? "" : "none");
+  $("#studio-box").style.display = (t==="studio") ? "" : "none";
+  if (t==="player" && isRendered) { $("#player-box").style.display = ""; }
+  if (t==="studio" && !$("#studio-box").querySelector("iframe") && jobId) {
+    const f = document.createElement("iframe");
+    f.src = "./api/studio/" + jobId + "/#project/project";
+    $("#studio-box").innerHTML = "";
+    $("#studio-box").appendChild(f);
+  }
+}
+$("#vtab-player").onclick = ()=>switchTab("player");
+$("#vtab-studio").onclick = ()=>switchTab("studio");
+$("#btn-edit").onclick = ()=>{
+  editMode = !editMode;
+  $("#btn-edit").textContent = editMode ? "退出编辑" : "编辑脚本";
+  $("#btn-save-script").style.display = editMode ? "" : "none";
+  $("#edit-box").style.display = editMode ? "block" : "none";
+  if (scriptData) renderScript({script: scriptData});
+};
+$("#btn-save-script").onclick = async ()=>{
+  const s = collectScript();
+  $("#btn-save-script").disabled = true;
+  const r = await fetch("./api/jobs/"+jobId+"/script", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({script: s})});
+  const j = await r.json();
+  if (!j.ok) { alert("校验失败:" + (j.detail || "")); $("#btn-save-script").disabled = false; return; }
+  await fetch("./api/jobs/"+jobId+"/build", {method:"POST"});
+  editMode = false;
+  $("#btn-edit").textContent = "编辑脚本";
+  $("#btn-save-script").style.display = "none";
+  $("#edit-box").style.display = "none";
+  $("#btn-save-script").disabled = false;
+  $("#player-box").innerHTML = '<span>构建中…</span>';
+  poll();
+};
+$("#btn-revise").onclick = async ()=>{
+  const ins = $("#revise-input").value.trim();
+  if (ins.length < 5) { alert("请描述修改要求(不少于 5 字)"); return; }
+  $("#btn-revise").disabled = true;
+  const r = await fetch("./api/jobs/"+jobId+"/revise", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({instruction: ins})});
+  const j = await r.json();
+  if (!j.ok) { alert(j.detail || "修改失败"); $("#btn-revise").disabled = false; return; }
+  $("#btn-revise").disabled = false;
+  $("#revise-input").value = "";
+  poll();
+};
+$("#btn-build").onclick = ()=>{
+  fetch("./api/jobs/"+jobId+"/build", {method:"POST"}).then(r=>r.json()).then(()=>{
+    $("#btn-build").disabled = true;
+    $("#player-box").innerHTML = '<span>构建中…</span>';
+    poll();
+  }).catch(e=>alert(e));
+};
+$("#btn-render").onclick = ()=>{
+  fetch("./api/jobs/"+jobId+"/render", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({format: $("#fmt").value})}).then(r=>r.json()).then(()=>{
+    $("#btn-render").disabled = true;
+    $("#btn-render").textContent = "渲染中…";
+    poll();
+  }).catch(e=>alert(e));
+};
+</script>
+</body>
+</html>
