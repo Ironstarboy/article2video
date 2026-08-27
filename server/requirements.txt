@@ -3,3 +3,4 @@ uvicorn>=0.34
 httpx>=0.28
 python-multipart>=0.0.9
 jieba>=0.42
+fonttools>=4.53

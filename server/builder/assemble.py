@@ -12,6 +12,7 @@ project/
 └── renders/
 """
 import json
+import html as _html
 import shutil
 import subprocess
 from pathlib import Path
@@ -96,7 +97,9 @@ def build(script: dict, style_key: str, vo: dict, project_dir: Path) -> dict:
         shutil.rmtree(bgm_dir)
     bgm_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "assets" / "audio").mkdir(parents=True, exist_ok=True)
-    _copy_shared(project_dir)
+    # 字体子集化后 base64 内联进 index.html,gsap 同样内联——
+    # 无需再复制 82MB 完整字体/gsap 到项目目录(v2.0 起移除 _copy_shared)
+
 
     frames = script["frames"]
     # 1) 计划开始时间(基于调整后的时长)
@@ -199,7 +202,7 @@ def build(script: dict, style_key: str, vo: dict, project_dir: Path) -> dict:
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=1920, height=1080"/>
-<title>{script.get("title", "理论文章转视频")}</title>
+<title>{_html.escape(script.get("title") or "理论文章转视频")}</title>
 <script>
 {gsap_inline}
 </script>
@@ -233,22 +236,6 @@ document.fonts.ready.then(function(){{
     (project_dir / "script.json").write_text(
         json.dumps(script, ensure_ascii=False, indent=1), encoding="utf-8")
     return {"total": total, "starts": starts, "style_key": style_key}
-
-
-def _copy_shared(project_dir: Path):
-    """复制共享字体与 gsap 到项目内(渲染机不能依赖系统字体/网络)。"""
-    fonts_dst = project_dir / "assets" / "fonts"
-    vendor_dst = project_dir / "assets" / "vendor"
-    fonts_dst.mkdir(parents=True, exist_ok=True)
-    vendor_dst.mkdir(parents=True, exist_ok=True)
-    for name in ("SourceHanSerifCN-Heavy.otf", "SourceHanSerifCN-Regular.otf",
-                 "NotoSansSC-Regular.otf", "NotoSansSC-Bold.otf"):
-        src = FONTS_DIR / name
-        if src.exists():
-            shutil.copy2(src, fonts_dst / name)
-    gsap = VENDOR_DIR / "gsap.min.js"
-    if gsap.exists():
-        shutil.copy2(gsap, vendor_dst / "gsap.min.js")
 
 
 def _prepare_bgm(style: dict, total: float, project_dir: Path):

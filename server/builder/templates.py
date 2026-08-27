@@ -34,8 +34,8 @@ def render_frame(frame, style, S, ctx=None) -> tuple[str, str, list[str]]:
         "textblock": _textblock, "annotation": _annotation, "method": _method,
     }[t]
     sec, cap, js = fn(i, c, style, S)
-    # 全帧统一页脚:《标题》 · 帧序(编辑部信息密度)
-    title = (ctx.get("title") or "").replace("\n", " ")
+    # 全帧统一页脚:《标题》 · 帧序(编辑部信息密度);标题经 E() 转义防注入
+    title = E((ctx.get("title") or "").replace("\n", " "))
     foot = (f'<div style="position:absolute;left:320px;right:320px;bottom:44px;'
             f'display:flex;justify-content:space-between;font-family:{style["font_body"]};'
             f'font-size:20px;color:{style["muted"]};opacity:0.8;" id="f{i}-foot">'
@@ -211,9 +211,12 @@ def _quote(i, c, style, S):
     js = [f'tl.from("#f{i}-qm",{{scale:0.9,autoAlpha:0,duration:0.5,ease:"power2.out",transformOrigin:"center bottom"}},{S}+0.1);']
     for n in range(3):
         if lines[n]:
-            txt = lines[n]
-            if kw and kw in txt:
-                txt = txt.replace(kw, f'<span style="color:{kw_color};">{kw}</span>')
+            # 先整体转义再高亮关键词(引语可能含 < > 等字符,不转义会破坏 DOM)
+            txt = E(lines[n])
+            if kw:
+                kw_e = E(kw)
+                if kw_e in txt:
+                    txt = txt.replace(kw_e, f'<span style="color:{kw_color};">{kw_e}</span>')
             parts.append(f'<div id="f{i}-q-l{n+1}" style="font-family:{style["font_title"]};font-size:46px;'
                          f'color:{style["text"]};line-height:1.45;">{txt}</div>')
             js.append(f'tl.from("#f{i}-q-l{n+1}",{{y:16,autoAlpha:0,duration:0.5,ease:"power2.out"}},{S}+{0.4 + n * 0.25});')

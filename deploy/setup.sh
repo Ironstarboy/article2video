@@ -10,21 +10,26 @@ node --version
 npx --version
 
 echo "== python 依赖 =="
-pip3 install -q -r server/requirements.txt || pip3 install -q edge-tts jieba python-multipart
+pip3 install -q -r server/requirements.txt || pip3 install -q jieba python-multipart fonttools
 
 echo "== 目录 =="
-mkdir -p jobs assets/fonts assets/bgm assets/vendor
+mkdir -p jobs assets/fonts assets/bgm assets/vendor web/assets
 
-echo "== 字体(思源宋体 CN 子集 + 思源黑体 SC 子集) =="
+echo "== 字体(必须完整版 OTF:子集版会渲染方框,历史教训见 docs/问题修复说明) =="
+# 构建期按任务子集化的源字体,务必用完整版(单个 ≥10MB);下载后校验大小
 [ -s assets/fonts/SourceHanSerifCN-Heavy.otf ] || curl -fL --retry 2 -o assets/fonts/SourceHanSerifCN-Heavy.otf \
-  https://raw.githubusercontent.com/adobe-fonts/source-han-serif/release/SubsetOTF/CN/SourceHanSerifCN-Heavy.otf
+  https://raw.githubusercontent.com/adobe-fonts/source-han-serif/release/OTF/SimplifiedChinese/SourceHanSerifCN-Heavy.otf
 [ -s assets/fonts/SourceHanSerifCN-Regular.otf ] || curl -fL --retry 2 -o assets/fonts/SourceHanSerifCN-Regular.otf \
-  https://raw.githubusercontent.com/adobe-fonts/source-han-serif/release/SubsetOTF/CN/SourceHanSerifCN-Regular.otf
+  https://raw.githubusercontent.com/adobe-fonts/source-han-serif/release/OTF/SimplifiedChinese/SourceHanSerifCN-Regular.otf
 [ -s assets/fonts/NotoSansSC-Regular.otf ] || curl -fL --retry 2 -o assets/fonts/NotoSansSC-Regular.otf \
-  https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf
+  https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansSC-Regular.otf
 [ -s assets/fonts/NotoSansSC-Bold.otf ] || curl -fL --retry 2 -o assets/fonts/NotoSansSC-Bold.otf \
-  https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/SC/NotoSansSC-Bold.otf
+  https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansSC-Bold.otf
 ls -la assets/fonts/
+for f in assets/fonts/*.otf; do
+  sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
+  [ "$sz" -ge 10000000 ] || { echo "错误:$f 仅 $sz 字节,疑似子集版(必须完整版 ≥10MB)"; exit 1; }
+done
 
 echo "== gsap =="
 [ -s assets/vendor/gsap.min.js ] || curl -fL --retry 2 -o assets/vendor/gsap.min.js \

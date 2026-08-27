@@ -13,6 +13,9 @@ def extract_text(path: str | Path) -> str:
     if ext not in ALLOWED_EXTS:
         raise ValueError(f"不支持的文件类型:{ext}(仅支持 txt / md / docx)")
     raw = p.read_bytes()
+    # 字节数预检:20 万字 UTF-8 约 ≤800KB,超 1.5MB 必超上限——免去大文件的解码与正则空跑
+    if ext != ".docx" and len(raw) > 1_500_000:
+        raise ValueError("正文超过 20 万字上限")
     if ext == ".docx":
         text = _extract_docx(raw)
     else:

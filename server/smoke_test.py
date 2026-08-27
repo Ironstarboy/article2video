@@ -398,6 +398,188 @@ ok("讲解分段器 末尾小段并入前段", len(analyze._split_segments(
      {"number": "贰", "title": "t", "minutes": 1.5}], 390)) == 1)
 
 
+# ───────────────────────── 帧模板全量渲染 + 标题转义 ─────────────────────────
+
+_st2 = styles.get_style(styles.resolve_combo("solemn-red", None, None, None, None))
+_samples = {
+    "opening": {"eyebrow": "眉线", "title": "标题", "subtitle": "副题"},
+    "section": {"number": "壹", "title": "章节", "subtitle": "导语"},
+    "statement": {"eyebrow": "核心", "thesis": "论点", "support": "支撑句", "keywords": ["a", "b"]},
+    "elaboration": {"title": "标题", "cards": [{"id": "01", "heading": "h", "note": "n"},
+                                               {"id": "02", "heading": "h", "note": "n"},
+                                               {"id": "03", "heading": "h", "note": "n"}]},
+    "quote": {"quote": "引语", "source": "出处", "keyword": "引"},
+    "data": {"items": [{"value": "3.6", "unit": "万亿元", "note": "n", "chart": "bar"},
+                       {"value": "500", "unit": "万件", "note": "n", "chart": "ring"}],
+             "conclusion": "c"},
+    "points": {"title": "标题", "points": ["a", "b", "c", "d"]},
+    "process": {"title": "标题", "steps": [{"name": "a", "note": "n"}] * 4},
+    "contrast": {"left_label": "左", "left_points": ["a", "b", "c"],
+                 "right_label": "右", "right_points": ["x", "y", "z"]},
+    "closing": {"source": "来源", "author": "作者"},
+    "textblock": {"para": 1, "role": "r", "text": "原文段落内容", "focus": "f"},
+    "annotation": {"para": 1, "sentences": [{"text": "原句", "kind": "论点", "note": "批注"}]},
+    "method": {"title": "写法", "cards": [{"id": "01", "heading": "h", "note": "n"}]},
+}
+_all_render_ok = True
+for _t, _c in _samples.items():
+    try:
+        _h, _cap, _js = templates.render_frame(
+            {"index": 1, "type": _t, "scene": "s", "voiceover": "", "duration": 7,
+             "transition_in": "cut", "content": _c}, _st2, 0.0,
+            {"title": "测试标题", "total": 3})
+        _all_render_ok = _all_render_ok and isinstance(_h, str) and "<section" in _h
+    except Exception as _e:
+        _all_render_ok = False
+        print(f"    render_frame[{_t}] 异常: {_e}")
+ok("模板 13 种帧类型全部可渲染", _all_render_ok)
+
+_xss = templates.render_frame(
+    {"index": 1, "type": "opening", "scene": "", "voiceover": "", "duration": 7,
+     "transition_in": "cut", "content": {"eyebrow": "e", "title": "</title><script>alert(1)</script>"}},
+    _st2, 0.0, {"title": "</div><script>alert(1)</script>", "total": 1})
+ok("模板 标题 HTML 转义防注入", "<script>alert" not in _xss[0])
+
+
+# ───────────────────────── extract 边界扩展 ─────────────────────────
+
+_gbk_path = Path(__import__("tempfile").gettempdir()) / "ttv_smoke_gbk.txt"
+_gbk_path.write_bytes("高质量发展是全面建设社会主义现代化国家的首要任务。" .encode("gb18030") * 12)
+ok("extract gb18030 解码", "高质量发展" in extract.extract_text(str(_gbk_path)))
+
+ok("extract 20 万字上限", _raises(
+    lambda: extract.extract_text(_tmp_text("over.txt", "字" * 200001)), ValueError))
+
+_big_path = Path(__import__("tempfile").gettempdir()) / "ttv_smoke_big.txt"
+_big_path.write_text("文" * 800000, encoding="utf-8")   # 2.4MB,必超上限
+ok("extract 超字节数预检拒绝", _raises(lambda: extract.extract_text(str(_big_path)), ValueError))
+
+
+# ───────────────────────── assemble 导入链(fonttools 依赖) ─────────────────────────
+
+try:
+    from builder import assemble  # noqa: F401
+    import fontTools.subset  # noqa: F401
+    _assemble_ok = True
+except ImportError as _e:
+    _assemble_ok = False
+    print(f"    assemble/fonttools 导入失败: {_e}")
+ok("assemble/fonttools 可导入", _assemble_ok)
+
+
+# ───────────────────────── 丢帧压缩 / promo 金句接地 / 两阶段 prompt ─────────────────────────
+
+_dsf = [
+    {"index": 1, "type": "opening", "voiceover": "", "duration": 7, "content": {"title": "t"}},
+    {"index": 2, "type": "statement", "voiceover": "这是论点句,展开来说,论据充分支撑观点成立。" * 3,
+     "duration": 12, "content": {"thesis": "t", "support": "s", "keywords": []}},
+    {"index": 3, "type": "statement", "voiceover": "一句话带过吧。",
+     "duration": 12, "content": {"thesis": "t", "support": "s", "keywords": []}},
+    {"index": 4, "type": "closing", "voiceover": "", "duration": 4.5, "content": {"source": "s"}},
+]
+_n_dropped = analyze._drop_shortest_frames(_dsf, 60, 4)
+ok("丢帧压缩按旁白最短丢弃", _n_dropped == 1 and _dsf[1]["type"] == "statement"
+   and len(_dsf) == 3)
+
+_pq = [{"index": 3, "type": "quote", "voiceover": "金句页。", "duration": 10,
+        "content": {"quote": "基层强则国家强,基层安则天下安。", "source": "原文"}}]
+_warn = analyze._ground_promo_quotes(_pq, _larticle)
+ok("promo 金句接地保留原句", _pq[0]["content"]["quote"] == "基层强则国家强,基层安则天下安。"
+   and not _warn)
+
+_pq2 = [{"index": 3, "type": "quote", "voiceover": "金句页。", "duration": 10,
+         "content": {"quote": "这是编造出来的一句假金句", "source": "原文"}}]
+_warn2 = analyze._ground_promo_quotes(_pq2, _larticle)
+ok("promo 金句无法接地保留并告警", _pq2[0]["content"]["quote"] == "这是编造出来的一句假金句"
+   and len(_warn2) == 1)
+
+_pa = analyze.build_analysis_prompt(larticle, 120, lcombo)
+ok("两阶段·分析 prompt 含契约要素", "argument_chain" in _pa and "frame_plan" in _pa
+   and "逐字" in _pa and "120 秒" in _pa)
+_ps = analyze.build_script_prompt(
+    larticle, {"core_argument": "c", "argument_chain": [], "frame_plan": [],
+               "article_summary": "s", "data_ledger": [], "quotes": [],
+               "key_visuals": []}, 120, lcombo)
+ok("两阶段·脚本 prompt 含蓝图与示例", "论证蓝图" in _ps and "statement 示例" in _ps
+   and "data_ledger" in _ps)
+
+
+# ───────────────────────── 备课方案:覆盖校验 / 分段过滤 / 同段校验 ─────────────────────────
+
+_plan_gap = {"article_type": "x", "type_reason": "r", "central_task": "t",
+             "chapters": [{"number": "壹", "title": "t", "minutes": 2.0,
+                           "para_range": [1, 2], "content_plan": "c"},
+                          {"number": "贰", "title": "t", "minutes": 3.0,
+                           "para_range": [4, 6], "content_plan": "c"}],
+             "paragraph_notes": [{"para": i + 1, "role": "分析", "key_idea": "k",
+                                  "teach_points": ["a"]} for i in range(6)],
+             "methods": ["m1", "m2", "m3"], "exam_method_summary": "s"}
+errs = analyze._validate_plan(_plan_gap, 6, 300, analyze._norm_text(_hart))
+ok("plan 章节空洞被拒(第 3 段无覆盖)", any("空洞" in e for e in errs), str(errs[:2]))
+
+_fp = {"article_type": "x", "type_reason": "r", "central_task": "t",
+       "chapters": [{"number": "壹", "title": "t", "minutes": 5.0,
+                     "para_range": [1, 2], "content_plan": "c"}],
+       "paragraph_notes": [{"para": 1, "role": "分析", "key_idea": "k",
+                            "teach_points": ["a"], "line_analysis": False}],
+       "methods": ["m1", "m2"], "exam_method_summary": "s"}
+analyze._fixup_plan(_fp, _lparas, 300, analyze._norm_text(_larticle))
+ok("plan 修复补齐章节覆盖", _fp["chapters"][0]["para_range"] == [1, len(_lparas)])
+ok("plan 修复补齐段落要点", len(_fp["paragraph_notes"]) == len(_lparas))
+
+_pf = analyze._plan_for_segment(
+    {"article_type": "x", "chapters": [{"number": "壹", "title": "a", "minutes": 3.0,
+                                        "para_range": [1, 3], "content_plan": "c"},
+                                       {"number": "贰", "title": "b", "minutes": 2.0,
+                                        "para_range": [4, 6], "content_plan": "c"}],
+     "paragraph_notes": [{"para": i + 1, "role": "分析", "key_idea": "k"}
+                         for i in range(6)],
+     "methods": ["m1", "m2"], "exam_method_summary": "s"},
+    {"chapters": [{"number": "壹", "title": "a", "minutes": 3.0,
+                   "para_range": [1, 3], "content_plan": "c"}]})
+ok("plan 分段过滤只留本段要点", len(_pf["chapters"]) == 1
+   and len(_pf["paragraph_notes"]) == 3)
+
+_ab = analyze._para_bounds(_larticle, _lart_norm)
+_af = {"index": 2, "type": "annotation", "voiceover": "x" * 20, "duration": 10,
+       "transition_in": "cut",
+       "content": {"para": 1, "sentences": [
+           {"text": _lparas[0][:12], "kind": "论点", "note": "n"},
+           {"text": _lparas[2][:12], "kind": "分析", "note": "n"}]}}
+_errs_cross = analyze._annotation_para_errs(_af, 1, _lart_norm, _ab)
+ok("annotation 跨段批注句被拒", any("同一段" in e for e in _errs_cross), str(_errs_cross))
+
+
+# ───────────────────────── jobs 状态机(临时 ROOT,最后执行) ─────────────────────────
+
+import importlib as _il
+import os as _os
+import tempfile as _tmpf
+
+_orig_root = _os.environ.get("TTV_ROOT")
+try:
+    _os.environ["TTV_ROOT"] = _tmpf.mkdtemp(prefix="ttv_jobs_")
+    import config as _config
+    import jobs as _jobs_mod
+    _il.reload(_config)
+    _il.reload(_jobs_mod)
+    _j = _jobs_mod.create_job("solemn-red", 120, "t.txt")
+    ok("jobs 创建落盘", _j.status == "uploaded" and _j.state_path.exists())
+    _j.set(status="analyzing", progress="p")
+    _d = _j.to_dict(brief=True)
+    ok("jobs brief 模式不含 script", "script" not in _d)
+    ok("jobs has_video 初始 False", _d.get("has_video") is False)
+    # 模拟重启:uploaded/analyzing 应置 failed
+    _il.reload(_jobs_mod)
+    _j2 = _jobs_mod.get_job(_j.id)
+    ok("jobs 重启 uploaded→failed", _j2 is not None and _j2.status == "failed",
+       f"status={_j2.status if _j2 else None}")
+finally:
+    _os.environ["TTV_ROOT"] = _orig_root or "/mnt/workspace/ttv"
+    _il.reload(_config)
+    _il.reload(_jobs_mod)
+
+
 print()
 if FAIL:
     print(f"{len(FAIL)} 项失败: {FAIL}")
