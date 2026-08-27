@@ -661,7 +661,7 @@ def validate_script(script: dict, article: str, target_duration: int,
             errs.append(f"目标 {target_duration}s 帧数 {len(frames)} 过少(≥240s 应 ≥10)")
         # 旁白上限分档:短视频档(≤90s)模型普遍写到 45-55 字,cap 40 过紧会
         # 触发无谓重试;60 字仍远低于总预算(90×4.2=378),保持短促引导即可
-        vo_cap = 130 if target_duration >= 360 else (110 if target_duration >= 180 else (90 if target_duration > 90 else 60))
+        vo_cap = _promo_vo_cap(target_duration)
     if frames[0].get("type") != "opening":
         errs.append("第 1 帧必须是 opening")
     if frames[-1].get("type") != "closing":
@@ -992,14 +992,46 @@ def _analysis_to_script_analysis(ana: dict, target_duration: int) -> dict:
     }
 
 
+def _promo_vo_cap(target_duration: int) -> int:
+    """宣传旁白每帧上限分档(与 validate_script 共用,单点维护)。"""
+    # 短视频档(≤90s)模型普遍写到 45-55 字,cap 60 留出余量;总量仍由
+    # 4.2 字/秒总预算约束
+    return 130 if target_duration >= 360 else (110 if target_duration >= 180
+                                               else (90 if target_duration > 90 else 60))
+
+
+def _trim_promo_vo(frames: list, vo_cap: int) -> int:
+    """确定性压缩超长旁白:按句读截断到 cap 内(保头部论点+展开,丢掉尾部冗句)。
+    返回修复数。"""
+    fixed = 0
+    for f in frames or []:
+        vo = (f.get("voiceover") or "").strip()
+        if len(vo) <= vo_cap:
+            continue
+        parts = re.split(r"(?<=[。！？])", vo)
+        kept, total = [], 0
+        for part in parts:
+            if total + len(part) <= vo_cap:
+                kept.append(part)
+                total += len(part)
+            else:
+                break
+        f["voiceover"] = ("".join(kept) or vo[:vo_cap]).strip()
+        fixed += 1
+    return fixed
+
+
 def _promo_last_resort(frames: list, article: str, target_duration: int,
-                        reason: str) -> dict:
+                       reason: str, ana: dict | None = None,
+                       title: str | None = None) -> dict:
     """宣传视频最后兜底:确定性修复最近一次解析成功的脚本并接受
-    (文字类问题绝不中断工作流,偏差由构建层按真实配音消化)。"""
+    (文字类问题绝不中断工作流,偏差由构建层按真实配音消化)。
+    阶段一的深度分析成果原样保留(分析不因帧校验失败而丢失)。"""
     frames = [f for f in (frames or []) if isinstance(f, dict)]
     # 丢弃非法帧类型(保证构建层可渲染)与旁白最短的次要帧直至接近合规
     frames = [f for f in frames if f.get("type") in FRAME_TYPES]
-    vo_limit = int(target_duration * 4.2)
+    _trim_promo_vo(frames, _promo_vo_cap(target_duration))
+    vo_limit = int(target_duration * VO_CPS)
     _drop_shortest_frames(frames, vo_limit, 20)
     # 数据帧编造值移除、金句接地
     _fixup_segment_frames(frames, article, target_duration, is_last=True)
@@ -1014,17 +1046,19 @@ def _promo_last_resort(frames: list, article: str, target_duration: int,
                        "voiceover": "", "duration": 4.5, "transition_in": "cut",
                        "beat": "收束", "content": {"source": "原文", "author": ""}})
     _scale_durations(frames, target_duration)
-    script = {
-        "title": "政论视频",
-        "subtitle": "",
-        "duration_sec": target_duration,
-        "style_recommendation": {"style": "solemn-red", "reason": "兜底默认风格"},
-        "analysis": {
+    if ana is None:
+        ana = {
             "core_argument": "(兜底)文章核心论点",
             "outline": "(兜底)论证分析未通过校验,已按确定性修复接受",
             "structure": "",
             "key_visuals": [],
-        },
+        }
+    script = {
+        "title": (title or "政论视频")[:30],
+        "subtitle": "",
+        "duration_sec": target_duration,
+        "style_recommendation": {"style": "solemn-red", "reason": "兜底默认风格"},
+        "analysis": ana,
         "frames": frames,
         "voiceover_full": "".join((f.get("voiceover") or "") for f in frames),
         "credits": {"source": "原文", "author": ""},
@@ -1077,7 +1111,8 @@ def analyze_article(article: str, target_duration: int, combo: dict,
     if progress_cb:
         progress_cb("阶段二:按论证蓝图生成逐帧脚本")
     script_prompt = build_script_prompt(article, ana, target_duration, combo)
-    script, last_frames, last_err = None, None, None
+    vo_cap = _promo_vo_cap(target_duration)
+    script, last_frames, last_title, last_err = None, None, None, None
     for attempt in range(3):
         temp = 0.35 if attempt == 0 else 0.6
         content = _llm_attempt(SCRIPT_SYSTEM, script_prompt, max_tokens=max_tokens,
@@ -1092,8 +1127,11 @@ def analyze_article(article: str, target_duration: int, combo: dict,
             frames = cand.get("frames")
             if isinstance(frames, list) and frames:
                 last_frames = frames
+                last_title = str(cand.get("title") or "").strip()
             # 金句接地(在脚本层再兜一遍,蓝图接地遗漏时仍能救回)
             warnings = _ground_promo_quotes(frames if isinstance(frames, list) else [], article)
+            # 确定性压缩超长旁白(模型普遍超档位上限,压缩后校验通过率大幅提升)
+            _trim_promo_vo(frames if isinstance(frames, list) else [], vo_cap)
             errs = validate_script(cand, article, target_duration, kind="promo")
             if was_truncated() and errs:
                 errs.insert(0, "输出被截断(finish_reason=length),请压缩旁白或减少帧数")
@@ -1108,7 +1146,9 @@ def analyze_article(article: str, target_duration: int, combo: dict,
             last_err = f"解析失败:{e}"
     # ── 永不失败兜底:确定性修复最近一次解析成功的帧,接受剩余偏差 ──
     if last_frames is not None:
-        script = _promo_last_resort(last_frames, article, target_duration, last_err or "")
+        script = _promo_last_resort(last_frames, article, target_duration, last_err or "",
+                                    ana=_analysis_to_script_analysis(ana, target_duration),
+                                    title=last_title)
         script["_meta"] = {"two_stage": True, "fallback_accepted": True,
                            "reason": (last_err or "")[:200],
                            "analyzed_at": time.time()}
