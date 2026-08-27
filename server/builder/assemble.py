@@ -87,9 +87,12 @@ def build(script: dict, style_key: str, vo: dict, project_dir: Path) -> dict:
     """生成 HyperFrames 项目。返回 {total, starts: {frame_index: 绝对开始秒}}。"""
     style = styles.get(style_key)
     project_dir.mkdir(parents=True, exist_ok=True)
-    (project_dir / "assets" / "audio").mkdir(parents=True, exist_ok=True)
-    (project_dir / "assets" / "bgm").mkdir(parents=True, exist_ok=True)
     (project_dir / "renders").mkdir(parents=True, exist_ok=True)
+    # 重建时清理旧构建产物(旧配音/旧 BGM 残留会膨胀项目目录;renders 成片保留)
+    for stale_dir in (project_dir / "assets" / "audio", project_dir / "assets" / "bgm"):
+        if stale_dir.exists():
+            shutil.rmtree(stale_dir)
+        stale_dir.mkdir(parents=True, exist_ok=True)
     _copy_shared(project_dir)
 
     frames = script["frames"]

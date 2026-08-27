@@ -162,6 +162,8 @@ def stage_render(job, fmt: str = "mp4"):
         raise RuntimeError(f"渲染失败:{tail}")
     if not out.exists() or out.stat().st_size < 10000:
         raise RuntimeError("渲染产物缺失或过小")
+    # 成片就绪后回收 Studio(前端此时展示成片播放,不再需要编辑器;槽位留给其他任务)
+    stop_studio(job)
     job.set(status="rendered", progress="", render_format=fmt)
 
 
@@ -241,8 +243,13 @@ def _start_studio_locked(job):
 def _start_studio_bg(job):
     try:
         start_studio(job)
-    except Exception:
-        pass
+    except Exception as e:
+        # 失败留痕(自愈循环会重试,但要能在日志里查到原因)
+        try:
+            with open(f"/mnt/workspace/ttv/studio-{job.id}.log", "a") as log:
+                log.write(f"self-heal start failed: {e}\n")
+        except Exception:
+            pass
     finally:
         _studio_starting.discard(job.id)
 
@@ -348,6 +355,8 @@ def api_reanalyze(job_id: str):
 async def api_edit_script(job_id: str, request: Request):
     """用户直接编辑分析结果/逐帧脚本后保存(校验通过方可构建)。"""
     job = get_job(job_id) or _http404()
+    if job.status in ("building", "rendering"):
+        raise HTTPException(409, f"当前状态 {job.status} 不能修改脚本(等待构建/渲染完成)")
     body = await request.json()
     script = body.get("script") if isinstance(body, dict) and "script" in body else body
     article = job.paths()["input"].read_text(encoding="utf-8")
@@ -363,6 +372,8 @@ async def api_edit_script(job_id: str, request: Request):
 async def api_revise(job_id: str, request: Request):
     """用户用一句话描述修改要求,AI 吸纳建议修订脚本。"""
     job = get_job(job_id) or _http404()
+    if job.status not in ("analyzed", "preview", "failed"):
+        raise HTTPException(409, f"当前状态 {job.status} 不能修改(需先完成分析)")
     body = await request.json()
     instruction = (body or {}).get("instruction", "").strip()
     if len(instruction) < 5:
@@ -373,11 +384,16 @@ async def api_revise(job_id: str, request: Request):
 
 
 def stage_revise(job, instruction: str):
-    script = json.loads(job.paths()["script"].read_text(encoding="utf-8"))
-    article = job.paths()["input"].read_text(encoding="utf-8")
-    revised = analyze.revise_script(script, article, instruction)
-    job.paths()["script"].write_text(json.dumps(revised, ensure_ascii=False, indent=1), encoding="utf-8")
-    job.set(status="analyzed", progress=f"已按建议修改:{instruction[:30]}", error=None)
+    try:
+        script = json.loads(job.paths()["script"].read_text(encoding="utf-8"))
+        article = job.paths()["input"].read_text(encoding="utf-8")
+        revised = analyze.revise_script(script, article, instruction)
+        job.paths()["script"].write_text(json.dumps(revised, ensure_ascii=False, indent=1), encoding="utf-8")
+        job.set(status="analyzed", progress=f"已按建议修改:{instruction[:30]}", error=None)
+    except Exception as e:
+        # 修改失败不毁掉任务:保留原脚本,提示可重试或直接构建
+        job.set(status="analyzed", progress=f"AI 修改失败({str(e)[:50]}),保留原脚本,可重试或直接构建",
+                error=None)
 
 
 @app.get("/api/jobs/{job_id}")
@@ -386,8 +402,8 @@ def api_job(job_id: str):
     if not job:
         raise HTTPException(404, "任务不存在")
     d = job.to_dict()
-    if job.status == "preview":
-        # 自愈:Studio 进程若已死亡则自动重建
+    if job.status in ("preview", "rendering"):
+        # 自愈:Studio 进程若已死亡则自动重建(渲染期间编辑器也应保持可用)
         port = _live_studio_port(job.id)
         if port is None:
             if job.id not in _studio_starting:

@@ -58,6 +58,8 @@ def tts(req: TTSRequest):
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(400, "text 为空")
+    if len(text) > 400:
+        raise HTTPException(400, f"text 过长({len(text)} 字,最多 400)")
     if req.voice not in VOICES:
         raise HTTPException(400, f"未知音色 {req.voice}")
     import os

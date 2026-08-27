@@ -96,6 +96,9 @@ def tts(req: TTSRequest):
     if len(text) < 8:
         # 过短文本会使 vocoder 卷积核报错(kernel>input)
         raise HTTPException(400, f"text 过短({len(text)} 字,至少 8)")
+    if len(text) > 400:
+        # 超长文本会拖垮 GPU 合成(单帧旁白上限 130 字,400 已是三倍余量)
+        raise HTTPException(400, f"text 过长({len(text)} 字,最多 400)")
     if req.voice not in VOICES:
         raise HTTPException(400, f"未知音色 {req.voice},可选:{list(VOICES)}")
     speed = max(0.6, min(1.8, req.speed))

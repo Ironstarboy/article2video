@@ -1,4 +1,4 @@
-# 项目结构文档(Theory-to-Video v0.9)
+# 项目结构文档(Theory-to-Video v1.0)
 
 ## 一、总体架构
 
@@ -7,11 +7,12 @@
              ├── /ttv/              静态前端(web/index.html,单文件 SPA)
              ├── /ttv/assets/       网页字体等静态资产
              └── /ttv/api/      ──▶ FastAPI 后端(127.0.0.1:8015)
-                                      ├── DeepSeek 分析(本地 vLLM 20001)
-                                      ├── CosyVoice3 TTS(127.0.0.1:8016,GPU1)
+                                      ├── DeepSeek 分析(本地 vLLM 20001,云 API 备份)
+                                      ├── CosyVoice3 TTS(127.0.0.1:8016,GPU1;豆包/Qwen3 可选)
                                       ├── hyperframes 构建/渲染/check(CLI+Chrome)
-                                      ├── /api/player/<job>/  → play 播放器代理
-                                      └── /api/studio/<job>/  → Studio 编辑器代理
+                                      ├── /api/studio/<job>/  → Studio 编辑器代理(唯一预览入口)
+                                      ├── /api/projects/<pid>/ → Studio 项目 API 转发(项目根/子路径/预览)
+                                      └── 每任务 Studio 进程:4150-4153(4 槽,--foreground 直管,按需自愈)
 ```
 
 ## 二、目录结构
@@ -24,18 +25,20 @@ vtt/
 ├── frames-schema.md         DeepSeek 输出契约(hyperframes 脚本 JSON)
 ├── styles/                  三套经典风格详细样式脚本(设计文档)
 ├── server/                  后端(部署于 /mnt/workspace/ttv/server/)
-│   ├── main.py              FastAPI:任务 API、播放器/Studio 代理、流水线阶段、check 质量门
+│   ├── main.py              FastAPI:任务 API、Studio/项目代理、流水线阶段、check 质量门、Studio 槽位管理(串行化+自愈)、预览音频看门狗注入
 │   ├── config.py            路径/端口/模型端点配置
 │   ├── extract.py           txt/md/docx 提取(zip 炸弹防护)
-│   ├── analyze.py           DeepSeek 分析:时长自适应提示词 + 压缩/拓展策略 + 校验门
-│   ├── tts.py               配音:本地 CosyVoice3(重试×3 → 静音占位,无外部 TTS)+ 词级时间轴
+│   ├── analyze.py           DeepSeek 分析:时长自适应提示词(内容驱动)+ 压缩/拓展策略 + 校验门(句数/画面元素充实度硬检查)+ 构建期二次拓展(expand_script)
+│   ├── tts.py               配音:本地 CosyVoice3(重试×3 → 静音占位)+ 词级时间轴 + 真实时长向目标靠拢(apply_real_durations)
 │   ├── tts_server.py        CosyVoice3 服务(8016,三音色零样本克隆,GPU1)
+│   ├── tts_qwen_server.py   Qwen3-TTS 服务(8017,GPU2,可选引擎)
+│   ├── smoke_test.py        冒烟回归:纯函数路径(extract/styles/时长靠拢/校验门)
 │   ├── jobs.py              任务状态机(磁盘持久化,重启恢复)
 │   └── builder/
 │       ├── styles.py        风格系统:四维度注册表(字体×配色×背景×动效)+ 组合合成 + SVG 装饰
 │       ├── templates.py     10 种帧类型 × 维度属性渲染(HTML+GSAP tween 生成)
-│       └── assemble.py      script.json → HyperFrames 项目(index.html + assets + BGM)
-├── web/index.html           前端单文件 SPA(上传配置页 + 预览二级页)
+│       └── assemble.py      script.json → HyperFrames 项目(index.html + assets + BGM,重建前清理陈旧产物)
+├── web/index.html           前端单文件 SPA(上传配置页 + 预览二级页,Studio 为唯一预览)
 └── deploy/                  nginx 路由 / 启动脚本 / 一次性补丁
 ```
 
@@ -44,9 +47,16 @@ vtt/
 ```
 uploaded → analyzing → analyzed → building → preview → rendering → rendered
               │                       │              │
-              │ DeepSeek(≈25s)        │ TTS+组装     │ hyperframes render
-              └─ 失败可 /analyze 重跑 └─ 自动 check └─ 渲染期保留播放器
+              │ DeepSeek(≈25-60s)     │ TTS+二次拓展  │ hyperframes render
+              └─ 失败可 /analyze 重跑 │ +组装+Studio │ (Studio 保留,完成后回收)
+                                      │ 同步拉起     │
+                                      └─ 自动 check  └─ 成片就绪
 ```
+
+关键设计(v1.0):
+- **构建期 Studio 同步拉起**:组装完成后、置 preview 状态前启动 Studio(`--foreground` 直管进程,绕开 CLI 会话注册表),状态翻转瞬间编辑器即就绪(零等待);Studio 启动串行化 + 槽满回收确认端口释放,进程按需自愈
+- **时长靠内容**:分析提示词按实测语速 4.2 字/秒规划旁白量;构建时旁白量不足目标自动二次拓展(两轮,加长旁白+增帧);apply_real_durations 按真实配音重算帧时长并向目标靠拢(留白仅作安全网)
+- **预览音频看门狗**:预览 HTML 注入脚本,自动恢复「时间线播放而音频静音/暂停」的自动播放策略死状态
 
 - 任务持久化:`jobs/<id>/state.json`,重启后自动恢复;进行中任务置 failed 可重触发
 - 每任务:`input.<ext>`(原文)→ `input.txt`(提取文本)→ `script.json`(分析)→ `project/`(composition)→ `project/renders/out.mp4`

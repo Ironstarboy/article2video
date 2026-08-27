@@ -49,7 +49,10 @@ def _extract_docx(raw: bytes) -> str:
         total = sum(i.file_size for i in infos)
         if total > ZIP_BOMB_LIMIT:
             raise ValueError("docx 解压后过大(疑似压缩炸弹)")
-        xml = zf.read("word/document.xml").decode("utf-8", errors="ignore")
+        try:
+            xml = zf.read("word/document.xml").decode("utf-8", errors="ignore")
+        except KeyError:
+            raise ValueError("无效的 docx 文件(缺少 word/document.xml)")
     paragraphs = re.split(r"</w:p>", xml)
     lines = []
     for para in paragraphs:
