@@ -265,7 +265,7 @@ def validate_script(script: dict, article: str, target_duration: int) -> list[st
         if t not in ("opening", "closing"):
             if len(vo) < 8:
                 errs.append(f"帧{i+1}({t}) 旁白不足 8 字(本地 TTS 最小长度)")
-            vo_cap = 130 if target_duration >= 360 else (100 if target_duration >= 180 else (75 if target_duration > 90 else 26))
+            vo_cap = 130 if target_duration >= 360 else (100 if target_duration >= 180 else (75 if target_duration > 90 else 30))
             if len(vo) > vo_cap:
                 errs.append(f"帧{i+1}({t}) 旁白超 {vo_cap} 字")
         content = f.get("content") or {}
@@ -296,7 +296,7 @@ def validate_script(script: dict, article: str, target_duration: int) -> list[st
     elif target_duration > 90:
         vo_floor = target_duration * 1.8
     else:
-        vo_floor = target_duration * 2.0
+        vo_floor = target_duration * 1.4
     if vo_total < vo_floor:
         errs.append(f"旁白总量 {vo_total} 字不足(需 ≥{int(vo_floor)} 字,请加长每帧旁白/增加帧数)")
     return errs
