@@ -219,22 +219,40 @@ def start_studio(job):
     """启动 HyperFrames Studio(preview --background 是 CLI 托管会话,命令返回后服务仍在)。
 
     以端口可达性判定存活,不再跟踪包装进程。
+    启动前先 --stop 清理可能残留的托管会话(否则 CLI 会「复用」死会话而不监听新端口)。
     """
-    port = _studio_slot(job.id)
-    subprocess.run(
-        ["hyperframes", "preview", "--background", "--port", str(port)],
-        cwd=str(job.paths()["project"]),
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_hf_env(),
-        timeout=120,
-    )
-    # 等待端口就绪(冷启动含大页面解析,最多 90s)
+    proj = str(job.paths()["project"])
+    log = open(f"/mnt/workspace/ttv/studio-{job.id}.log", "a")
+    try:
+        subprocess.run(["hyperframes", "preview", proj, "--stop"],
+                       stdout=log, stderr=log, env=_hf_env(), timeout=60)
+    except Exception:
+        pass
     import time as _t
-    for _ in range(90):
-        if not _port_free(port):
-            STUDIOS[job.id] = port
-            return port
-        _t.sleep(1.0)
-    raise RuntimeError(f"Studio 启动超时(端口 {port})")
+    for retry in range(2):
+        port = _studio_slot(job.id)
+        log.write(f"[{_t.time()}] starting studio for {job.id} on {port}\n")
+        log.flush()
+        try:
+            subprocess.run(
+                ["hyperframes", "preview", "--background", "--port", str(port)],
+                cwd=proj,
+                stdout=log, stderr=log, env=_hf_env(),
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            log.write("preview 命令超时\n")
+        # 等待端口就绪(冷启动含大页面解析,最多 90s)
+        for _ in range(90):
+            if not _port_free(port):
+                STUDIOS[job.id] = port
+                log.write(f"studio ready on {port}\n")
+                log.close()
+                return port
+            _t.sleep(1.0)
+        log.write(f"端口 {port} 未就绪,重试下一端口\n")
+    log.close()
+    raise RuntimeError("Studio 启动超时(两个端口均未就绪)")
 
 
 def _start_studio_bg(job):

@@ -384,7 +384,9 @@ function renderVoices(){
         c.classList.add("sel"); chosenEngine = e.key;
         if (!e.voices.includes(chosenVoice)) chosenVoice = e.voices[0];
         renderVoiceList();
-        $("#voice-hint").textContent = e.key === "doubao" ? "豆包云引擎需在火山控制台开通 seed-tts-2.0 服务并开启后付费。" : "";
+        if (e.key === "doubao") $("#voice-hint").textContent = "豆包云引擎需在火山控制台开通 seed-tts-2.0 服务并开启后付费;未开通时自动回落本地 CosyVoice3。";
+        else if (e.key === "qwen3tts") $("#voice-hint").textContent = "Qwen3-TTS 为本地 GPU 引擎;若模型权重未下载完成,将自动回落本地 CosyVoice3。";
+        else $("#voice-hint").textContent = "本地 CosyVoice3,GPU 推理,已通过 ASR 质量验证。";
       };
       eb.appendChild(c);
     });
@@ -493,8 +495,15 @@ function updateActions(j){
   if (j.status==="preview" && !$("#player-box").querySelector("iframe")) {
     const f = document.createElement("iframe");
     f.src = "./api/player/" + j.job_id + "/";
+    f.allow = "autoplay";
     $("#player-box").innerHTML = "";
     $("#player-box").appendChild(f);
+    // 构建完成后自动弹出播放器画面(此前需手动切标签)
+    if (currentTab === "player") {
+      $("#player-box").style.display = "";
+    } else {
+      switchTab("player");
+    }
   }
   if (j.status==="preview") {
     $("#vtab-player").style.display = "";
@@ -505,6 +514,8 @@ function updateActions(j){
     $("#dl-link").href = "./api/jobs/" + j.job_id + "/video";
     const f = $("#player-box").querySelector("iframe");
     if (f) { f.remove(); const v=document.createElement("video"); v.src=$("#dl-link").href; v.controls=true; v.style.cssText="width:100%;height:100%;"; $("#player-box").appendChild(v); }
+    // 渲染完成:清理 Studio iframe,只留成片播放
+    if ($("#studio-box").querySelector("iframe")) { $("#studio-box").innerHTML = "已渲染成片"; $("#studio-box").style.display = "none"; }
     switchTab("player");
   }
 }
@@ -616,16 +627,26 @@ function switchTab(t){
   currentTab = t;
   $("#vtab-player").classList.toggle("sel", t==="player");
   $("#vtab-studio").classList.toggle("sel", t==="studio");
-  const isRendered = $("#player-box").querySelector("video");
-  $("#player-box").style.display = (t==="player" && !isRendered) ? "" : (t==="player" ? "" : "none");
-  $("#studio-box").style.display = (t==="studio") ? "" : "none";
-  if (t==="player" && isRendered) { $("#player-box").style.display = ""; }
-  if (t==="studio" && !$("#studio-box").querySelector("iframe") && jobId) {
-    const f = document.createElement("iframe");
-    f.src = "./api/studio/" + jobId + "/#project/project";
-    $("#studio-box").innerHTML = "";
-    $("#studio-box").appendChild(f);
+  const isRendered = !!$("#player-box").querySelector("video");
+  if (t === "player") {
+    // 切到播放器:销毁 Studio iframe(否则其自动播放的音频在后台持续发声)
+    if ($("#studio-box").querySelector("iframe")) { $("#studio-box").innerHTML = "点击「Studio 编辑器」标签后加载"; }
+    $("#studio-box").style.display = "none";
+    $("#player-box").style.display = "";
+  } else {
+    // 切到 Studio:销毁播放器 iframe(单声源原则)
+    if ($("#player-box").querySelector("iframe")) { $("#player-box").innerHTML = "构建后在此预览"; }
+    $("#player-box").style.display = "none";
+    $("#studio-box").style.display = "";
+    if (!$("#studio-box").querySelector("iframe") && jobId) {
+      const f = document.createElement("iframe");
+      f.src = "./api/studio/" + jobId + "/#project/project";
+      f.allow = "autoplay";
+      $("#studio-box").innerHTML = "";
+      $("#studio-box").appendChild(f);
+    }
   }
+  if (isRendered && t === "player") { $("#player-box").style.display = ""; }
 }
 $("#vtab-player").onclick = ()=>switchTab("player");
 $("#vtab-studio").onclick = ()=>switchTab("studio");
