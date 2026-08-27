@@ -262,17 +262,17 @@ def apply_real_durations(script: dict, vo: dict, tail_pad: float = 1.4,
         t = f["type"]
         idx = f["index"]
         if t == "opening":
-            base, lo, hi = 7.0, 5.0, 9.0
+            base, lo, hi = 7.0, 5.0, 10.0
         elif t == "closing":
-            base, lo, hi = 4.5, 3.0, 6.0
+            base, lo, hi = 4.5, 3.0, 6.5
         elif idx in vo:
             vd = max(vo[idx]["duration"], 1.0)
             base = vd + tail_pad
             lo = vd + 0.6
-            hi = vd + max(tail_pad, min(vd * 0.5, 5.0) + 1.0)
+            hi = vd + max(tail_pad, min(vd * 0.6, 6.5) + 1.2)
         else:
             d = float(f.get("duration") or 6.0)
-            base, lo, hi = d, 3.0, d
+            base, lo, hi = d, 3.0, max(d, 9.0)
         rows.append([f, base, lo, hi])
     total = sum(r[1] for r in rows)
     if target and target > 0:
