@@ -619,13 +619,13 @@ async function poll(){
   pollMs = 2500;
   const status = j.status;
   if (status === "failed") {
+    // 不提前 return:已生成的脚本照常展示,按钮状态由 updateActions 统一处理
     setBanner("失败:" + (j.error || "未知错误"), "err", false);
-    if (!(j.script_updated_at)) showReanalyze(true);
-    schedulePoll(); return;   // failed 状态偶尔会被手动触发改回,保持低频轮询
   }
   if (status === "rendered") {
+    // 注意:不得提前 return——updateActions 负责插入成片播放器与下载入口,
+    // 脚本拉取也在此路径完成(分析面板/逐帧表格照常展示)
     setBanner(j.render_format ? "成片完成(" + j.render_format.toUpperCase() + ")" : "成片完成", "ok", false);
-    schedulePoll(); return;   // 低频保持(可能触发重新构建)
   }
   if (status === "uploaded") {
     if (!uploadedSince) uploadedSince = Date.now();
@@ -667,9 +667,6 @@ document.addEventListener("visibilitychange", ()=>{
   else { poll(); schedulePoll(); }
 });
 
-function showReanalyze(show){
-  $("#btn-reanalyze").classList.toggle("hidden", !show);
-}
 function updateActions(j){
   const bb = $("#btn-build"), rb = $("#btn-render");
   const hasScript = !!(j.script_updated_at);
