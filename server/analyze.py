@@ -73,10 +73,10 @@ SYSTEM_PROMPT = """你是一位资深政论视频总编导兼 HyperFrames 脚本
 def build_user_prompt(article: str, target_duration: int, combo: dict) -> str:
     from builder.styles import combo_label
     style_card = combo_label(combo)
-    # ── 时长适配规则(详略由目标时长决定;旁白字数按 CosyVoice3 实测语速≈1.8 字/秒规划) ──
+    # ── 时长适配规则(详略由目标时长决定;旁白字数按 CosyVoice3 实测语速≈4.2 字/秒规划) ──
     if target_duration <= 90:
         frames_rule = "6-10 帧"
-        vo_rule = f"每帧 8-28 字,短促有力,只留核心论点与 1 组最强论据;总旁白字数 ≈ {int(target_duration * 1.8)} 字"
+        vo_rule = f"每帧 8-28 字,短促有力,只留核心论点与 1 组最强论据;总旁白字数 ≈ {int(target_duration * 3.4)} 字"
         detail_rule = """压缩策略(长文短时长):
 - 只保留核心论点与最有力的 1-2 个论据,其余层次各压缩为一句话
 - 数据只保留 1 组最有冲击力的;金句只留 1 句
@@ -84,14 +84,14 @@ def build_user_prompt(article: str, target_duration: int, combo: dict) -> str:
 - 不用 section 分章(除非文章 ≥2 个独立部分,且每章只有 1-2 帧)"""
     elif target_duration <= 180:
         frames_rule = "9-13 帧"
-        vo_rule = f"每帧 18-36 字,论证链完整呈现;总旁白字数 ≈ {int(target_duration * 1.8)} 字"
+        vo_rule = f"每帧 18-36 字,论证链完整呈现;总旁白字数 ≈ {int(target_duration * 3.8)} 字"
         detail_rule = """均衡策略:
 - 核心论点 + 每层论证各 1-2 帧,数据 1-2 组独立成帧
 - 2-3 个 section 分章;结构化帧(points/process/contrast)优先
 - 金句页引用 1 句最能代表全文的"""
     elif target_duration <= 360:
         frames_rule = "12-18 帧"
-        vo_rule = f"每帧 22-50 字,论证逐层展开、数据充分;总旁白字数 ≈ {int(target_duration * 1.6)} 字"
+        vo_rule = f"每帧 22-50 字,论证逐层展开、数据充分;总旁白字数 ≈ {int(target_duration * 3.8)} 字"
         detail_rule = """拓展策略(短文长时长,禁止编造新观点):
 - 把论证链逐层拆成独立帧:是什么(1-2 帧)→ 为什么(2-3 帧)→ 怎么办(2-3 帧),每层先 section 导语再展开
 - 原文每个数据独立成 data 帧;金句独立成 quote 帧;专名/比喻做成 elaboration 卡片
@@ -100,7 +100,7 @@ def build_user_prompt(article: str, target_duration: int, combo: dict) -> str:
 - 3-4 个 section 分章"""
     else:
         frames_rule = "14-20 帧"
-        vo_rule = (f"每帧 40-90 字,总旁白字数 ≈ {int(target_duration * 1.9)} 字;"
+        vo_rule = (f"每帧 40-90 字,总旁白字数 ≈ {int(target_duration * 3.9)} 字;"
                    "论证完全展开、逐层深化;允许重述核心论点、每章小结、首尾呼应,并基于原文观点适度阐发(政论通行表述)占满时长")
         detail_rule = """深度拓展策略(短文长时长,允许适度阐发):
 - 论证链完整展开:是什么(2-3 帧)→ 为什么(3-4 帧)→ 怎么办(3-4 帧)→ 展望升华(1-2 帧)
@@ -118,6 +118,7 @@ def build_user_prompt(article: str, target_duration: int, combo: dict) -> str:
 - 帧数:{frames_rule}(含 opening 与 closing)
 - 旁白:{vo_rule}
 - 内容详略:{detail_rule}
+- 语速换算:旁白按 4.2 字/秒(本地 TTS 实测)估算;每帧 duration = 该帧旁白字数 ÷ 4.2 + 1.2 秒;opening 6-8 秒、closing 4-5 秒
 - 所有帧 duration 之和 ≈ {target_duration} 秒(±20%,构建时会按真实配音微调)
 
 # 输出契约(严格 JSON,字段缺一不可)
@@ -287,10 +288,15 @@ def validate_script(script: dict, article: str, target_duration: int) -> list[st
         errs.append("title 缺失或超长")
     if not script.get("analysis") or not script["analysis"].get("outline"):
         errs.append("analysis.outline 缺失")
-    # 长视频旁白量下限(与语速补偿配合,保证成片时长)
+    # 长视频旁白量下限(与真实语速≈4.2 字/秒对齐,保证成片能填满目标时长;
+    # 短视频压缩目标不受下限约束,长文压短时允许旁白量低于时长比例)
     vo_total = sum(len((f.get("voiceover") or "").strip()) for f in frames)
-    # 旁白量下限:短文+长时长时按目标时长要求(允许模型适度阐发补充),不再被文章长度截断
-    vo_floor = target_duration * (1.2 if target_duration < 360 else 1.25)
+    if target_duration > 120:
+        vo_floor = target_duration * 3.4
+    elif target_duration > 90:
+        vo_floor = target_duration * 2.8
+    else:
+        vo_floor = target_duration * 1.0
     if vo_total < vo_floor:
         errs.append(f"旁白总量 {vo_total} 字不足(需 ≥{int(vo_floor)} 字,请加长每帧旁白/增加帧数)")
     return errs

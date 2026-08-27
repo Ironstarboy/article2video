@@ -245,21 +245,57 @@ def synthesize_frames(frames: list[dict], voice: str, audio_dir: Path, speed: fl
     return result
 
 
-def apply_real_durations(script: dict, vo: dict, tail_pad: float = 1.4) -> None:
-    """根据真实旁白时长重算每帧 duration(开场/结尾固定,VO 帧=旁白+tail_pad)。"""
-    total = 0.0
-    for f in script["frames"]:
+def apply_real_durations(script: dict, vo: dict, tail_pad: float = 1.4,
+                         target: float | None = None) -> None:
+    """根据真实旁白时长重算每帧 duration,并向目标时长靠拢。
+
+    每帧拿到「基准/下限/上限」三个时长:
+    - 开场 7s(5-9)、结尾 4.5s(3-6)、VO 帧 = 旁白 + tail_pad(下限旁白+0.6,
+      上限旁白 + max(tail_pad, min(旁白×0.5, 5s)+1s) 视觉留白)
+    - 总时长不足目标:缺口按各帧可扩展上限分摊(短片长目标时把时间变成
+      旁白后的视觉停留,不空转、不编造内容)
+    - 总时长超出目标:优先收紧留白与开场/结尾(长文短目标时兜底压缩)
+    """
+    frames = script["frames"]
+    rows = []  # [frame, base, lo, hi]
+    for f in frames:
         t = f["type"]
         idx = f["index"]
         if t == "opening":
-            f["duration"] = 7.0
+            base, lo, hi = 7.0, 5.0, 9.0
         elif t == "closing":
-            f["duration"] = 4.5
+            base, lo, hi = 4.5, 3.0, 6.0
         elif idx in vo:
-            f["duration"] = round(max(vo[idx]["duration"] + tail_pad, 4.0), 2)
+            vd = max(vo[idx]["duration"], 1.0)
+            base = vd + tail_pad
+            lo = vd + 0.6
+            hi = vd + max(tail_pad, min(vd * 0.5, 5.0) + 1.0)
         else:
-            f["duration"] = round(float(f.get("duration") or 6.0), 2)
-        total += f["duration"]
+            d = float(f.get("duration") or 6.0)
+            base, lo, hi = d, 3.0, d
+        rows.append([f, base, lo, hi])
+    total = sum(r[1] for r in rows)
+    if target and target > 0:
+        deficit = target - total
+        if deficit > 0:
+            # 扩展:按上限空间比例分摊
+            headroom = sum(r[3] - r[1] for r in rows)
+            if headroom > 0:
+                scale = min(1.0, deficit / headroom)
+                for r in rows:
+                    r[1] += (r[3] - r[1]) * scale
+        elif deficit < 0:
+            # 压缩:按可收紧空间比例分摊
+            squeeze = sum(r[1] - r[2] for r in rows)
+            if squeeze > 0:
+                scale = min(1.0, -deficit / squeeze)
+                for r in rows:
+                    r[1] -= (r[1] - r[2]) * scale
+    total = 0.0
+    for r in rows:
+        f, d = r[0], r[1]
+        f["duration"] = round(d, 2)
+        total += d
     script["duration_sec"] = round(total, 1)
 
 

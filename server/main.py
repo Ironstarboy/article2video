@@ -85,7 +85,8 @@ def stage_build(job):
         job.set(progress=f"豆包引擎失败({doubao_err}),已回落 CosyVoice3;组装项目中")
     else:
         job.set(progress=f"组装 HyperFrames 项目(配音引擎:{eng_txt})")
-    tts.apply_real_durations(script, vo, tail_pad=0.9 if target <= 120 else 1.4)
+    # 目标时长为用户滑杆所选:真实配音时长与目标偏离时向目标靠拢
+    tts.apply_real_durations(script, vo, tail_pad=0.9 if target <= 120 else 1.4, target=target)
     info = assemble.build(script, _job_combo(job), vo, p["project"])
     # 在标记 preview 之前同步拉起 Studio:状态一翻转,前端就能直接展示就绪的编辑器,
     # 用户看不到「启动中」等待页(Studio 冷启动时间被构建阶段的等待期吸收)
@@ -517,6 +518,8 @@ async def api_projects_passthrough(pid: str, rest: str, request: Request):
         text = text.replace("/api/projects/ttv/", f"/api/projects/ttv{job.id}/")
         text = text.replace('"/assets/', f'"/ttv/api/studio/{job.id}/assets/')
         text = text.replace("'/assets/", f"'/ttv/api/studio/{job.id}/assets/")
+        if "text/html" in ctype and rest.startswith("preview"):
+            text = _inject_preview_audio_watchdog(text)
         content = text.encode("utf-8")
     return Response(content=content, status_code=r.status_code,
                     headers={"Content-Type": _fix_mime(rest, ctype)})
@@ -573,6 +576,50 @@ async def _studio_proxy(job_id: str, path: str, request: Request, port: int):
     ctype = _fix_mime(path, ctype)
     return Response(content=content, status_code=r.status_code,
                     headers={"Content-Type": ctype})
+
+
+PREVIEW_AUDIO_WATCHDOG = """<script>
+/* Studio 预览音频看门狗:浏览器自动播放策略拦截或框架音频提升路径失效时,
+   恢复「时间线在播放而音频静音/暂停」的死状态(偶发预览无声的修复)。
+   不干扰用户手动静音——手动静音时音频仍在播放,非暂停态。 */
+(function(){
+  var iv = setInterval(function(){
+    var tls = window.__timelines || {};
+    var t = null;
+    for (var k in tls) {
+      var tl = tls[k];
+      if (tl && typeof tl.time === 'function') {
+        var now = tl.time();
+        if (now > 0.05) { t = now; break; }
+      }
+    }
+    if (t === null) return;
+    document.querySelectorAll('audio[data-start], audio#bgm').forEach(function(a){
+      var s = parseFloat(a.getAttribute('data-start') || '0') || 0;
+      var end = a.id === 'bgm' ? 1e9
+        : (isFinite(a.duration) && a.duration > 0 ? s + a.duration : s + 60);
+      if (t < s || t >= end) return;  // 不在播放窗口内,不动
+      var p;
+      if (a.muted && a.paused) {      // 提升路径死状态:静音且停着 → 恢复
+        a.muted = false;
+        p = a.play();
+        if (p && p.catch) p.catch(function(){});
+      } else if (!a.muted && a.paused && !a.error) {  // play 曾被拒:持续重试等待激活
+        p = a.play();
+        if (p && p.catch) p.catch(function(){});
+      }
+    });
+  }, 1000);
+})();
+</script>
+"""
+
+
+def _inject_preview_audio_watchdog(html: str) -> str:
+    """向 Studio 预览页注入音频看门狗(修复偶发预览无声)。"""
+    if "</body>" in html:
+        return html.replace("</body>", PREVIEW_AUDIO_WATCHDOG + "</body>", 1)
+    return html + PREVIEW_AUDIO_WATCHDOG
 
 
 EXT_MIME = {
