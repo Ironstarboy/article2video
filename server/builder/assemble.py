@@ -141,15 +141,16 @@ def build(script: dict, style_key: str, vo: dict, project_dir: Path) -> dict:
         sections.append(sec_html)
         js += [ln.replace("##S##", f"{S:.2f}") for ln in js_lines]
 
-        # 字幕(有旁白的帧)
+        # 字幕(有旁白的帧)——影视剧字幕式:1-2 行短行窗口随旁白推进
         if i in vo and vo[i]["words"]:
-            cap_html, cap_js = templates.render_caption(i, style, vo[i]["words"])
-            cap_html = cap_html.replace(templates.S_PLACEHOLDER, f"{start:.2f}").replace(
-                templates.D_PLACEHOLDER, f"{dur:.2f}")
-            captions.append(cap_html)
-            # 字幕 clip 跟随帧入场淡入
-            if shift > 0 and trans == "crossfade":
-                js.append(f'tl.from("#capsec{i}",{{opacity:0,duration:{shift}}},{S - shift});')
+            cap_wins, cap_js = templates.render_caption_windows(i, style, vo[i]["words"])
+            for k, (cap_html, w_start, w_dur) in enumerate(cap_wins):
+                wid = f"capsec{i}-{k}"
+                cap_html = cap_html.replace("CAPID", wid)
+                cap_html = cap_html.replace(templates.S_PLACEHOLDER, f"{S + w_start:.2f}").replace(
+                    templates.D_PLACEHOLDER, f"{w_dur:.2f}")
+                captions.append(cap_html)
+                js.append(f'tl.from("#{wid}",{{autoAlpha:0,duration:0.3}},{S + w_start:.2f});')
             js += [ln.replace("##S##", f"{S:.2f}") for ln in cap_js]
             audios.append(f'<audio id="vo-{i}" src="assets/audio/vo_{i:02d}.mp3" preload="auto" '
                           f'data-start="{S + VO_OFFSET:.2f}" data-volume="1"></audio>')
@@ -168,11 +169,15 @@ def build(script: dict, style_key: str, vo: dict, project_dir: Path) -> dict:
     # 5) 组装 index.html
     inner_css = f"""
 .clip{{position:absolute;inset:0;}}
-.inner{{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;}}
+/* 正文区垂直中心取黄金分割点(1080×0.382≈413px,比居中上移 127px):
+   底部字幕带(约 150px)不再与正文交叉;开场/结尾标题卡用 .card 保持全帧居中 */
+.inner{{position:absolute;left:0;right:0;top:0;height:76.5%;display:flex;flex-direction:column;justify-content:center;overflow:hidden;}}
+.inner.card{{height:100%;}}
 .inner.left{{align-items:flex-start;}}
 .inner.center{{align-items:center;text-align:center;}}
 .cap-wrap{{position:absolute;left:0;right:0;bottom:{CAPTION_BOTTOM}px;display:flex;justify-content:center;padding:0 120px;}}
-.cap-pill{{border-radius:10px;padding:14px 28px;font-size:32px;font-family:{style["font_body"]};color:{style["light"]};max-width:1400px;text-align:center;line-height:1.55;}}
+.cap-pill{{border-radius:10px;padding:10px 24px;font-size:30px;font-family:{style["font_body"]};color:{style["light"]};max-width:1400px;text-align:center;line-height:1.5;}}
+.cap-pill .cap-line{{display:block;}}
 """
     comp_id = _comp_id(project_dir)
     js_block = "\n  ".join(js)

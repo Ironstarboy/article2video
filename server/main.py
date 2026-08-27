@@ -118,10 +118,12 @@ def stage_build(job):
     else:
         job.set(progress=f"组装 HyperFrames 项目(配音引擎:{eng_txt})")
     # 目标时长为用户滑杆所选:真实配音时长与目标偏离时向目标靠拢。
-    # 讲解视频的讲解后留白更宽(学生读批注),单帧可扩展上限更高。
-    tail_pad = 2.2 if kind == "lecture" else (0.9 if target <= 120 else 1.4)
+    # 停顿节奏(用户反馈):旁白后留白宜短(讲解档 1.0s,读批注够用),
+    # 单帧可扩展上限收紧(4s)——时长靠内容补足(段级旁白下限+构建期拓展),
+    # 不靠静默停留凑时长,保持语气自然。
+    tail_pad = 1.0 if kind == "lecture" else (0.9 if target <= 120 else 1.4)
     tts.apply_real_durations(script, vo, tail_pad=tail_pad, target=target,
-                             extra_cap=8.0 if kind == "lecture" else 6.5)
+                             extra_cap=4.0 if kind == "lecture" else 6.5)
     info = assemble.build(script, _job_combo(job), vo, p["project"])
     # 在标记 preview 之前同步拉起 Studio:状态一翻转,前端就能直接展示就绪的编辑器,
     # 用户看不到「启动中」等待页(Studio 冷启动时间被构建阶段的等待期吸收)

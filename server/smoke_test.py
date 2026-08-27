@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import analyze
 import extract
 import tts
-from builder import styles
+from builder import styles, templates
 
 FAIL = []
 
@@ -344,6 +344,27 @@ analyze._fixup_segment_frames(_c2, _hart, 60, is_last=False)
 ok("heal 非尾段 closing 转小结帧", _c2[-1]["type"] == "statement"
    and _c2[-1]["content"]["eyebrow"] == "本章小结"
    and _c2[-1]["voiceover"].strip())
+
+
+# ───────────────────────── 影视剧式字幕窗口 ─────────────────────────
+
+_st = styles.get_style(styles.resolve_combo("solemn-red", None, None, None, None))
+_text = "我们先看这一段原文。注意这一句,它用的是判断句式,先立论再展开论证。"
+_wds, _t0 = [], 0.0
+for _w in tts.split_words(_text):
+    _wds.append((_w, _t0, _t0 + 0.5))
+    _t0 += 0.5
+_wins, _wjs = templates.render_caption_windows(3, _st, _wds)
+import re as _re
+_line_chars = []
+for h, _, _ in _wins:
+    for seg in h.split('class="cap-line">')[1:]:
+        seg = seg.split("</span>")[0]
+        _line_chars.append(sum(len(t) for t in
+                               _re.findall(r'<span id="f3-w\d+">([^<]*)</span>', seg)))
+ok("字幕窗口每行 ≤19 字且窗口 ≥2 个", len(_wins) >= 2
+   and all(n <= 19 for n in _line_chars) and len(_line_chars) >= 3,
+   f"wins={len(_wins)} line chars={_line_chars}")
 
 
 # ───────────────────────── 重点段限流(plan 校验) ─────────────────────────

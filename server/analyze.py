@@ -1225,7 +1225,7 @@ def build_lecture_segment_prompt(article_ctx: str, plan: dict, combo: dict,
   · 文章框架用 1-2 个 process 帧(每帧 4 步);「原文观点 vs 已知事实」用 contrast;金句赏析用 quote;原文真实数据用 data(原文无数字则禁止 data 帧)。
 - **帧数上限是硬约束**:把相邻段落合并、砍掉次要帧,严格控制在本段帧数区间内;宁可少帧,不要超帧。
 - **引用逐字硬要求**(校验会逐字核对):textblock.text 与 annotation.sentences[].text 必须从下方 <article> 中**原样复制**对应原文区间——不增删改任何一个字、不改标点、不合并不相邻的句子;截断处写……。宁可摘短,不要改写。
-- 帧 duration = 旁白字数 ÷ 4.2 + 1.5 秒(opening 6-8 秒、closing 4-5 秒);本段所有帧 duration 之和 ≈ {seg_sec} 秒(±15%)
+- 帧 duration = 旁白字数 ÷ 4.2 + 1.2 秒(停顿自然短,像老师正常讲课;opening 6-8 秒、closing 4-5 秒、section 章节页 5-6 秒;**禁止用长静默凑时长——时长靠旁白内容填满**);本段所有帧 duration 之和 ≈ {seg_sec} 秒(±15%)
 - transition_in:每章第 1 帧 crossfade,其余 cut
 - 旁白必须 ≥2 句(引导句 + 讲解句 + 写法句),老师讲课口吻,严禁一句话带过;引用必须逐字(校验核对)。
 
@@ -1295,6 +1295,12 @@ def _validate_segment_frames(frames, article: str, article_norm: str, first: boo
         errs.append(f"段内旁白总量 {vo_total} 字超出上限 {vo_cap_chars} 字"
                     f"(约 {seg_sec}s 视频念不完——请把每帧旁白压缩到 40-110 字、"
                     f"合并相邻 textblock、删减次要帧,总旁白控制在 {vo_cap_chars} 字以内)")
+    # 旁白下限:时长靠内容填(停顿保持自然短),旁白低于 3.0×段秒数时
+    # 视频会因内容不足而出现长静默——让模型加长讲解而不是留白
+    vo_floor_chars = int(seg_sec * 3.0)
+    if vo_total < vo_floor_chars:
+        errs.append(f"段内旁白总量 {vo_total} 字不足(需 ≥{vo_floor_chars} 字,"
+                    f"请加长每帧旁白/增加讲解帧,禁止用静默停顿凑时长)")
     return errs
 
 

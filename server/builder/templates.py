@@ -62,7 +62,7 @@ def _opening(i, c, style, S):
     lines = _lines(c.get("title", ""), 2)
     tsize = style.get("title_size", 88)
     deco = _deco_open(style)
-    parts = [f'<div class="inner center" style="padding:0 320px;">']
+    parts = [f'<div class="inner center card" style="padding:0 320px;">']
     parts.append(f'<div id="f{i}-eyebrow" style="font-family:{style["font_bold"]};font-size:26px;'
                  f'color:{style["primary"]};letter-spacing:0.35em;margin-bottom:56px;">{E(c.get("eyebrow", "") or "")}</div>')
     for n in range(2):
@@ -560,7 +560,7 @@ def _closing(i, c, style, S):
     source = c.get("source", "")
     author = c.get("author", "")
     credit = f"来源:{source}" + (f" / 作者:{author}" if author else "")
-    parts = ['<div class="inner center" style="padding:0 320px;padding-top:120px;">']
+    parts = ['<div class="inner center card" style="padding:0 320px;padding-top:120px;">']
     if style["deco_style"] == "wash":
         parts.append(f'<div id="f{i}-seal" style="width:52px;height:52px;border-radius:8px;background:#A63A2B;'
                      f'color:{style["bg"]};font-family:{style["font_title"]};font-size:30px;display:flex;'
@@ -591,17 +591,56 @@ def _closing(i, c, style, S):
 
 # ───────────────────────────── 字幕 ─────────────────────────────
 
-def render_caption(i, style, words) -> tuple[str, list[str]]:
-    """字幕 section HTML + 词级高亮 tween。words:[(word, t0, t1)]"""
+# 影视剧字幕式短行:每行最多 19 字,行末优先在句读处断行
+CAPTION_LINE_CHARS = 19
+
+
+def _caption_lines(words):
+    """词流 → 字幕行 [(word, t0, t1), …] 的列表。"""
+    lines, cur, chars = [], [], 0
+    for w, t0, t1 in words:
+        cur.append((w, t0, t1))
+        chars += len(w)
+        if chars >= CAPTION_LINE_CHARS or w[-1:] in "。！？；,":
+            lines.append(cur)
+            cur, chars = [], 0
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def render_caption_windows(i, style, words):
+    """影视剧字幕式窗口字幕:每窗口 1-2 行短字幕(每行 ≤19 字),随旁白推进
+    逐窗口显示(不整段糊在画面底部,不与正文交叉)。
+    返回 (wins, js):wins=[(section_html, win_start, win_dur)](时间相对帧起点),
+    js 为整帧词级高亮 tween(##S## = 帧起点)。words:[(word, t0, t1)]。"""
     if not words:
-        return "", []
-    spans = "".join(f'<span id="f{i}-w{n}">{E(w)}</span>' for n, (w, _, _) in enumerate(words))
-    html = (f'<section class="clip" id="capsec{i}" data-start="{S_PLACEHOLDER}" data-duration="{D_PLACEHOLDER}" data-track-index="3">'
-            f'<div class="cap-wrap"><div class="cap-pill" style="background:{style["caption_bg"]};'
-            f'border:1px solid {style["caption_border"]};color:#777777;">{spans}</div></div></section>')
+        return [], []
+    lines = _caption_lines(words)
+    # 两行一组、首尾相接的窗口:(1,2) (3,4) …;每行一个 .cap-line 块,
+    # 词 span id 用全局词序号(与整帧高亮 tween 的 id 一致)
+    wins = []
+    for k in range(0, len(lines), 2):
+        pair = lines[k:k + 2]
+        t0 = pair[0][0][1]
+        t1 = pair[-1][-1][2]
+        line_html = ""
+        offset = sum(len(L) for L in lines[:k])
+        for L in pair:
+            spans = "".join(
+                f'<span id="f{i}-w{offset + n}">{E(w)}</span>'
+                for n, (w, _, _) in enumerate(L))
+            line_html += f'<span class="cap-line">{spans}</span>'
+            offset += len(L)
+        html = (f'<section class="clip" id="CAPID" data-start="{S_PLACEHOLDER}" '
+                f'data-duration="{D_PLACEHOLDER}" data-track-index="3">'
+                f'<div class="cap-wrap"><div class="cap-pill" style="background:{style["caption_bg"]};'
+                f'border:1px solid {style["caption_border"]};color:{style["text"]};">'
+                f'{line_html}</div></div></section>')
+        wins.append((html, t0, t1 - t0))
     js = []
     for n, (w, t0, t1) in enumerate(words):
         js.append(f'tl.set("#f{i}-w{n}",{{color:"{style["caption_cur"]}",'
                   f'borderBottom:"2px solid {style["caption_cur"]}"}},##S##+{t0:.2f});')
         js.append(f'tl.set("#f{i}-w{n}",{{color:"{style["text"]}",borderBottom:"2px solid transparent"}},##S##+{t1:.2f});')
-    return html, js
+    return wins, js

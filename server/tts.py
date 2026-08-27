@@ -271,6 +271,10 @@ def apply_real_durations(script: dict, vo: dict, tail_pad: float = 1.4,
             base = vd + tail_pad
             lo = vd + 0.6
             hi = vd + max(tail_pad, min(vd * 0.6, extra_cap) + 1.2)
+        elif t == "section":
+            # 章节页:停顿收紧(章节间 6s 上限,保持语气连贯,不空转)
+            d = float(f.get("duration") or 6.0)
+            base, lo, hi = d, 3.0, max(d, 6.0)
         else:
             d = float(f.get("duration") or 6.0)
             base, lo, hi = d, 3.0, max(d, 9.0)
