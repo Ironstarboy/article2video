@@ -78,6 +78,11 @@ def build_font_faces(page_text: str) -> str:
     return "\n".join(faces)
 
 
+def _comp_id(project_dir: Path) -> str:
+    """composition id 每任务唯一(Studio 以其为项目 id,供后端反查任务)。"""
+    return "ttv" + project_dir.parent.name
+
+
 def build(script: dict, style_key: str, vo: dict, project_dir: Path) -> dict:
     """生成 HyperFrames 项目。返回 {total, starts: {frame_index: 绝对开始秒}}。"""
     style = styles.get(style_key)
@@ -163,6 +168,7 @@ def build(script: dict, style_key: str, vo: dict, project_dir: Path) -> dict:
 .cap-wrap{{position:absolute;left:0;right:0;bottom:{CAPTION_BOTTOM}px;display:flex;justify-content:center;padding:0 120px;}}
 .cap-pill{{border-radius:10px;padding:14px 28px;font-size:32px;font-family:{style["font_body"]};color:{style["light"]};max-width:1400px;text-align:center;line-height:1.55;}}
 """
+    comp_id = _comp_id(project_dir)
     js_block = "\n  ".join(js)
     # gsap 内联(外链脚本被内置服务器按 text/html 下发会被 Chrome 拒绝执行)
     # 并把 gsap 内部的 Math.random/Date.now 替换为确定性实现(lint: non_deterministic_code)
@@ -194,7 +200,7 @@ html,body{{margin:0;padding:0;background:{style["bg"]};}}
 </style>
 </head>
 <body>
-<div id="root" data-composition-id="ttv" data-start="0" data-width="1920" data-height="1080" data-duration="{total}">
+<div id="root" data-composition-id="{comp_id}" data-start="0" data-width="1920" data-height="1080" data-duration="{total}">
 <audio id="bgm" src="assets/bgm/bgm.mp3" data-start="0" data-volume="0.12"></audio>
 {chr(10).join(audios)}
 {chr(10).join(sections)}
@@ -206,7 +212,7 @@ html,body{{margin:0;padding:0;background:{style["bg"]};}}
 document.fonts.ready.then(function(){{
   var tl = gsap.timeline({{paused:true}});
   {js_block}
-  window.__timelines["ttv"] = tl;
+  window.__timelines["{comp_id}"] = tl;
 }});
 </script>
 </body>

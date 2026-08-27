@@ -495,8 +495,75 @@ async def api_player(job_id: str, path: str, request: Request):
         text = text.replace(" muted controls>", " controls>")
         text = text.replace(" controls muted ", " controls ")
         content = text.encode("utf-8")
+    ctype = _fix_mime(path, ctype)
     return Response(content=content, status_code=r.status_code,
                     headers={"Content-Type": ctype})
+
+
+def _job_from_pid(pid: str):
+    """Studio 项目 id = 'ttv' + job_id → 反查任务。"""
+    if pid.startswith("ttv") and len(pid) > 3:
+        job = get_job(pid[3:])
+        if job:
+            return job
+    return None
+
+
+@app.get("/api/runtime.js")
+def api_runtime_js():
+    """HyperFrames 运行时脚本(Studio 预览 iframe 加载,所有任务通用)。"""
+    from pathlib import Path as _P
+    p = _P("/mnt/workspace/node/lib/node_modules/hyperframes/dist/hyperframe-runtime.js")
+    if not p.exists():
+        raise HTTPException(404, "runtime.js 不存在")
+    return Response(content=p.read_bytes(), media_type="application/javascript")
+
+
+@app.get("/api/projects")
+def api_projects_list():
+    """Studio 项目列表:合成所有处于 preview 状态的任务(Studio 服务器内部 id 恒为 ttv)。"""
+    items = []
+    for job in JOBS.values():
+        if job.status == "preview":
+            items.append({
+                "id": "ttv" + job.id,
+                "dir": str(job.paths()["project"]),
+                "title": job.state.get("filename", "") or "ttv" + job.id,
+            })
+    return {"projects": items}
+
+
+@app.api_route("/api/projects/{pid}/{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def api_projects_passthrough(pid: str, rest: str, request: Request):
+    """Studio 前端以源根路径调用 /api/projects/...,转发到对应任务的 Studio 服务器。"""
+    job = _job_from_pid(pid)
+    if not job:
+        raise HTTPException(404, "项目不存在")
+    port = STUDIOS.get(job.id)
+    if port is None or _port_free(port):
+        if job.status == "preview" and job.id not in _studio_starting:
+            _studio_starting.add(job.id)
+            threading.Thread(target=_start_studio_bg, args=(job,), daemon=True).start()
+        raise HTTPException(503, "Studio 启动中")
+    # Studio 服务器内部项目 id 恒为 "ttv"(与 composition id 无关),转发时改写回
+    target = f"http://127.0.0.1:{port}/api/projects/ttv/{rest}"
+    if request.url.query:
+        target += "?" + request.url.query
+    body = await request.body()
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.request(request.method, target, content=body,
+                                 headers={"Content-Type": request.headers.get("content-type", "application/json")})
+    ctype = r.headers.get("content-type", "application/octet-stream")
+    content = r.content
+    if "javascript" in ctype or "text/html" in ctype or "json" in ctype:
+        text = content.decode("utf-8", errors="ignore")
+        # Studio 服务器内部项目 id 恒为 ttv:把响应里的引用改写为带任务 id 的形式
+        text = text.replace("/api/projects/ttv/", f"/api/projects/ttv{job.id}/")
+        text = text.replace('"/assets/', f'"/ttv/api/studio/{job.id}/assets/')
+        text = text.replace("'/assets/", f"'/ttv/api/studio/{job.id}/assets/")
+        content = text.encode("utf-8")
+    return Response(content=content, status_code=r.status_code,
+                    headers={"Content-Type": _fix_mime(rest, ctype)})
 
 
 @app.get("/api/studio/{job_id}/{path:path}")
@@ -546,8 +613,27 @@ async def _studio_proxy(job_id: str, path: str, request: Request, port: int):
         text = text.replace('"/api/', f'"{prefix}api/')
         text = text.replace("'/api/", f"'{prefix}api/")
         content = text.encode("utf-8")
+    ctype = _fix_mime(path, ctype)
     return Response(content=content, status_code=r.status_code,
                     headers={"Content-Type": ctype})
+
+
+EXT_MIME = {
+    ".js": "application/javascript", ".mjs": "application/javascript",
+    ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png",
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".woff2": "font/woff2",
+    ".otf": "font/otf", ".ttf": "font/ttf", ".map": "application/json",
+    ".html": "text/html",
+}
+
+
+def _fix_mime(path: str, ctype: str) -> str:
+    """按扩展名覆盖 content-type(内置服务器把所有资源当 text/html)。"""
+    from pathlib import PurePosixPath
+    ext = PurePosixPath(path).suffix.lower()
+    if ext in EXT_MIME:
+        return EXT_MIME[ext]
+    return ctype
 
 
 def _player_msg(title: str, note: str) -> str:

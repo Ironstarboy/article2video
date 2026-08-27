@@ -378,7 +378,7 @@ function renderVoices(){
       const c = document.createElement("button"); c.type="button";
       c.className="dim-chip"; c.setAttribute("data-key", e.key);
       c.innerHTML = '<div class="nm"></div><div class="ds"></div>';
-      c.querySelector(".nm").textContent = e.name;
+      c.querySelector(".nm").textContent = e.name + (e.key === "cosyvoice3" ? "" : "(开发中)");
       c.querySelector(".ds").textContent = e.key === "doubao" ? "云 API" : "GPU 本地";
       c.onclick = ()=>{ eb.querySelectorAll(".dim-chip").forEach(x=>x.classList.remove("sel"));
         c.classList.add("sel"); chosenEngine = e.key;
@@ -640,7 +640,7 @@ function switchTab(t){
     $("#studio-box").style.display = "";
     if (!$("#studio-box").querySelector("iframe") && jobId) {
       const f = document.createElement("iframe");
-      f.src = "./api/studio/" + jobId + "/#project/project";
+      f.src = "./api/studio/" + jobId + "/#project/ttv" + jobId;
       f.allow = "autoplay";
       $("#studio-box").innerHTML = "";
       $("#studio-box").appendChild(f);
