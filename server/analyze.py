@@ -76,7 +76,7 @@ def build_user_prompt(article: str, target_duration: int, combo: dict) -> str:
     # ── 时长适配规则(详略由目标时长决定;旁白字数按 CosyVoice3 实测语速≈4.2 字/秒规划) ──
     if target_duration <= 90:
         frames_rule = "6-10 帧"
-        vo_rule = f"每帧 8-28 字,短促有力,只留核心论点与 1 组最强论据;总旁白字数 ≈ {int(target_duration * 3.4)} 字"
+        vo_rule = f"每帧 8-24 字,短促有力,只留核心论点与 1 组最强论据;总旁白字数 ≈ {int(target_duration * 2.8)} 字"
         detail_rule = """压缩策略(长文短时长):
 - 只保留核心论点与最有力的 1-2 个论据,其余层次各压缩为一句话
 - 数据只保留 1 组最有冲击力的;金句只留 1 句
@@ -379,11 +379,21 @@ EXPAND_SYSTEM = """你是政论视频脚本拓展助手。现有脚本的旁白�
 def expand_script(script: dict, article: str, target_duration: int) -> dict:
     """构建期二次拓展:旁白量不足目标时长时,加长每帧旁白并增帧填满内容。
 
-    目标旁白量按真实语速 ≈4.2 字/秒 × 0.85 折算(留白与开场结尾由构建期补齐)。
+    目标旁白量按真实语速 ≈4.2 字/秒折算;验收线取 0.75×目标旁白量
+    (模型长旁白能力有限,剩余缺口由构建期按帧留白分摊补满)。
     """
     import json as _json
     payload = _json.dumps(script, ensure_ascii=False, indent=1)
     need = int(target_duration * 3.4)
+    accept = int(need * 0.75)
+    if target_duration <= 90:
+        per_frame = "8-24 字"
+    elif target_duration <= 180:
+        per_frame = "35-70 字"
+    elif target_duration <= 360:
+        per_frame = "45-90 字"
+    else:
+        per_frame = "70-120 字"
     user_prompt = f"""现有脚本(JSON):
 {payload}
 
@@ -392,7 +402,7 @@ def expand_script(script: dict, article: str, target_duration: int) -> dict:
 {article}
 </article>
 
-目标时长 {target_duration} 秒,旁白需约 {need} 字(当前不足)。请按铁律拓展后输出完整 JSON。"""
+目标时长 {target_duration} 秒,旁白需约 {need} 字(当前不足)。每帧旁白请加长到 {per_frame} 区间的中上水平;可增加 1-4 帧。请按铁律拓展后输出完整 JSON。"""
     last_err = None
     for attempt in range(3):
         content = _call_local(EXPAND_SYSTEM, user_prompt)
@@ -407,8 +417,8 @@ def expand_script(script: dict, article: str, target_duration: int) -> dict:
             errs = validate_script(expanded, article, target_duration)
             if not errs:
                 vo_total = sum(len((f.get("voiceover") or "").strip()) for f in expanded["frames"])
-                if vo_total < need * 0.9:
-                    errs = [f"旁白总量 {vo_total} 字仍不足目标(需 ≈{need} 字),请继续加长每帧旁白或增加帧数"]
+                if vo_total < accept:
+                    errs = [f"旁白总量 {vo_total} 字仍不足目标(需 ≈{accept} 字),请继续加长每帧旁白或增加帧数"]
             if not errs:
                 expanded["_meta"] = {**(script.get("_meta") or {}), "expanded": True}
                 return expanded
