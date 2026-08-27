@@ -1,3 +1,21 @@
+# 运行时产物与数据(不入库)
+jobs/
+test-project/
+deploy-tmp/
+.bak-v11/
 demo/
-*.pyc
+# Python
 __pycache__/
+*.pyc
+# 日志
+*.log
+# 大文件资产(字体/BGM/vendor 从服务器/官方源获取,见 BUILD.md)
+assets/fonts/
+assets/bgm/
+assets/vendor/
+# 密钥与本地环境
+.secrets/
+# TTS 环境(服务器本地构建)
+tts-venv/
+tts-qwen-venv/
+cosyvoice-src/
