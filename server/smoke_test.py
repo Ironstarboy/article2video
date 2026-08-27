@@ -359,7 +359,6 @@ import re as _re
 _line_chars = []
 for h, _, _ in _wins:
     for seg in h.split('class="cap-line">')[1:]:
-        seg = seg.split("</span>")[0]
         _line_chars.append(sum(len(t) for t in
                                _re.findall(r'<span id="f3-w\d+">([^<]*)</span>', seg)))
 ok("字幕窗口每行 ≤19 字且窗口 ≥2 个", len(_wins) >= 2
@@ -471,15 +470,15 @@ ok("assemble/fonttools 可导入", _assemble_ok)
 
 _dsf = [
     {"index": 1, "type": "opening", "voiceover": "", "duration": 7, "content": {"title": "t"}},
-    {"index": 2, "type": "statement", "voiceover": "这是论点句,展开来说,论据充分支撑观点成立。" * 3,
+    {"index": 2, "type": "statement", "voiceover": "论据充分支撑观点,结构完整。",
      "duration": 12, "content": {"thesis": "t", "support": "s", "keywords": []}},
     {"index": 3, "type": "statement", "voiceover": "一句话带过吧。",
      "duration": 12, "content": {"thesis": "t", "support": "s", "keywords": []}},
     {"index": 4, "type": "closing", "voiceover": "", "duration": 4.5, "content": {"source": "s"}},
 ]
-_n_dropped = analyze._drop_shortest_frames(_dsf, 60, 4)
+_n_dropped = analyze._drop_shortest_frames(_dsf, 20, 4)
 ok("丢帧压缩按旁白最短丢弃", _n_dropped == 1 and _dsf[1]["type"] == "statement"
-   and len(_dsf) == 3)
+   and len(_dsf) == 3, f"dropped={_n_dropped} types={[f['type'] for f in _dsf]}")
 
 _pq = [{"index": 3, "type": "quote", "voiceover": "金句页。", "duration": 10,
         "content": {"quote": "基层强则国家强,基层安则天下安。", "source": "原文"}}]
@@ -494,8 +493,9 @@ ok("promo 金句无法接地保留并告警", _pq2[0]["content"]["quote"] == "�
    and len(_warn2) == 1)
 
 _pa = analyze.build_analysis_prompt(larticle, 120, lcombo)
-ok("两阶段·分析 prompt 含契约要素", "argument_chain" in _pa and "frame_plan" in _pa
-   and "逐字" in _pa and "120 秒" in _pa)
+ok("两阶段·分析 prompt 含契约要素", "论证蓝图" in _pa and "120 秒" in _pa
+   and "argument_chain" in analyze.ANALYSIS_SYSTEM and "frame_plan" in analyze.ANALYSIS_SYSTEM
+   and "逐字" in analyze.ANALYSIS_SYSTEM)
 _ps = analyze.build_script_prompt(
     larticle, {"core_argument": "c", "argument_chain": [], "frame_plan": [],
                "article_summary": "s", "data_ledger": [], "quotes": [],
