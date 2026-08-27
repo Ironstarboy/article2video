@@ -291,6 +291,80 @@ ok("kind 归一化 措施→对策", analyze._norm_kind("措施") == "对策")
 ok("kind 归一化 承上启下→过渡", analyze._norm_kind("承上启下") == "过渡")
 ok("kind 归一化 未知词→分析", analyze._norm_kind("高亮强调") == "分析")
 
+
+# ───────────────────────── 讲解段级治愈(healing) ─────────────────────────
+
+def _heal_frames():
+    paras, _ = _lecture_article()
+    frames = [
+        {"index": 1, "type": "opening", "voiceover": "", "duration": 7,
+         "transition_in": "cut", "content": {"eyebrow": "逐段精讲", "title": "标题"}},
+        {"index": 2, "type": "annotation", "voiceover": "我们来看这两句批注,第一句是原文,第二句需要注意其写法。",
+         "duration": 15, "transition_in": "cut",
+         "content": {"para": 1, "sentences": [
+             {"text": paras[0][:12], "kind": "论点", "note": "判断句立论"},
+             {"text": "这句是被模型改写过的非原文", "kind": "分析", "note": "应被治愈移除"}]}},
+        {"index": 3, "type": "annotation", "voiceover": "这两句都不是原文,整帧应被丢弃。",
+         "duration": 15, "transition_in": "cut",
+         "content": {"para": 2, "sentences": [
+             {"text": "编造的句子甲", "kind": "论点", "note": "x"},
+             {"text": "编造的句子乙", "kind": "论据", "note": "y"}]}},
+        {"index": 4, "type": "textblock", "voiceover": "这一段原文页的文字被改写了,应整帧丢弃。",
+         "duration": 15, "transition_in": "cut",
+         "content": {"para": 3, "role": "论据", "text": "这段文字被模型改写成了另一句话"}},
+        {"index": 5, "type": "textblock", "voiceover": "这一段是原文,应保留。",
+         "duration": 15, "transition_in": "cut",
+         "content": {"para": 3, "role": "论据", "text": paras[2]}},
+        {"index": 6, "type": "closing", "voiceover": "", "duration": 4.5,
+         "transition_in": "cut", "content": {"source": "来源", "author": ""}},
+    ]
+    return frames, paras
+
+
+_hf, _hparas = _heal_frames()
+_hart = "\n\n".join(_hparas)
+analyze._fixup_segment_frames(_hf, _hart, 60)
+_h_types = [f["type"] for f in _hf]
+ok("heal 保留部分可接地批注句", "annotation" in _h_types
+   and len(_hf[[f["type"] for f in _hf].index("annotation")]["content"]["sentences"]) == 1)
+ok("heal 丢弃全坏批注帧", _h_types.count("annotation") == 1)
+ok("heal 丢弃改写原文帧", _h_types.count("textblock") == 1
+   and analyze._norm_text(_hf[[f["type"] for f in _hf].index("textblock")]["content"]["text"])
+   in analyze._norm_text(_hart))
+
+# 非尾段 closing(模型把「本章小结」误写成结尾帧)→ statement 小结帧
+import copy as _copy
+_c2 = _copy.deepcopy(_hf)
+_c2 = [f for f in _c2 if f["type"] != "closing"]
+_c2.append({"index": 7, "type": "closing",
+            "voiceover": "本章先到这里。下一章我们继续看后面的段落。",
+            "duration": 10, "transition_in": "cut",
+            "content": {"source": "s", "author": ""}})
+analyze._fixup_segment_frames(_c2, _hart, 60, is_last=False)
+ok("heal 非尾段 closing 转小结帧", _c2[-1]["type"] == "statement"
+   and _c2[-1]["content"]["eyebrow"] == "本章小结"
+   and _c2[-1]["voiceover"].strip())
+
+
+# ───────────────────────── 重点段限流(plan 校验) ─────────────────────────
+
+_plan_ok = {"article_type": "x", "type_reason": "r", "central_task": "t",
+            "chapters": [{"number": "壹", "title": "t", "minutes": 5.0,
+                          "para_range": [1, 6], "content_plan": "c"}],
+            "paragraph_notes": [{"para": i + 1, "role": "分析", "key_idea": "k",
+                                 "teach_points": ["a"], "line_analysis": True}
+                                for i in range(6)],
+            "methods": ["m1", "m2", "m3"], "exam_method_summary": "s"}
+errs = analyze._validate_plan(_plan_ok, 6, 300, analyze._norm_text(_hart))
+ok("plan 重点段限流(5 分钟 ≤10 段)", errs == [], str(errs[:2]))
+
+_plan_over = json.loads(json.dumps(_plan_ok))
+_plan_over["paragraph_notes"] = [{"para": i + 1, "role": "分析", "key_idea": "k",
+                                  "teach_points": ["a"], "line_analysis": True}
+                                 for i in range(14)]
+errs = analyze._validate_plan(_plan_over, 14, 300, analyze._norm_text(_hart))
+ok("plan 重点段超限被拒", any("line_analysis" in e for e in errs), str(errs[:1]))
+
 lcombo = styles.resolve_combo("solemn-red", None, None, None, None)
 pp = analyze.build_lecture_plan_prompt(larticle, 300, lcombo)
 ok("讲解方案 prompt 含文章与时长", "300 秒" in pp and "第1段" in pp and "逐段" in pp)
