@@ -86,8 +86,6 @@ table.frames{width:100%;border-collapse:collapse;font-size:12.5px;}
 table.frames th,table.frames td{border-bottom:1px solid var(--line);padding:8px;text-align:left;vertical-align:top;}
 table.frames th{color:var(--muted);font-weight:400;background:#FCFBF9;}
 table.frames td .t{display:inline-block;background:#F1EEE8;color:var(--red);border-radius:4px;padding:1px 8px;font-size:11.5px;}
-.player-box{background:#101820;border-radius:8px;overflow:hidden;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#8CA0B3;font-size:14px;}
-.player-box iframe,.player-box video{width:100%;height:100%;border:none;display:block;}
 .btnrow{display:flex;gap:14px;margin-top:18px;}
 .btnrow button{flex:1;padding:13px;font-size:14.5px;border-radius:6px;border:1.5px solid var(--navy);background:var(--card);color:var(--navy);cursor:pointer;font-family:'SansBoldWeb','PingFang SC',sans-serif;}
 .btnrow button.primary{border:none;background:var(--navy);color:#fff;letter-spacing:2px;margin-top:0;}
@@ -134,16 +132,11 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:#9A948B;font-siz
   .step{padding:20px 16px;}
   .columns,.video-row{margin-top:16px;}
   .studio-box{height:56vw;}
-  .player-box{aspect-ratio:16/9;}
   header .bar{padding:0 16px;}
-  .vtabs{flex-wrap:wrap;}
 }
 .video-row{margin-top:22px;}
-.vtabs{display:flex;gap:0;margin-bottom:14px;border-bottom:1px solid var(--line);}
-.vtab{padding:10px 22px;font-size:14px;border:none;background:transparent;cursor:pointer;color:var(--muted);font-family:inherit;border-bottom:2px solid transparent;}
-.vtab.sel{color:var(--navy);border-bottom-color:var(--navy);font-weight:600;}
 .studio-box{background:#0b1220;border-radius:8px;overflow:hidden;height:860px;display:flex;align-items:center;justify-content:center;color:#8CA0B3;font-size:14px;}
-.studio-box iframe{width:100%;height:100%;border:none;display:block;}
+.studio-box iframe,.studio-box video{width:100%;height:100%;border:none;display:block;}
 
 .editrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;}
 .editrow input[type=text]{flex:1;min-width:240px;border:1.5px solid var(--line-strong);border-radius:6px;padding:9px 12px;font-size:13.5px;font-family:inherit;}
@@ -251,13 +244,8 @@ table.frames input[type=number]{width:64px;}
   </div>
 
   <div class="step panel video-row" style="padding:24px 26px;">
-    <h3>视频预览</h3>
-    <div class="vtabs">
-      <button type="button" class="vtab sel" id="vtab-player">播放器</button>
-      <button type="button" class="vtab" id="vtab-studio">Studio 编辑器(完整功能)</button>
-    </div>
-    <div class="player-box" id="player-box" style="display:none;">构建后在此预览</div>
-    <div class="studio-box" id="studio-box" style="display:none;">点击「Studio 编辑器」标签后加载</div>
+    <h3>视频预览(Studio 编辑器)</h3>
+    <div class="studio-box" id="studio-box">构建完成后在此加载 Studio 编辑器</div>
     <div class="btnrow">
       <button id="btn-build" disabled>构建预览</button>
       <span class="fmt-row">格式
@@ -477,9 +465,7 @@ const STATUS_TEXT = {
 };
 function poll(){
   fetch("./api/jobs/" + jobId).then(r=>r.json()).then(j=>{
-    jobStatus = j.status;
     const b = $("#banner");
-    b.className = "banner" + (j.status==="failed" ? " err" : (["analyzed","preview","rendered"].includes(j.status) ? " ok":""));
     $("#banner-spin").style.display = ["analyzing","building","rendering","uploaded"].includes(j.status) ? "" : "none";
     $("#banner-text").textContent = (STATUS_TEXT[j.status]||j.status) + (j.progress ? ":" + j.progress : "");
     if (j.status==="failed") $("#banner-text").textContent = "失败:" + j.error;
@@ -494,29 +480,21 @@ function updateActions(j){
   rb.disabled = j.status!=="preview";
   rb.textContent = "渲染成片";
   if (j.status==="preview") {
-    const justReady = lastStatus !== "preview";
-    // 播放器 iframe 只在两类时机创建:预览就绪瞬间,或用户正停留在播放器标签。
-    // 此前每轮 poll 都重建 iframe 并强制切回播放器,会把用户从 Studio 标签踢回去。
-    if (justReady && !$("#player-box").querySelector("iframe")) {
-      createPlayerIframe();
-      // 构建完成后自动弹出播放器画面(用户未手动选过标签时)
-      if (!userPickedTab) switchTab("player");
-    } else if (currentTab === "player" && !$("#player-box").querySelector("iframe")) {
-      createPlayerIframe();
-    }
-    $("#vtab-player").style.display = "";
-    $("#vtab-studio").style.display = "";
+    // 预览就绪:加载 Studio 编辑器(整个预览区只有 Studio,无需标签切换)
+    createStudioIframe();
   }
   if (j.status==="rendered" && j.has_video) {
     $("#dl").style.display = "block";
     $("#dl-link").href = "./api/jobs/" + j.job_id + "/video";
-    const f = $("#player-box").querySelector("iframe");
-    if (f) { f.remove(); const v=document.createElement("video"); v.src=$("#dl-link").href; v.controls=true; v.style.cssText="width:100%;height:100%;"; $("#player-box").appendChild(v); }
-    // 渲染完成:清理 Studio iframe,只留成片播放
-    if ($("#studio-box").querySelector("iframe")) { $("#studio-box").innerHTML = "已渲染成片"; $("#studio-box").style.display = "none"; }
-    switchTab("player");
+    // 渲染完成:用成片播放替换 Studio
+    if ($("#studio-box").querySelector("iframe")) {
+      $("#studio-box").innerHTML = "";
+      const v = document.createElement("video");
+      v.src = $("#dl-link").href;
+      v.controls = true;
+      $("#studio-box").appendChild(v);
+    }
   }
-  lastStatus = j.status;
 }
 const STYLE_NAMES = {"solemn-red":"庄重肃穆 · 中国红","academic-ink":"清雅学术 · 墨黛青","modern-blue":"现代锐意 · 科技蓝"};
 function el(tag, cls, text){
@@ -620,47 +598,16 @@ function collectScript(){
   });
   return s;
 }
-/* 视频区 tab:播放器 / Studio */
-let currentTab = "player";
-let jobStatus = null;        // 最新任务状态(poll 更新)
-let lastStatus = null;       // 上一轮任务状态(识别「预览就绪」瞬间)
-let userPickedTab = false;   // 用户是否手动点过标签(自动弹出仅限未手动选择时)
-function createPlayerIframe(){
-  if ($("#player-box").querySelector("iframe") || $("#player-box").querySelector("video")) return;
-  const f = document.createElement("iframe");
-  f.src = "./api/player/" + jobId + "/";
-  f.allow = "autoplay";
-  $("#player-box").innerHTML = "";
-  $("#player-box").appendChild(f);
-}
-function switchTab(t){
-  currentTab = t;
-  $("#vtab-player").classList.toggle("sel", t==="player");
-  $("#vtab-studio").classList.toggle("sel", t==="studio");
-  if (t === "player") {
-    // 切到播放器:销毁 Studio iframe(否则其自动播放的音频在后台持续发声)
-    if ($("#studio-box").querySelector("iframe")) { $("#studio-box").innerHTML = "点击「Studio 编辑器」标签后加载"; }
-    $("#studio-box").style.display = "none";
-    $("#player-box").style.display = "";
-    // 预览就绪后若播放器 iframe 曾被销毁,切回本标签时重建(此前依赖 poll 重建,
-    // 每轮 poll 都会把用户从 Studio 标签踢回来)
-    if (jobStatus === "preview") createPlayerIframe();
-  } else {
-    // 切到 Studio:销毁播放器 iframe(单声源原则)
-    if ($("#player-box").querySelector("iframe")) { $("#player-box").innerHTML = "构建后在此预览"; }
-    $("#player-box").style.display = "none";
-    $("#studio-box").style.display = "";
-    if (!$("#studio-box").querySelector("iframe") && jobId) {
-      const f = document.createElement("iframe");
-      f.src = "./api/studio/" + jobId + "/#project/ttv" + jobId;
-      f.allow = "autoplay";
-      $("#studio-box").innerHTML = "";
-      $("#studio-box").appendChild(f);
-    }
+/* 视频区:Studio 编辑器(整个预览区只有 Studio) */
+function createStudioIframe(){
+  if (!$("#studio-box").querySelector("iframe") && !$("#studio-box").querySelector("video") && jobId) {
+    const f = document.createElement("iframe");
+    f.src = "./api/studio/" + jobId + "/#project/ttv" + jobId;
+    f.allow = "autoplay";
+    $("#studio-box").innerHTML = "";
+    $("#studio-box").appendChild(f);
   }
 }
-$("#vtab-player").onclick = ()=>{ userPickedTab = true; switchTab("player"); };
-$("#vtab-studio").onclick = ()=>{ userPickedTab = true; switchTab("studio"); };
 $("#btn-edit").onclick = ()=>{
   editMode = !editMode;
   $("#btn-edit").textContent = editMode ? "退出编辑" : "编辑脚本";
@@ -680,7 +627,7 @@ $("#btn-save-script").onclick = async ()=>{
   $("#btn-save-script").style.display = "none";
   $("#edit-box").style.display = "none";
   $("#btn-save-script").disabled = false;
-  $("#player-box").innerHTML = '<span>构建中…</span>';
+  $("#studio-box").innerHTML = '<span>构建中…</span>';
   poll();
 };
 $("#btn-revise").onclick = async ()=>{
@@ -697,7 +644,7 @@ $("#btn-revise").onclick = async ()=>{
 $("#btn-build").onclick = ()=>{
   fetch("./api/jobs/"+jobId+"/build", {method:"POST"}).then(r=>r.json()).then(()=>{
     $("#btn-build").disabled = true;
-    $("#player-box").innerHTML = '<span>构建中…</span>';
+    $("#studio-box").innerHTML = '<span>构建中…</span>';
     poll();
   }).catch(e=>alert(e));
 };

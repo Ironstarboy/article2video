@@ -35,10 +35,6 @@ STYLES = {
 # 视频规格
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 
-# 预览 play 服务器槽位(每槽一个 hyperframes play 进程)
-PLAYER_SLOT_BASE = 4100
-PLAYER_SLOTS = 6
-
 # Node(服务器上不在 PATH)
 NODE_BIN_DIR = "/mnt/workspace/node/bin"
 

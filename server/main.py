@@ -18,8 +18,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 
 sys.path.insert(0, str(Path(__file__).parent))
-from config import (BACKEND_PORT, JOBS_DIR, NODE_BIN_DIR, PLAYER_SLOT_BASE,
-                    PLAYER_SLOTS, STYLES, WEB_DIR)  # noqa: E402
+from config import BACKEND_PORT, NODE_BIN_DIR, STYLES  # noqa: E402
 from jobs import JOBS, create_job, get_job, run_in_background  # noqa: E402
 import extract  # noqa: E402
 import analyze  # noqa: E402
@@ -30,21 +29,15 @@ app = FastAPI(title="理论文章转视频")
 
 
 @app.on_event("startup")
-def _restore_players():
-    """服务重启后,为处于 preview 状态的任务重建 play 与 Studio 服务器。"""
+def _restore_studios():
+    """服务重启后,为处于 preview 状态的任务重建 Studio 服务器。"""
     for job in JOBS.values():
         if job.status == "preview":
-            try:
-                start_player(job)
-            except Exception:
-                pass
             try:
                 start_studio(job)
             except Exception:
                 pass
 
-PLAYERS: dict[str, subprocess.Popen] = {}   # job_id -> play 进程
-SLOT_USED: dict[str, int] = {}              # job_id -> play 端口槽
 STUDIOS: dict[str, int] = {}                # job_id -> Studio 端口(preview --background 为托管会话)
 _studio_starting: set = set()                 # 正在后台拉起 Studio 的任务(防重复)
 STUDIO_SLOT_USED: dict[str, int] = {}
@@ -102,11 +95,10 @@ def stage_build(job):
     info = assemble.build(script, _job_combo(job), vo, p["project"])
     job.set(status="preview", progress=f"总时长 {info['total']:.0f} 秒", total_sec=info["total"],
             voice_engines=eng_txt)
-    start_player(job)
     try:
         start_studio(job)
     except Exception as e:
-        # Studio 启动失败不阻塞构建与预览(播放器已可用)
+        # Studio 启动失败不阻塞构建(状态轮询会自愈重试拉起)
         job.set(progress=f"总时长 {info['total']:.0f} 秒(Studio 启动失败,稍后可重试)", total_sec=info["total"],
                 voice_engines=eng_txt, studio_error=str(e)[:80])
         return
@@ -142,7 +134,7 @@ def stage_render(job, fmt: str = "mp4"):
     job.set(status="rendering", progress=f"HyperFrames 渲染中({fmt},约 5-20 分钟)")
     p = job.paths()
     out = p["project"] / "renders" / f"out.{fmt}"
-    # 渲染期间保留播放器,预览不中断(渲染只读项目文件,不冲突)
+    # 渲染期间保留 Studio,预览不中断(渲染只读项目文件,不冲突)
     r = subprocess.run(
         ["hyperframes", "render", str(p["project"]),
          "--output", str(out), "--format", fmt, "--quality", "high"],
@@ -156,43 +148,7 @@ def stage_render(job, fmt: str = "mp4"):
     job.set(status="rendered", progress="", render_format=fmt)
 
 
-# ───────────────────────── 播放器(hyperframes play) ─────────────────────────
-
-
-def _slot_for(job_id: str) -> int:
-    used = {v for k, v in SLOT_USED.items() if k in PLAYERS and PLAYERS[k].poll() is None}
-    for n in range(PLAYER_SLOTS):
-        port = PLAYER_SLOT_BASE + n
-        if port not in used:
-            SLOT_USED[job_id] = port
-            return port
-    # 槽满:回收最旧的
-    oldest = next(iter(PLAYERS), None)
-    if oldest:
-        stop_player(get_job(oldest))
-    SLOT_USED[job_id] = PLAYER_SLOT_BASE
-    return PLAYER_SLOT_BASE
-
-
-def start_player(job):
-    port = _slot_for(job.id)
-    proc = subprocess.Popen(
-        ["hyperframes", "play", str(job.paths()["project"]), "--port", str(port)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_hf_env(),
-    )
-    PLAYERS[job.id] = proc
-    return port
-
-
-def stop_player(job):
-    if job and job.id in PLAYERS:
-        proc = PLAYERS.pop(job.id)
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        SLOT_USED.pop(job.id, None)
+# ───────────────────────── Studio 服务器(hyperframes preview) ─────────────────────────
 
 
 def _port_free(port: int) -> bool:
@@ -286,7 +242,7 @@ def stop_studio(job):
 @app.get("/health")
 @app.get("/api/health")
 def health():
-    return {"ok": True, "players": len(PLAYERS)}
+    return {"ok": True, "studios": len(STUDIOS)}
 
 
 @app.get("/api/styles")
@@ -399,14 +355,7 @@ def api_job(job_id: str):
         raise HTTPException(404, "任务不存在")
     d = job.to_dict()
     if job.status == "preview":
-        # 自愈:播放器进程若已死亡则自动重建
-        proc = PLAYERS.get(job.id)
-        if proc is None or proc.poll() is not None:
-            try:
-                start_player(job)
-            except Exception:
-                pass
-        d["player_port"] = SLOT_USED.get(job.id)
+        # 自愈:Studio 进程若已死亡则自动重建
         sp = STUDIOS.get(job.id)
         if sp is None or _port_free(sp):
             if job.id not in _studio_starting:
@@ -421,7 +370,6 @@ def api_build(job_id: str):
     job = get_job(job_id) or _http404()
     if job.status not in ("analyzed", "preview", "rendered", "failed"):
         raise HTTPException(409, f"当前状态 {job.status} 不能构建")
-    stop_player(job)
     job.set(status="building", progress="", error=None)
     run_in_background(job, stage_build)
     return {"ok": True}
@@ -458,48 +406,6 @@ def api_video(job_id: str):
                         filename=f"{job.id}.{fmt}")
 
 
-@app.get("/api/player/{job_id}/{path:path}")
-async def api_player(job_id: str, path: str, request: Request):
-    """反向代理到该任务的 hyperframes play 服务器。
-
-    play 页面与 player.js 使用绝对路径(/composition/、/player.js),经本代理
-    下发时改写为 /ttv/api/player/<job_id>/ 前缀,保证 iframe 内资源正确解析。
-    """
-    if ".." in path:
-        raise HTTPException(400, "非法路径")
-    if job_id not in PLAYERS or PLAYERS[job_id].poll() is not None:
-        return Response(
-            content=_player_msg("预览服务未启动", "等待构建完成或稍后刷新,服务会自动恢复。"),
-            status_code=404, media_type="text/html")
-    port = SLOT_USED[job_id]
-    query = f"?{request.url.query}" if request.url.query else ""
-    target = f"http://127.0.0.1:{port}/{path}{query}"
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.get(target, follow_redirects=True)
-    except Exception:
-        # 播放器进程在启动/重启间隙,给用户友好提示页而非 500
-        return Response(
-            content=_player_msg("预览服务启动中", "页面会自动重试,请稍候。"),
-            status_code=503, media_type="text/html")
-    ctype = r.headers.get("content-type", "application/octet-stream")
-    content = r.content
-    # 只重写 HTML(play 页面里 <hyperframes-player src="/composition/..."> 与
-    # <script src="/player.js"> 的绝对路径);player.js 本身无绝对路径引用,原样透传,
-    # 避免改写破坏其中的 SVG 字符串字面量。
-    if "text/html" in ctype:
-        text = content.decode("utf-8", errors="ignore")
-        text = text.replace('src="/', f'src="/ttv/api/player/{job_id}/')
-        # 去掉播放器默认静音,否则用户听不到解说音频
-        text = text.replace(" controls muted>", " controls>")
-        text = text.replace(" muted controls>", " controls>")
-        text = text.replace(" controls muted ", " controls ")
-        content = text.encode("utf-8")
-    ctype = _fix_mime(path, ctype)
-    return Response(content=content, status_code=r.status_code,
-                    headers={"Content-Type": ctype})
-
-
 def _job_from_pid(pid: str):
     """Studio 项目 id = 'ttv' + job_id → 反查任务。"""
     if pid.startswith("ttv") and len(pid) > 3:
@@ -531,6 +437,42 @@ def api_projects_list():
                 "title": job.state.get("filename", "") or "ttv" + job.id,
             })
     return {"projects": items}
+
+
+@app.api_route("/api/projects/{pid}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@app.api_route("/api/projects/{pid}/", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def api_project_root(pid: str, request: Request):
+    """Studio 以无斜杠(或带斜杠)根路径拉取项目信息——compositions 列表就在此响应里。
+
+    必须显式注册两条路由:{rest:path} 匹配不到空子路径,FastAPI 会 307 重定向到带斜杠
+    版本再 404(重定向 Location 还用 nginx 传来的无端口 Host,直接生成坏地址),
+    导致 Studio 左上角组件列表永远为空。
+    """
+    job = _job_from_pid(pid)
+    if not job:
+        raise HTTPException(404, "项目不存在")
+    port = STUDIOS.get(job.id)
+    if port is None or _port_free(port):
+        if job.status == "preview" and job.id not in _studio_starting:
+            _studio_starting.add(job.id)
+            threading.Thread(target=_start_studio_bg, args=(job,), daemon=True).start()
+        raise HTTPException(503, "Studio 启动中")
+    # Studio 服务器内部项目 id 恒为 "ttv",且其根路径不带斜杠
+    target = f"http://127.0.0.1:{port}/api/projects/ttv"
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.request(request.method, target)
+    except Exception:
+        raise HTTPException(503, "Studio 启动中")
+    ctype = r.headers.get("content-type", "application/octet-stream")
+    content = r.content
+    if "javascript" in ctype or "text/html" in ctype or "json" in ctype:
+        text = content.decode("utf-8", errors="ignore")
+        # 与子路径转发一致:把响应里的内部项目 id 引用改写为带任务 id 的形式
+        text = text.replace("/api/projects/ttv/", f"/api/projects/ttv{job.id}/")
+        content = text.encode("utf-8")
+    return Response(content=content, status_code=r.status_code,
+                    headers={"Content-Type": _fix_mime("", ctype)})
 
 
 @app.api_route("/api/projects/{pid}/{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
@@ -582,7 +524,7 @@ async def api_studio(job_id: str, path: str, request: Request):
             # 后台拉起(不能阻塞事件循环,否则全站 502)
             threading.Thread(target=_start_studio_bg, args=(job,), daemon=True).start()
         return Response(
-            content=_player_msg("Studio 启动中", "页面会自动重试,请稍候。"),
+            content=_retry_msg("Studio 启动中", "页面会自动重试,请稍候。"),
             status_code=503, media_type="text/html")
     return await _studio_proxy(job_id, path, request, STUDIO_SLOT_USED[job_id])
 
@@ -595,7 +537,7 @@ async def _studio_proxy(job_id: str, path: str, request: Request, port: int):
             r = await client.get(target, follow_redirects=True)
     except Exception:
         return Response(
-            content=_player_msg("Studio 启动中", "页面会自动重试,请稍候。"),
+            content=_retry_msg("Studio 启动中", "页面会自动重试,请稍候。"),
             status_code=503, media_type="text/html")
     ctype = r.headers.get("content-type", "application/octet-stream")
     content = r.content
@@ -639,7 +581,7 @@ def _fix_mime(path: str, ctype: str) -> str:
     return ctype
 
 
-def _player_msg(title: str, note: str) -> str:
+def _retry_msg(title: str, note: str) -> str:
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"/>
 <meta http-equiv="refresh" content="8"/><title>{title}</title></head>
 <body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;
