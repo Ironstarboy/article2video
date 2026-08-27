@@ -385,15 +385,16 @@ def expand_script(script: dict, article: str, target_duration: int) -> dict:
     import json as _json
     payload = _json.dumps(script, ensure_ascii=False, indent=1)
     need = int(target_duration * 3.4)
-    accept = int(need * 0.75)
     if target_duration <= 90:
-        per_frame = "8-24 字"
+        per_frame = "12-24 字"
     elif target_duration <= 180:
         per_frame = "50-70 字"
     elif target_duration <= 360:
         per_frame = "70-90 字"
     else:
         per_frame = "90-120 字"
+    # 验收线分档:短视频档模型扩写能力弱,放宽;长视频档由两轮拓展+留白分摊共同补满
+    accept = int(need * (0.5 if target_duration <= 90 else 0.75))
     user_prompt = f"""现有脚本(JSON):
 {payload}
 
