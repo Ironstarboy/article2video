@@ -65,7 +65,14 @@ def _job_combo(job) -> dict:
     return c
 
 
+def _job_alive(job) -> bool:
+    """任务是否仍在注册表中(删除后返回 False,后台线程应尽快退出)。"""
+    return JOBS.get(job.id) is job
+
+
 def stage_analyze(job):
+    if not _job_alive(job):
+        return
     kind = job.state.get("video_kind", "promo")
     job.set(status="analyzing", progress="提取文本")
     p = job.paths()
@@ -87,6 +94,8 @@ def stage_analyze(job):
 
 
 def stage_build(job):
+    if not _job_alive(job):
+        return
     kind = job.state.get("video_kind", "promo")
     job.set(status="building", progress="生成配音")
     # 重建时先停掉旧 Studio(否则新进程换端口,旧进程泄漏占着旧端口)
@@ -188,6 +197,8 @@ RENDER_FORMATS = {"mp4", "mkv", "mov", "webm"}
 
 
 def stage_render(job, fmt: str = "mp4"):
+    if not _job_alive(job):
+        return
     job.set(status="rendering", progress="排队等待渲染槽位…")
     with RENDER_SEM:
         job.set(progress=f"HyperFrames 渲染中({fmt},约 5-20 分钟)")
@@ -454,6 +465,8 @@ async def api_revise(job_id: str, request: Request):
 
 
 def stage_revise(job, instruction: str):
+    if not _job_alive(job):
+        return
     try:
         script = json.loads(job.paths()["script"].read_text(encoding="utf-8"))
         article = job.paths()["input"].read_text(encoding="utf-8")

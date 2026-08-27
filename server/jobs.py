@@ -131,7 +131,9 @@ def run_in_background(job: Job, fn, *args):
             fn(job, *args)
         except Exception as e:  # noqa: BLE001
             log.exception("job %s 阶段失败: %s", job.id, e)
-            job.set(status="failed", error=str(e), progress="")
+            # 任务已删除(注册表移除)则不再写状态——避免 _save 重建目录复活
+            if JOBS.get(job.id) is job:
+                job.set(status="failed", error=str(e), progress="")
     t = threading.Thread(target=runner, daemon=True)
     t.start()
     return t
