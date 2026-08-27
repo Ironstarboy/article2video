@@ -68,9 +68,7 @@ def _load_doubao_key() -> str:
 DOUBAO_KEY = _load_doubao_key()
 DOUBAO_URL = "https://openspeech.bytedance.com/api/v3/plan/tts/unidirectional"
 DOUBAO_HEADERS = {
-    "Authorization": f"Bearer;{DOUBAO_KEY}",
-    "X-Api-App-Key": DOUBAO_KEY,
-    "X-Api-Access-Key": DOUBAO_KEY,
+    "X-Api-Key": DOUBAO_KEY,
     "X-Api-Resource-Id": "seed-tts-2.0",
     "Content-Type": "application/json",
 }
@@ -140,24 +138,51 @@ def _synth_doubao(text: str, voice: str, out: Path) -> bool:
     """豆包 seed-tts-2.0 云 API(HTTP 单向流)。"""
     global DOUBAO_LAST_ERROR
     try:
+        import uuid as _uuid
         import httpx
+        headers = dict(DOUBAO_HEADERS)
+        headers["X-Api-Request-Id"] = str(_uuid.uuid4())
         body = {
-            "model": "seed-tts-2.0",
-            "audio": {"voice_type": voice, "encoding": "mp3", "rate": 24000},
-            "input": {"text": text},
+            "req_params": {
+                "text": text,
+                "speaker": voice,
+                "model": "seed-tts-2.0-standard",
+                "audio_params": {"format": "mp3", "sample_rate": 24000, "speech_rate": 0},
+            },
         }
-        r = httpx.post(DOUBAO_URL, headers=DOUBAO_HEADERS, json=body,
+        r = httpx.post(DOUBAO_URL, headers=headers, json=body,
                        timeout=httpx.Timeout(120.0, connect=10.0))
         if r.status_code != 200:
             DOUBAO_LAST_ERROR = f"HTTP {r.status_code}: {r.text[:200]}"
             return False
+        # NDJSON 流:每行一段 JSON,音频以 base64 出现在 data 字段,拼接即 MP3
+        import base64 as _b64
+        chunks = []
+        for line in r.text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = __import__("json").loads(line)
+            except Exception:
+                continue
+            d = obj.get("data")
+            if isinstance(d, str) and d and obj.get("code") in (0, 20000000, None):
+                try:
+                    chunks.append(_b64.b64decode(d))
+                except Exception:
+                    pass
+        if not chunks:
+            DOUBAO_LAST_ERROR = f"接口返回无音频({r.text[:200]})"
+            return False
         raw = out.with_suffix(".raw.mp3")
-        raw.write_bytes(r.content)
+        raw.write_bytes(b"".join(chunks))
         subprocess.run(["ffmpeg", "-y", "-i", str(raw), "-ar", "44100", "-ac", "1",
                         "-b:a", "128k", str(out)], capture_output=True, timeout=120)
         raw.unlink(missing_ok=True)
         return out.exists() and audio_duration(out) > 0.2
-    except Exception:
+    except Exception as e:
+        DOUBAO_LAST_ERROR = f"异常:{str(e)[:160]}"
         return False
 
 
