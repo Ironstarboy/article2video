@@ -40,6 +40,7 @@ SAFE_CHARS = (
     "字体配色背景动效政论经典书香学术时代前沿其一其二其三其四"
     "上传文件粘贴文字开始分析构建预览渲染成片播放器编辑器已选择此风格"
     "理论文章转视频工作台分钟秒"
+    "原文本段作用批注注可迁移写法注意逐句"
 )
 
 
@@ -88,11 +89,13 @@ def build(script: dict, style_key: str, vo: dict, project_dir: Path) -> dict:
     style = styles.get(style_key)
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "renders").mkdir(parents=True, exist_ok=True)
-    # 重建时清理旧构建产物(旧配音/旧 BGM 残留会膨胀项目目录;renders 成片保留)
-    for stale_dir in (project_dir / "assets" / "audio", project_dir / "assets" / "bgm"):
-        if stale_dir.exists():
-            shutil.rmtree(stale_dir)
-        stale_dir.mkdir(parents=True, exist_ok=True)
+    # 重建时清理旧 BGM(renders 成片保留;配音由 stage_build 在合成前清理,
+    # 这里绝不能再删 assets/audio——会把刚合成的配音删光导致成片无声)
+    bgm_dir = project_dir / "assets" / "bgm"
+    if bgm_dir.exists():
+        shutil.rmtree(bgm_dir)
+    bgm_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "assets" / "audio").mkdir(parents=True, exist_ok=True)
     _copy_shared(project_dir)
 
     frames = script["frames"]

@@ -59,7 +59,15 @@ main{max-width:1080px;margin:0 auto;padding:36px 24px 72px;}
 .style-card p{margin:0 18px;font-size:12.5px;color:var(--muted);line-height:1.75;}
 .style-card .pick{display:none;margin:14px 18px 0;font-size:12px;color:var(--red);}
 .style-card.sel .pick{display:block;}
-/* 时长与提交 */
+/* 视频类型与时长 */
+.kind-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:26px;}
+@media(max-width:640px){.kind-row{grid-template-columns:1fr;}}
+.kind-card{border:1.5px solid var(--line);border-radius:8px;padding:16px 20px;background:var(--card);cursor:pointer;text-align:left;font-family:inherit;transition:border-color .15s,box-shadow .15s;}
+.kind-card:hover{border-color:var(--line-strong);}
+.kind-card.sel{border-color:var(--red);box-shadow:0 0 0 2px rgba(166,27,41,.10);}
+.kind-card .kt{font-family:'SongWeb','SimSun','Songti SC',serif;font-size:16.5px;color:var(--ink);margin-bottom:6px;}
+.kind-card.sel .kt{color:var(--red);}
+.kind-card .kd{font-size:12.5px;color:var(--muted);line-height:1.65;}
 .dur-row{display:flex;align-items:center;gap:20px;}
 #dur{flex:1;height:4px;border-radius:2px;background:var(--line-strong);outline:none;-webkit-appearance:none;appearance:none;}
 #dur::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--red);border:3px solid #fff;box-shadow:0 0 0 1px var(--red);cursor:pointer;}
@@ -200,11 +208,22 @@ table.frames input[type=number]{width:64px;}
   </div>
 
   <div class="step">
-    <div class="step-head"><h2>时长与生成</h2><span class="no">肆</span></div>
+    <div class="step-head"><h2>视频类型与时长</h2><span class="no">肆</span></div>
+    <div class="kind-row">
+      <button type="button" class="kind-card sel" data-kind="promo">
+        <div class="kt">宣传视频</div>
+        <div class="kd">提炼主旨、归档宣传:把文章改写成庄重的政论宣传片,0.5 - 10 分钟。</div>
+      </button>
+      <button type="button" class="kind-card" data-kind="lecture">
+        <div class="kt">讲解视频</div>
+        <div class="kd">老师逐段精讲:像讲作文一样拆解文章的写法与逻辑,5 - 30 分钟(5 分钟一档)。</div>
+      </button>
+    </div>
     <div class="dur-row">
       <input type="range" id="dur" min="30" max="600" step="30" value="120"/>
       <span id="durval">2<small>分钟</small></span>
     </div>
+    <p class="hint" id="dur-hint" style="margin:14px 0 0;">时长按内容充实度填充:长文短时自动压缩,短文长时逐层展开。</p>
     <button class="primary" id="submit" disabled>开始分析</button>
   </div>
 </div>
@@ -427,8 +446,31 @@ function pickFile(f){
   $("#fileinfo").style.display = "block";
   updateSubmit();
 }
+/* 视频类型(宣传/讲解)共用同一滑杆:讲解 5-30 分钟每 5 分钟一档,宣传 0.5-10 分钟 */
 const dur = $("#dur");
-dur.oninput = ()=>{ $("#durval").innerHTML = Math.round(dur.value/60*10)/10 + "<small>分钟</small>"; };
+let chosenKind = "promo";
+const kindDur = {promo:120, lecture:600};   // 各自记住所选时长
+const KIND_META = {
+  promo:{min:30, max:600, step:30,
+    hint:"时长按内容充实度填充:长文短时自动压缩,短文长时逐层展开。"},
+  lecture:{min:300, max:1800, step:300,
+    hint:"讲解视频逐段精讲文章的写法与逻辑。分析分两步:先诊断文章类型与讲解方案,再分段生成逐帧脚本,耗时较长,请耐心等待。"},
+};
+function updateDur(){ $("#durval").innerHTML = Math.round(dur.value/60*10)/10 + "<small>分钟</small>"; }
+dur.oninput = ()=>{ kindDur[chosenKind] = parseInt(dur.value,10); updateDur(); };
+document.querySelectorAll(".kind-card").forEach(card=>{
+  card.onclick = ()=>{
+    document.querySelectorAll(".kind-card").forEach(x=>x.classList.remove("sel"));
+    card.classList.add("sel");
+    kindDur[chosenKind] = parseInt(dur.value,10);   // 切换前记住当前类型的时长
+    chosenKind = card.getAttribute("data-kind");
+    const m = KIND_META[chosenKind];
+    dur.min = m.min; dur.max = m.max; dur.step = m.step;
+    dur.value = kindDur[chosenKind];
+    $("#dur-hint").textContent = m.hint;
+    updateDur();
+  };
+});
 $("#submit").onclick = ()=>{
   if ($("#submit").disabled) return;
   const fd = new FormData();
@@ -442,6 +484,7 @@ $("#submit").onclick = ()=>{
   fd.append("voice_engine", chosenEngine);
   fd.append("voice", chosenVoice);
   fd.append("duration", dur.value);
+  fd.append("video_kind", chosenKind);
   const btn = $("#submit");
   btn.disabled = true; btn.textContent = "提交中…";
   fetch("./api/jobs", {method:"POST", body:fd})
@@ -503,12 +546,38 @@ function el(tag, cls, text){
   if (text != null) e.textContent = text;   // textContent 防 XSS
   return e;
 }
+const TYPE_LABELS = {textblock:"原文段", annotation:"逐句批注", method:"写法提炼"};
+function lecturePlanText(s, lp){
+  const chapTxt = (lp.chapters || []).map(c =>
+    (c.number || "") + " " + (c.title || "") + "(约 " + c.minutes + " 分钟,原文第" + (c.para_range||[]).join("-") + "段)\n  " + (c.content_plan || "")).join("\n");
+  const paraTxt = (lp.paragraph_notes || []).map(p =>
+    "第" + p.para + "段 [" + (p.role || "") + "] " + (p.key_idea || "") + "\n" +
+    "  为什么放在这里:" + (p.why_here || "") + "\n" +
+    "  讲解要点:" + (p.teach_points || []).join(";") +
+    (p.transferable ? "\n  可迁移:" + p.transferable : "") +
+    ((p.quote_sentences || []).length ? "\n  待批注句:" + (p.quote_sentences || []).join(" / ") : "")).join("\n");
+  const list = arr => (arr || []).map((v, i) => (i + 1) + ". " + v).join("\n") || "(无)";
+  return "标题:" + (s.title || "") + (s.subtitle ? (" / " + s.subtitle) : "") + "\n\n" +
+    "视频类型:讲解视频(逐段精讲)\n" +
+    "文章类型:" + (lp.article_type || "") + "(判定依据:" + (lp.type_reason || "") + ")\n" +
+    "中心任务:" + (lp.central_task || "") + "\n" +
+    "讲解定位:" + (lp.audience || "") + "\n\n" +
+    "【章节安排】\n" + chapTxt + "\n\n" +
+    "【逐段讲解要点】\n" + paraTxt + "\n\n" +
+    "【可迁移写法】\n" + list(lp.methods) + "\n\n" +
+    "【语言表达分析】\n" + list(lp.language_points) + "\n\n" +
+    "【背景补充】\n" + list(lp.background_notes) + "\n\n" +
+    "【原文观点 vs 已知事实】\n" + list(lp.fact_vs_opinion) + "\n\n" +
+    "【答题方法总结】\n" + (lp.exam_method_summary || "");
+}
 function renderScript(j){
   const s = j.script;
   if (!s || s === scriptData) return;
   scriptData = s;
   const chipsBox = $("#meta-chips");
   chipsBox.innerHTML = "";
+  chipsBox.appendChild(el("span", "chip", "视频类型:" + (s.video_kind === "lecture" ? "讲解视频" : "宣传视频")));
+  if (s.lecture_plan && s.lecture_plan.article_type) chipsBox.appendChild(el("span", "chip", "文章类型:" + s.lecture_plan.article_type));
   if (s.style_recommendation) {
     const c = el("span", "chip");
     c.appendChild(document.createTextNode("推荐风格:" + (STYLE_NAMES[s.style_recommendation.style] || s.style_recommendation.style) + "(" + (s.style_recommendation.reason || "") + ")"));
@@ -518,12 +587,16 @@ function renderScript(j){
   if (s.credits && s.credits.source) chipsBox.appendChild(el("span", "chip", "来源:" + s.credits.source));
   const a = s.analysis || {};
   const pre = el("pre", "analysis");
-  pre.appendChild(document.createTextNode(
-    "标题:" + (s.title || "") + (s.subtitle ? (" / " + s.subtitle) : "") + "\n\n" +
-    "核心论点:" + (a.core_argument || "") + "\n\n" +
-    "大纲分析:\n" + (a.outline || "") + "\n\n" +
-    "视频结构:\n" + (a.structure || "") + "\n\n" +
-    "可视觉化元素:\n" + ((a.key_visuals || []).map((v, i) => (i + 1) + ". " + v).join("\n") || "")));
+  if (s.lecture_plan) {
+    pre.appendChild(document.createTextNode(lecturePlanText(s, s.lecture_plan)));
+  } else {
+    pre.appendChild(document.createTextNode(
+      "标题:" + (s.title || "") + (s.subtitle ? (" / " + s.subtitle) : "") + "\n\n" +
+      "核心论点:" + (a.core_argument || "") + "\n\n" +
+      "大纲分析:\n" + (a.outline || "") + "\n\n" +
+      "视频结构:\n" + (a.structure || "") + "\n\n" +
+      "可视觉化元素:\n" + ((a.key_visuals || []).map((v, i) => (i + 1) + ". " + v).join("\n") || "")));
+  }
   const ab = $("#analysis-body");
   ab.innerHTML = "";
   ab.appendChild(pre);
@@ -538,7 +611,7 @@ function renderScript(j){
     const tr = document.createElement("tr");
     tr.appendChild(el("td", null, String(f.index)));
     const td1 = document.createElement("td");
-    td1.appendChild(el("span", "t", f.type));
+    td1.appendChild(el("span", "t", TYPE_LABELS[f.type] || f.type));
     tr.appendChild(td1);
     tr.appendChild(el("td", null, f.scene || ""));
     tr.appendChild(el("td", null, f.voiceover || "静帧"));

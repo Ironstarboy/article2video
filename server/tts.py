@@ -246,12 +246,13 @@ def synthesize_frames(frames: list[dict], voice: str, audio_dir: Path, speed: fl
 
 
 def apply_real_durations(script: dict, vo: dict, tail_pad: float = 1.4,
-                         target: float | None = None) -> None:
+                         target: float | None = None, extra_cap: float = 6.5) -> None:
     """根据真实旁白时长重算每帧 duration,并向目标时长靠拢。
 
     每帧拿到「基准/下限/上限」三个时长:
     - 开场 7s(5-9)、结尾 4.5s(3-6)、VO 帧 = 旁白 + tail_pad(下限旁白+0.6,
-      上限旁白 + max(tail_pad, min(旁白×0.5, 5s)+1s) 视觉留白)
+      上限旁白 + max(tail_pad, min(旁白×0.5, extra_cap)+1s) 视觉留白;
+      讲解视频(lecture)传更大的 tail_pad/extra_cap,讲解后留白更宽)
     - 总时长不足目标:缺口按各帧可扩展上限分摊(短片长目标时把时间变成
       旁白后的视觉停留,不空转、不编造内容)
     - 总时长超出目标:优先收紧留白与开场/结尾(长文短目标时兜底压缩)
@@ -269,7 +270,7 @@ def apply_real_durations(script: dict, vo: dict, tail_pad: float = 1.4,
             vd = max(vo[idx]["duration"], 1.0)
             base = vd + tail_pad
             lo = vd + 0.6
-            hi = vd + max(tail_pad, min(vd * 0.6, 6.5) + 1.2)
+            hi = vd + max(tail_pad, min(vd * 0.6, extra_cap) + 1.2)
         else:
             d = float(f.get("duration") or 6.0)
             base, lo, hi = d, 3.0, max(d, 9.0)

@@ -30,6 +30,8 @@ def render_frame(frame, style, S, ctx=None) -> tuple[str, str, list[str]]:
         "elaboration": _elaboration, "quote": _quote, "data": _data,
         "points": _points, "process": _process, "contrast": _contrast,
         "closing": _closing,
+        # 讲解视频(lecture)专用帧
+        "textblock": _textblock, "annotation": _annotation, "method": _method,
     }[t]
     sec, cap, js = fn(i, c, style, S)
     # 全帧统一页脚:《标题》 · 帧序(编辑部信息密度)
@@ -422,6 +424,133 @@ def _contrast(i, c, style, S):
         f'tl.from("#f{i}-r",{{x:50,autoAlpha:0,duration:0.6,ease:"power2.out"}},{S}+0.6);',
     ]
     return _wrap(i, style, deco_body(style), html), "", js
+
+
+# ───────────────────────────── 讲解帧(lecture) ─────────────────────────────
+# 三种讲解视频专用帧,复刻「老师带着学生拆文章」的板书感:
+# textblock 原文段展示 / annotation 逐句批注 / method 可迁移写法提炼。
+
+def _textblock(i, c, style, S):
+    """原文段页:讲义式展示原文段落 + 本段作用标签(短摘录自动放大字号)。"""
+    para = E(str(c.get("para", "")))
+    role = E(str(c.get("role", "") or ""))
+    text = E(c.get("text", "") or "")
+    focus = E(str(c.get("focus", "") or ""))
+    # 字号随摘录长度自适应:关键句特写(≤40 字)放大,长摘录收小防溢出
+    nlen = len(c.get("text", "") or "")
+    tsize = 46 if nlen <= 40 else (40 if nlen <= 100 else 36)
+    parts = ['<div class="inner plain" style="padding:0 320px;">',
+             '<div style="display:flex;align-items:center;gap:24px;margin-bottom:40px;">',
+             f'<span id="f{i}-chip" style="display:inline-block;padding:6px 22px;border:1px solid {style["primary"]};'
+             f'border-radius:999px;font-family:{style["font_bold"]};font-size:22px;color:{style["primary"]};">原文 · 第{para}段</span>']
+    if role:
+        parts.append(f'<span id="f{i}-role" style="display:inline-block;padding:6px 22px;background:{style["primary"]};'
+                     f'border-radius:999px;font-family:{style["font_bold"]};font-size:22px;color:{style["bg"]};">本段作用:{role}</span>')
+    parts.append("</div>")
+    parts.append(f'<div id="f{i}-box" style="background:{style["card"]};border:1px solid {style["card_border"]};'
+                 f'border-radius:{style["radius"]}px;padding:48px 60px;position:relative;max-height:640px;overflow:hidden;">'
+                 f'<div style="position:absolute;left:0;top:0;bottom:0;width:6px;background:{style["primary"]};'
+                 f'border-radius:3px 0 0 3px;"></div>'
+                 f'<div id="f{i}-txt" style="font-family:{style["font_title"]};font-size:{tsize}px;color:{style["text"]};'
+                 f'line-height:1.95;">{text}</div></div>')
+    if focus:
+        parts.append(f'<div id="f{i}-focus" style="margin-top:36px;display:flex;align-items:center;gap:18px;">'
+                     f'<span style="font-family:{style["font_bold"]};font-size:24px;color:{style["accent2"]};">注意</span>'
+                     f'<span style="font-family:{style["font_body"]};font-size:25px;color:{style["muted"]};">{focus}</span></div>')
+    parts.append("</div>")
+    js = [f'tl.from("#f{i}-chip",{{y:12,autoAlpha:0,duration:0.4,ease:"power2.out"}},{S}+0.2);',
+          f'tl.from("#f{i}-role",{{y:12,autoAlpha:0,duration:0.4,ease:"power2.out"}},{S}+0.3);',
+          f'tl.from("#f{i}-box",{{y:30,autoAlpha:0,duration:0.5,ease:"power2.out"}},{S}+0.45);']
+    if focus:
+        js.append(f'tl.from("#f{i}-focus",{{autoAlpha:0,duration:0.4}},{S}+0.8);')
+    return _wrap(i, style, deco_body(style), "".join(parts)), "", js
+
+
+def _kind_color(style, kind):
+    """批注类型 → (字色, 底色, 边框色)。过渡类用描边样式(底色 None)。"""
+    prim, acc, deep = style["primary"], style["accent2"], style["deep"]
+    cyan = style.get("cyan")
+    if kind == "论点":
+        return style["bg"], prim, prim
+    if kind == "论据":
+        return deep, acc, acc
+    if kind == "对策":
+        return style["bg"], deep, deep
+    if kind == "分析":
+        return deep, (cyan or prim), (cyan or prim)
+    if kind == "金句":
+        return deep, acc, acc
+    return None, None, prim  # 过渡等:描边样式
+
+
+def _annotation(i, c, style, S):
+    """逐句批注页:原句逐字展示 + 类型标注(论点/论据/分析/对策…) + 老师批注。"""
+    sens = c.get("sentences") or []
+    n = len(sens)
+    fsize = 40 if n == 1 else (34 if n == 2 else 30)
+    para = c.get("para")
+    parts = ['<div class="inner left" style="padding:0 320px;">',
+             f'<div id="f{i}-title" style="font-family:{style["font_title"]};font-size:42px;'
+             f'color:{style["deep"]};margin-bottom:52px;">逐句批注'
+             + (f' · 第{int(para)}段' if isinstance(para, int) else "") + "</div>"]
+    js = [f'tl.from("#f{i}-title",{{y:16,autoAlpha:0,duration:0.4,ease:"power2.out"}},{S}+0.2);']
+    for k, s in enumerate(sens):
+        kind = str(s.get("kind") or "")
+        txt = E(s.get("text") or "")
+        note = E(str(s.get("note") or ""))
+        ctext, cbg, cborder = _kind_color(style, kind)
+        bid = f"f{i}-b{k+1}"
+        parts.append(f'<div id="{bid}" style="display:flex;align-items:flex-start;gap:28px;margin-bottom:40px;">')
+        if cbg:
+            parts.append(f'<span style="flex:none;margin-top:6px;display:inline-block;padding:4px 18px;'
+                         f'border-radius:999px;background:{cbg};color:{ctext};border:1px solid {cborder};'
+                         f'font-family:{style["font_bold"]};font-size:20px;">{E(kind)}</span>')
+        else:
+            parts.append(f'<span style="flex:none;margin-top:6px;display:inline-block;padding:4px 18px;'
+                         f'border-radius:999px;border:1px solid {cborder};color:{style["primary"]};'
+                         f'font-family:{style["font_bold"]};font-size:20px;">{E(kind)}</span>')
+        parts.append('<div style="flex:1;min-width:0;">')
+        parts.append(f'<div style="display:flex;align-items:stretch;gap:22px;">'
+                     f'<div style="flex:none;width:5px;border-radius:2px;background:{cbg or cborder};"></div>'
+                     f'<div style="font-family:{style["font_title"]};font-size:{fsize}px;color:{style["text"]};'
+                     f'line-height:1.6;">{txt}</div></div>')
+        parts.append(f'<div style="margin-top:14px;display:flex;gap:16px;align-items:baseline;">'
+                     f'<span style="font-family:{style["font_bold"]};font-size:22px;color:{style["primary"]};">批注</span>'
+                     f'<span style="font-family:{style["font_body"]};font-size:24px;color:{style["muted"]};'
+                     f'line-height:1.7;">{note}</span></div>')
+        parts.append("</div></div>")
+        js.append(f'tl.from("#{bid}",{{x:26,autoAlpha:0,duration:0.5,ease:"power3.out"}},{S}+{0.4 + k * 0.3});')
+    parts.append("</div>")
+    return _wrap(i, style, deco_body(style), "".join(parts)), "", js
+
+
+def _method(i, c, style, S):
+    """写法提炼页:把本段/本章的写法抽象成可迁移的板书卡片。"""
+    cards = c.get("cards") or []
+    parts = ['<div class="inner plain" style="padding:0 320px;">',
+             f'<div id="f{i}-eyebrow" style="font-family:{style["font_bold"]};font-size:24px;'
+             f'color:{style["primary"]};letter-spacing:0.25em;margin-bottom:20px;">可迁移写法</div>',
+             f'<div id="f{i}-title" style="font-family:{style["font_title"]};font-size:44px;'
+             f'color:{style["deep"]};margin-bottom:64px;">{E(c.get("title") or "")}</div>',
+             '<div style="display:flex;gap:40px;">']
+    js = [f'tl.from("#f{i}-eyebrow",{{autoAlpha:0,duration:0.4}},{S}+0.15);',
+          f'tl.from("#f{i}-title",{{y:16,autoAlpha:0,duration:0.4,ease:"power2.out"}},{S}+0.25);']
+    for n, card in enumerate(cards):
+        cid = f"f{i}-m{n+1}"
+        parts.append(f'<div id="{cid}" style="flex:1;background:{style["card"]};'
+                     f'border:1px solid {style["card_border"]};border-radius:{style["radius"]}px;'
+                     f'padding:36px 32px;display:flex;flex-direction:column;min-height:300px;position:relative;">'
+                     f'<div style="position:absolute;left:0;right:0;top:0;height:5px;'
+                     f'border-radius:{style["radius"]}px {style["radius"]}px 0 0;background:{style["accent2"]};"></div>'
+                     f'<div style="font-family:{style["font_bold"]};font-size:24px;color:{style["primary"]};'
+                     f'letter-spacing:0.1em;margin-bottom:24px;">{E(card.get("id", f"{n+1:02d}"))}</div>'
+                     f'<div style="font-family:{style["font_title"]};font-size:30px;color:{style["text"]};'
+                     f'line-height:1.45;margin-bottom:18px;">{E(card.get("heading", ""))}</div>'
+                     f'<div style="font-family:{style["font_body"]};font-size:22px;color:{style["muted"]};'
+                     f'line-height:1.75;">{E(card.get("note", ""))}</div></div>')
+        js.append(f'tl.from("#{cid}",{{y:36,autoAlpha:0,scale:0.985,duration:0.45,ease:"power3.out"}},{S}+{0.5 + n * 0.18});')
+    parts += ["</div>", "</div>"]
+    return _wrap(i, style, deco_body(style), "".join(parts)), "", js
 
 
 # ───────────────────────────── 结尾署名 ─────────────────────────────

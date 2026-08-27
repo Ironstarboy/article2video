@@ -49,19 +49,27 @@ def _job_combo(job) -> dict:
 
 
 def stage_analyze(job):
+    kind = job.state.get("video_kind", "promo")
     job.set(status="analyzing", progress="提取文本")
     p = job.paths()
     # 上传文件保留原扩展名(txt/md/docx);粘贴文本模式直接就是 input.txt
     upload = next(job.dir.glob("input.*"))
     text = extract.extract_text(upload)
     p["input"].write_text(text, encoding="utf-8")
-    job.set(progress=f"DeepSeek 分析中(约 10-60 秒,全文 {len(text)} 字)")
-    script = analyze.analyze_article(text, int(job.state["duration_sec"]), _job_combo(job))
+    if kind == "lecture":
+        # 讲解视频:两步分析(诊断文章类型与讲解方案 → 分段生成逐帧脚本),耗时较长
+        script = analyze.analyze_lecture_article(
+            text, int(job.state["duration_sec"]), _job_combo(job),
+            progress_cb=lambda msg: job.set(progress=msg))
+    else:
+        job.set(progress=f"DeepSeek 分析中(约 10-60 秒,全文 {len(text)} 字)")
+        script = analyze.analyze_article(text, int(job.state["duration_sec"]), _job_combo(job))
     p["script"].write_text(json.dumps(script, ensure_ascii=False, indent=1), encoding="utf-8")
     job.set(status="analyzed", progress="")
 
 
 def stage_build(job):
+    kind = job.state.get("video_kind", "promo")
     job.set(status="building", progress="生成配音")
     # 重建时先停掉旧 Studio(否则新进程换端口,旧进程泄漏占着旧端口)
     stop_studio(job)
@@ -78,9 +86,9 @@ def stage_build(job):
     for _pass in range(2):
         if vo_chars >= need * 0.85:
             break
-        job.set(progress=f"旁白量不足目标时长,正在拓展内容(第{_pass + 1}轮:{vo_chars} 字 → 约需 {int(need)} 字)")
+        job.set(progress=f"{'讲解内容' if kind == 'lecture' else '旁白量'}不足目标时长,正在拓展内容(第{_pass + 1}轮:{vo_chars} 字 → 约需 {int(need)} 字)")
         try:
-            script = analyze.expand_script(script, article_text, target)
+            script = analyze.expand_script(script, article_text, target, kind)
         except Exception:
             # 拓展失败不阻塞构建:模型扩写有天花板,剩余缺口由构建期留白分摊补足
             break
@@ -91,6 +99,13 @@ def stage_build(job):
     provider = job.state.get("voice_engine") or "cosyvoice3"
     voice = job.state.get("voice") or style["voice"]
     eng_names = {"cosyvoice3": "本地 CosyVoice3", "qwen3tts": "本地 Qwen3-TTS", "doubao": "豆包 seed-tts-2.0"}
+    # 合成前清理旧配音(旧脚本帧号不同,残留文件会与新 index.html 错位)。
+    # 必须在 synthesize 之前清——assemble 内的清理会把刚合成的配音删光
+    # (v1.0 回归:构建产物音频被清空,渲染成片无声)。
+    vo_dir = p["vo"]
+    if vo_dir.exists():
+        shutil.rmtree(vo_dir)
+    vo_dir.mkdir(parents=True, exist_ok=True)
     job.set(progress=f"配音合成中({eng_names.get(provider, provider)},自然语速)")
     vo = tts.synthesize_frames(script["frames"], voice, p["vo"], speed=speed, provider=provider)
     engines = {}
@@ -102,8 +117,11 @@ def stage_build(job):
         job.set(progress=f"豆包引擎失败({doubao_err}),已回落 CosyVoice3;组装项目中")
     else:
         job.set(progress=f"组装 HyperFrames 项目(配音引擎:{eng_txt})")
-    # 目标时长为用户滑杆所选:真实配音时长与目标偏离时向目标靠拢
-    tts.apply_real_durations(script, vo, tail_pad=0.9 if target <= 120 else 1.4, target=target)
+    # 目标时长为用户滑杆所选:真实配音时长与目标偏离时向目标靠拢。
+    # 讲解视频的讲解后留白更宽(学生读批注),单帧可扩展上限更高。
+    tail_pad = 2.2 if kind == "lecture" else (0.9 if target <= 120 else 1.4)
+    tts.apply_real_durations(script, vo, tail_pad=tail_pad, target=target,
+                             extra_cap=8.0 if kind == "lecture" else 6.5)
     info = assemble.build(script, _job_combo(job), vo, p["project"])
     # 在标记 preview 之前同步拉起 Studio:状态一翻转,前端就能直接展示就绪的编辑器,
     # 用户看不到「启动中」等待页(Studio 冷启动时间被构建阶段的等待期吸收)
@@ -152,10 +170,12 @@ def stage_render(job, fmt: str = "mp4"):
     p = job.paths()
     out = p["project"] / "renders" / f"out.{fmt}"
     # 渲染期间保留 Studio,预览不中断(渲染只读项目文件,不冲突)
+    # 讲解视频可长达 30 分钟,渲染超时放宽到 3 小时
+    timeout = 10800 if job.state.get("video_kind") == "lecture" else 3600
     r = subprocess.run(
         ["hyperframes", "render", str(p["project"]),
          "--output", str(out), "--format", fmt, "--quality", "high"],
-        capture_output=True, text=True, timeout=3600, env=_hf_env(),
+        capture_output=True, text=True, timeout=timeout, env=_hf_env(),
     )
     if r.returncode != 0:
         tail = (r.stderr or r.stdout or "")[-1500:]
@@ -309,11 +329,18 @@ async def api_create(file: UploadFile = File(None), style: str = Form(None),
                      duration: int = Form(120), text: str = Form(""),
                      font: str = Form(None), palette: str = Form(None),
                      bg: str = Form(None), motion: str = Form(None),
-                     voice_engine: str = Form("cosyvoice3"), voice: str = Form(None)):
+                     voice_engine: str = Form("cosyvoice3"), voice: str = Form(None),
+                     video_kind: str = Form("promo")):
     if voice_engine not in ("cosyvoice3", "qwen3tts", "doubao"):
         raise HTTPException(400, f"未知配音引擎:{voice_engine}")
+    if video_kind not in ("promo", "lecture"):
+        raise HTTPException(400, f"未知视频类型:{video_kind}")
     combo = styles.resolve_combo(style, font, palette, bg, motion)
-    duration = max(30, min(600, duration))
+    # 时长档位:宣传 30-600 秒;讲解 300-1800 秒(5 分钟一档,取整到 300)
+    if video_kind == "lecture":
+        duration = max(300, min(1800, round(duration / 300) * 300))
+    else:
+        duration = max(30, min(600, duration))
     text = (text or "").strip()
     if file is not None and file.filename:
         filename = Path(file.filename or "article.txt").name  # 防路径穿越
@@ -322,7 +349,7 @@ async def api_create(file: UploadFile = File(None), style: str = Form(None),
         data = await file.read()
         if len(data) > 20 * 1024 * 1024:
             raise HTTPException(400, "文件超过 20MB")
-        job = create_job(style or "", duration, filename)
+        job = create_job(style or "", duration, filename, kind=video_kind)
         job.state["combo"] = combo
         job.state["voice_engine"] = voice_engine
         job.state["voice"] = voice or ""
@@ -331,7 +358,7 @@ async def api_create(file: UploadFile = File(None), style: str = Form(None),
     elif len(text) >= 50:
         if len(text) > 200000:
             raise HTTPException(400, "文本超过 20 万字上限")
-        job = create_job(style or "", duration, "粘贴文本.txt")
+        job = create_job(style or "", duration, "粘贴文本.txt", kind=video_kind)
         job.state["combo"] = combo
         job.state["voice_engine"] = voice_engine
         job.state["voice"] = voice or ""
@@ -360,7 +387,8 @@ async def api_edit_script(job_id: str, request: Request):
     body = await request.json()
     script = body.get("script") if isinstance(body, dict) and "script" in body else body
     article = job.paths()["input"].read_text(encoding="utf-8")
-    errs = analyze.validate_script(script, article, int(job.state.get("duration_sec", 120)))
+    errs = analyze.validate_script(script, article, int(job.state.get("duration_sec", 120)),
+                                   job.state.get("video_kind", "promo"))
     if errs:
         raise HTTPException(400, "校验失败:" + "; ".join(errs[:6]))
     job.paths()["script"].write_text(json.dumps(script, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -387,7 +415,8 @@ def stage_revise(job, instruction: str):
     try:
         script = json.loads(job.paths()["script"].read_text(encoding="utf-8"))
         article = job.paths()["input"].read_text(encoding="utf-8")
-        revised = analyze.revise_script(script, article, instruction)
+        revised = analyze.revise_script(script, article, instruction,
+                                        job.state.get("video_kind", "promo"))
         job.paths()["script"].write_text(json.dumps(revised, ensure_ascii=False, indent=1), encoding="utf-8")
         job.set(status="analyzed", progress=f"已按建议修改:{instruction[:30]}", error=None)
     except Exception as e:

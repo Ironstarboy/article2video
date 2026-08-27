@@ -16,7 +16,8 @@ JOBS: dict[str, "Job"] = {}
 
 
 class Job:
-    def __init__(self, job_id: str, style: str, duration: int, filename: str):
+    def __init__(self, job_id: str, style: str, duration: int, filename: str,
+                 kind: str = "promo"):
         self.id = job_id
         self.dir = JOBS_DIR / job_id
         self.state_path = self.dir / "state.json"
@@ -26,6 +27,7 @@ class Job:
             "style": style,
             "duration_sec": duration,
             "filename": filename,
+            "video_kind": kind,   # promo(宣传)/lecture(讲解)
             "error": None,
             "progress": "",
             "created_at": time.time(),
@@ -69,8 +71,8 @@ class Job:
         return d
 
 
-def create_job(style: str, duration: int, filename: str) -> Job:
-    job = Job(uuid.uuid4().hex[:12], style, duration, filename)
+def create_job(style: str, duration: int, filename: str, kind: str = "promo") -> Job:
+    job = Job(uuid.uuid4().hex[:12], style, duration, filename, kind)
     job.dir.mkdir(parents=True, exist_ok=True)
     job._save()
     with LOCK:
@@ -102,7 +104,8 @@ def load_from_disk():
             data = json.loads(state_file.read_text(encoding="utf-8"))
             job_id = data["job_id"]
             job = Job(job_id, data.get("style", "solemn-red"),
-                      int(data.get("duration_sec", 120)), data.get("filename", ""))
+                      int(data.get("duration_sec", 120)), data.get("filename", ""),
+                      data.get("video_kind", "promo"))
             job.state = data
             # 重启时处于进行中的任务,无法恢复线程 → 置为 failed,允许重新触发
             if data.get("status") in ("analyzing", "building", "rendering"):

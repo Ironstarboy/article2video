@@ -93,3 +93,66 @@
 4. 所有 content 字段与 type 对应齐全,枚举值合法
 5. |Σ duration − duration_sec| ≤ 10% × duration_sec
 6. title/quote/thesis 等长度符合各字段上限
+
+---
+
+# 讲解视频(lecture)契约(v1.1)
+
+讲解视频与宣传视频共用顶层结构与 10 种宣传帧,另增 3 种讲解帧与备课方案。整体生成分两步:
+①诊断文章类型与讲解方案(lecture_plan)→ ②按章节分段生成 frames 后合并。
+
+## lecture_plan(第一步产出,随脚本保存)
+
+```jsonc
+{
+  "article_type": "申论策论文/申论政论文/申论综合分析题/时政评论/理论文章…(≤12字)",
+  "type_reason": "判定依据",
+  "central_task": "中心任务(像老师点题)",
+  "audience": "讲解对象与深度定位",
+  "chapters": [ { "number": "壹", "title": "章节标题(≤12字)", "minutes": 3.0,
+                  "para_range": [1, 2], "content_plan": "本章教学安排" } ],
+  "paragraph_notes": [ { "para": 1, "role": "开头引入/中心论点/分论点/论据/分析论证/对策/过渡/结尾升华(≤8字)",
+                         "key_idea": "段意", "why_here": "为什么放在这里",
+                         "teach_points": ["讲解要点×2-4"], "transferable": "可迁移写法(可空)",
+                         "line_analysis": true,
+                         "quote_sentences": ["值得逐句批注的原句×0-3,必须逐字摘自原文"] } ],
+  "methods": ["全篇可迁移写作方法×3-6"],
+  "language_points": ["语言表达分析×2-4"],
+  "background_notes": ["需补充的公开背景×0-3"],
+  "fact_vs_opinion": ["原文观点 vs 已知事实×1-3"],
+  "exam_method_summary": "答题方法总结"
+}
+```
+
+## 讲解专用帧(content 契约)
+
+```jsonc
+// textblock(原文段页:讲义式展示原文 + 本段作用标签)
+{ "para": 3, "role": "本段作用(≤8字)", "text": "原文逐字摘录(100-200字,可截断,截断处……)", "focus": "一句话点出最值得注意的地方(≤40字,可选)" }
+
+// annotation(逐句批注页:原句逐字 + 类型彩色标注 + 老师批注)
+{ "para": 3, "sentences": [ { "text": "原句逐字(≤80字,可截断)", "kind": "论点|论据|分析|对策|过渡|金句",
+                              "note": "老师批注(≤50字):这句为什么这么写/好在哪/怎么学" } ] }
+// sentences 2-3 句
+
+// method(写法提炼页:可迁移板书卡片)
+{ "title": "标题(≤16字,如 可迁移写法)", "cards": [ { "id": "01", "heading": "写法名(≤14字)", "note": "怎么用/适用场景(≤40字)" } ] }
+// cards 2-4 张
+```
+
+## 讲解校验门(validate_script kind="lecture")
+
+1. 帧数 8-200;旁白每帧 8-240 字且 ≥2 句(老师口吻,严禁一句话带过;章节页 section 允许无旁白/短旁白——纯标题卡)
+2. **原文引用逐字硬校验**:textblock.text 与 annotation.sentences[].text 规范化(去空白/引号/省略号、统一全半角标点)后必须是原文子串;textblock ≥8 字;para 为整数
+3. annotation 的 kind 必须在枚举内(段级修复会把 例证/措施 等自由词归一化)、note ≤60 字、1-3 句;method 卡片 2-4 张
+4. 宣传脚本不允许出现 textblock/annotation/method(反之亦然)
+5. 其余与宣传校验门一致(data 数字真实、content 字段齐全)
+
+## 段级确定性修复(analyze 阶段,校验前就地执行)
+
+1. **引用接地**:精确不中 → 模糊匹配(锚点定位 + 匹配块覆盖度 ≥80%、区间不膨胀) → 用原文真实区间替换(保证逐字忠实)
+2. **批注类型归一化**:例证→论据、措施→对策、承上启下→过渡、金句类词→金句,未知→分析
+3. **data 值归一化**:「超过3.3万亿元」→ 提取数字 3.3(数字必须在原文中,否则保留让校验拦截编造)
+4. **帧时长缩放**:非 opening/closing 帧 duration 等比缩放到段目标(构建期仍按真实配音重算)
+
+修复后仍不达标的错误反馈回 LLM 重试(每段 3 次);段级旁白上限 = 4.2×段秒数(实测语速,超限物理上压不回目标时长)。
