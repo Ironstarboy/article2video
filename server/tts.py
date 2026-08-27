@@ -133,8 +133,12 @@ def _synth_local(text: str, voice: str, out: Path, speed: float = 1.0) -> bool:
         return False
 
 
+DOUBAO_LAST_ERROR = ""
+
+
 def _synth_doubao(text: str, voice: str, out: Path) -> bool:
     """豆包 seed-tts-2.0 云 API(HTTP 单向流)。"""
+    global DOUBAO_LAST_ERROR
     try:
         import httpx
         body = {
@@ -145,6 +149,7 @@ def _synth_doubao(text: str, voice: str, out: Path) -> bool:
         r = httpx.post(DOUBAO_URL, headers=DOUBAO_HEADERS, json=body,
                        timeout=httpx.Timeout(120.0, connect=10.0))
         if r.status_code != 200:
+            DOUBAO_LAST_ERROR = f"HTTP {r.status_code}: {r.text[:200]}"
             return False
         raw = out.with_suffix(".raw.mp3")
         raw.write_bytes(r.content)

@@ -93,7 +93,11 @@ def stage_build(job):
     for v in vo.values():
         engines[v.get("engine", "unknown")] = engines.get(v.get("engine", "unknown"), 0) + 1
     eng_txt = " + ".join(f"{k}×{n}" for k, n in sorted(engines.items()))
-    job.set(progress=f"组装 HyperFrames 项目(配音引擎:{eng_txt})")
+    doubao_err = tts.DOUBAO_LAST_ERROR if provider == "doubao" and "doubao" not in engines else ""
+    if doubao_err:
+        job.set(progress=f"豆包引擎失败({doubao_err}),已回落 CosyVoice3;组装项目中")
+    else:
+        job.set(progress=f"组装 HyperFrames 项目(配音引擎:{eng_txt})")
     tts.apply_real_durations(script, vo, tail_pad=0.9 if target <= 120 else 1.4)
     info = assemble.build(script, _job_combo(job), vo, p["project"])
     job.set(status="preview", progress=f"总时长 {info['total']:.0f} 秒", total_sec=info["total"],
