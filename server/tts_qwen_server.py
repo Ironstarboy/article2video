@@ -58,6 +58,9 @@ def tts(req: TTSRequest):
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(400, "text 为空")
+    if len(text) < 8:
+        # 过短文本会使 vocoder 卷积核报错(kernel>input),与 CosyVoice 服务一致
+        raise HTTPException(400, f"text 过短({len(text)} 字,至少 8)")
     if len(text) > 400:
         raise HTTPException(400, f"text 过长({len(text)} 字,最多 400)")
     if req.voice not in VOICES:

@@ -1,24 +1,54 @@
 # -*- coding: utf-8 -*-
-"""配音合成:edge-tts(免费、无需 key)+ 词级时间轴估算。
+"""配音合成:本地 CosyVoice3 多实例池(默认 GPU1/2/3)+ 豆包云 API 兜底 + 静音占位。
 
-词级高亮时间轴:edge-tts 不返回词级时间戳,采用「帧内按字符数均分」估算
-(中文朗读节奏接近匀速,视觉上可接受;后续可换 whisper 对齐升级)。
+多实例池:deploy/start-tts.sh 在 GPU1@8016 / GPU2@8018 / GPU3@8019 各起一个
+CosyVoice3 worker,合成按帧轮询分发、并行执行(约 ×3 吞吐);单个实例挂了自动
+摘除,其余继续。池可用环境变量 TTV_TTS_POOL 覆盖(逗号分隔 URL)。
 """
-import asyncio
-import json
+import os
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+import httpx
 
 from config import LOCAL_TTS_URL
 
-VOICES = {
-    "solemn-red": "zh-CN-YunxiNeural",      # 男声新闻感(沉稳)
-    "academic-ink": "zh-CN-XiaoxiaoNeural",  # 女声知性
-    "modern-blue": "zh-CN-YunxiNeural",      # 男声干脆
-}
-
 # 旁白起始偏移:帧开始后 0.25s 起念
 VO_OFFSET = 0.25
+
+# CosyVoice3 多实例池(默认三实例;单实例部署时只写 8016 一个即可)
+TTS_POOL = [u.strip() for u in os.environ.get(
+    "TTV_TTS_POOL",
+    "http://127.0.0.1:8016,http://127.0.0.1:8018,http://127.0.0.1:8019",
+).split(",") if u.strip()]
+
+# 单实例健康探测的并发上限(合成并行度 = 存活实例数)
+_pool_lock = threading.Lock()
+_pool_alive_cache: dict = {"at": 0.0, "urls": None}
+
+
+def _alive_pool() -> list[str]:
+    """探测池内存活实例(结果缓存 30s,避免每帧探测)。"""
+    import time as _t
+    now = _t.time()
+    with _pool_lock:
+        if now - _pool_alive_cache["at"] < 30 and _pool_alive_cache["urls"] is not None:
+            return list(_pool_alive_cache["urls"])
+    alive = []
+    for url in TTS_POOL:
+        try:
+            r = httpx.get(f"{url}/health", timeout=2.0)
+            if r.status_code == 200 and r.json().get("ok"):
+                alive.append(url)
+        except Exception:
+            continue
+    if not alive:
+        alive = [LOCAL_TTS_URL]   # 全挂时退回默认实例(合成失败还会落静音占位)
+    with _pool_lock:
+        _pool_alive_cache.update(at=_t.time(), urls=alive)
+    return list(alive)
 
 
 def audio_duration(path: Path) -> float:
@@ -44,26 +74,22 @@ def split_words(text: str) -> list[str]:
         return list(text)
 
 
-FALLBACK_VOICE = None  # edge-tts 已禁用(仅本地 CosyVoice3)
+# ── 豆包 seed-tts-2.0(云 API 兜底,key 不入库) ──
 
-# edge-tts 已禁用:所有音色仅由本地 CosyVoice3 合成
-
-
-import os as _os
 
 def _load_doubao_key() -> str:
     """豆包 ARK key 不入库:优先环境变量,其次服务器本地密钥文件。"""
-    k = _os.environ.get("TTV_DOUBAO_KEY", "").strip()
+    k = os.environ.get("TTV_DOUBAO_KEY", "").strip()
     if k:
         return k
     try:
-        from pathlib import Path
         p = Path("/mnt/workspace/ttv/.secrets/doubao.key")
         if p.exists():
             return p.read_text().strip()
     except Exception:
         pass
     return ""
+
 
 DOUBAO_KEY = _load_doubao_key()
 DOUBAO_URL = "https://openspeech.bytedance.com/api/v3/plan/tts/unidirectional"
@@ -81,12 +107,12 @@ DOUBAO_VOICES = [
 ]
 
 
-def _synth_local_url(text: str, voice: str, out: Path, speed: float, url: str) -> bool:
-    """本地 TTS 服务(CosyVoice3:8016 / Qwen3-TTS:8017)。成功返回 True。"""
+def _synth_local_url(text: str, voice: str, out: Path, speed: float, url: str,
+                     attempts: int = 3) -> bool:
+    """单实例 TTS 服务(CosyVoice3 8016/8018/8019 / Qwen3-TTS 8017)。成功返回 True。"""
     import time as _t
-    for attempt in range(3):
+    for attempt in range(attempts):
         try:
-            import httpx
             r = httpx.post(f"{url}/tts", json={"text": text, "voice": voice, "speed": speed},
                            timeout=httpx.Timeout(300.0, connect=3.0))
             if r.status_code == 200:
@@ -102,33 +128,21 @@ def _synth_local_url(text: str, voice: str, out: Path, speed: float, url: str) -
     return False
 
 
+def _synth_pool(text: str, voice: str, out: Path, speed: float) -> bool:
+    """池内轮询合成:优先本帧分配实例(1 次),失败逐个尝试其余存活实例。"""
+    pool = _alive_pool()
+    first = pool[0]
+    if _synth_local_url(text, voice, out, speed, first, attempts=1):
+        return True
+    for url in pool[1:]:
+        if _synth_local_url(text, voice, out, speed, url, attempts=1):
+            return True
+    return False
+
+
 def _synth_local(text: str, voice: str, out: Path, speed: float = 1.0) -> bool:
-    return _synth_local_url(text, voice, out, speed, LOCAL_TTS_URL)
-    """本地 CosyVoice3 服务(127.0.0.1:8016)。成功返回 True。"""
-    import time as _t
-    for attempt in range(2):
-        try:
-            import httpx
-            r = httpx.post(f"{LOCAL_TTS_URL}/tts", json={"text": text, "voice": voice, "speed": speed},
-                           timeout=httpx.Timeout(180.0, connect=3.0))
-            if r.status_code == 200:
-                break
-        except Exception:
-            pass
-        if attempt == 1:
-            return False
-        _t.sleep(2.0)
-    else:
-        return False
-    try:
-        wav = out.with_suffix(".wav")
-        wav.write_bytes(r.content)
-        subprocess.run(["ffmpeg", "-y", "-i", str(wav), "-ar", "44100", "-ac", "1",
-                        "-b:a", "128k", str(out)], capture_output=True, timeout=120)
-        wav.unlink(missing_ok=True)
-        return out.exists() and audio_duration(out) > 0.2
-    except Exception:
-        return False
+    """本地 CosyVoice3 多实例池合成。"""
+    return _synth_pool(text, voice, out, speed)
 
 
 DOUBAO_LAST_ERROR = ""
@@ -139,7 +153,8 @@ def _synth_doubao(text: str, voice: str, out: Path) -> bool:
     global DOUBAO_LAST_ERROR
     try:
         import uuid as _uuid
-        import httpx
+        import base64 as _b64
+        import json as _json
         headers = dict(DOUBAO_HEADERS)
         headers["X-Api-Request-Id"] = str(_uuid.uuid4())
         body = {
@@ -156,14 +171,13 @@ def _synth_doubao(text: str, voice: str, out: Path) -> bool:
             DOUBAO_LAST_ERROR = f"HTTP {r.status_code}: {r.text[:200]}"
             return False
         # NDJSON 流:每行一段 JSON,音频以 base64 出现在 data 字段,拼接即 MP3
-        import base64 as _b64
         chunks = []
         for line in r.text.splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
-                obj = __import__("json").loads(line)
+                obj = _json.loads(line)
             except Exception:
                 continue
             d = obj.get("data")
@@ -194,54 +208,67 @@ def _silence_placeholder(text: str, out: Path) -> str:
     return "silence"
 
 
-def _synth_with_fallback(text: str, voice: str, out: Path, speed: float = 1.0,
-                         provider: str = "cosyvoice3") -> str:
-    """按选定引擎合成;失败回落本地 CosyVoice3;再失败静音占位。"""
+def _synth_frame(idx: int, text: str, voice: str, audio_dir: Path, speed: float,
+                 provider: str, pool_url: str | None) -> tuple[int, dict]:
+    """单帧完整链路(合成 → ffmpeg 转码 → 时长 → 分词),供线程池并行调用。"""
+    out = audio_dir / f"vo_{idx:02d}.mp3"
+    engine = None
     if provider == "doubao":
         if _synth_doubao(text, voice, out):
-            return "doubao"
+            engine = "doubao"
     elif provider == "qwen3tts":
         if _synth_local_url(text, voice, out, speed, "http://127.0.0.1:8017"):
-            return "qwen3tts"
-    else:
-        if _synth_local(text, voice, out, speed):
-            return "cosyvoice3"
-    # 回落到本地 CosyVoice3(除非本来就是它)
-    if provider != "cosyvoice3" and _synth_local(text, voice, out, speed):
-        return "cosyvoice3"
-    return _silence_placeholder(text, out)
+            engine = "qwen3tts"
+    elif pool_url:
+        if _synth_local_url(text, voice, out, speed, pool_url, attempts=1):
+            engine = "cosyvoice3"
+    # 回落到本地 CosyVoice3 池(除非本来就是它;doubao/qwen 失败走这里)
+    if engine is None:
+        if _synth_pool(text, voice, out, speed):
+            engine = "cosyvoice3"
+    if engine is None:
+        engine = _silence_placeholder(text, out)
+    dur = audio_duration(out)
+    words = split_words(text)
+    n_chars = max(1, len(text.replace(" ", "")))
+    t0 = VO_OFFSET
+    word_times = []
+    for w in words:
+        wdur = dur * len(w) / n_chars
+        word_times.append((w, t0, t0 + wdur))
+        t0 += wdur
+    return idx, {"path": str(out), "duration": dur, "words": word_times, "engine": engine}
 
 
 def synthesize_frames(frames: list[dict], voice: str, audio_dir: Path, speed: float = 1.0,
-                       provider: str = "cosyvoice3") -> dict:
+                      provider: str = "cosyvoice3") -> dict:
     """为所有帧合成旁白 → {frame_index: {path, duration, engine, words:[(word, t0, t1)]}}。
 
-    返回后由调用方根据真实时长重算帧 duration。
+    多实例并行:cosyvoice3 按存活实例数并行(轮询分发,单实例串行 GPU 推理);
+    其余引擎保持单路。返回后由调用方根据真实时长重算帧 duration。
     """
     audio_dir.mkdir(parents=True, exist_ok=True)
     result = {}
     texts = [(f["index"], (f.get("voiceover") or "").strip()) for f in frames]
     texts = [(i, t) for i, t in texts if t]
+    if not texts:
+        return result
 
-    for idx, text in texts:
-        out = audio_dir / f"vo_{idx:02d}.mp3"
-        engine = _synth_with_fallback(text, voice, out, speed, provider)
-        result[idx] = {"engine": engine}
+    if provider == "cosyvoice3":
+        pool = _alive_pool()
+        workers = max(1, len(pool))
+    else:
+        pool, workers = None, 1
 
-    for idx, text in texts:
-        out = audio_dir / f"vo_{idx:02d}.mp3"
-        dur = audio_duration(out)
-        words = split_words(text)
-        n_chars = max(1, len(text.replace(" ", "")))
-        t0 = VO_OFFSET
-        word_times = []
-        for w in words:
-            wdur = dur * len(w) / n_chars
-            word_times.append((w, t0, t0 + wdur))
-            t0 += wdur
-        entry = result.get(idx, {})
-        entry.update({"path": str(out), "duration": dur, "words": word_times})
-        result[idx] = entry
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {}
+        for n, (idx, text) in enumerate(texts):
+            url = pool[n % len(pool)] if pool else None
+            futs[ex.submit(_synth_frame, idx, text, voice, audio_dir, speed,
+                           provider, url)] = idx
+        for fut in as_completed(futs):
+            idx, entry = fut.result()
+            result[idx] = entry
     return result
 
 
@@ -302,8 +329,3 @@ def apply_real_durations(script: dict, vo: dict, tail_pad: float = 1.4,
         f["duration"] = round(d, 2)
         total += d
     script["duration_sec"] = round(total, 1)
-
-
-def words_meta_json(vo: dict) -> str:
-    """帧索引 → 词时间轴的 JSON(写入项目供字幕使用;构建器直接内联,此处备用)。"""
-    return json.dumps({str(k): v["words"] for k, v in vo.items()}, ensure_ascii=False)

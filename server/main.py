@@ -2,9 +2,10 @@
 """理论文章转视频 —— FastAPI 服务。
 
 流水线:uploaded → analyzing → analyzed → building → preview → rendering → rendered
-所有阶段在服务器本地执行(DeepSeek vLLM / edge-tts / hyperframes CLI)。
+所有阶段在服务器本地执行(DeepSeek vLLM / CosyVoice3 TTS / hyperframes CLI)。
 """
 import json
+import logging
 import os
 import re
 import shutil
@@ -18,14 +19,25 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 
 sys.path.insert(0, str(Path(__file__).parent))
-from config import BACKEND_PORT, NODE_BIN_DIR, STYLES  # noqa: E402
-from jobs import JOBS, create_job, get_job, run_in_background  # noqa: E402
+from config import BACKEND_PORT, NODE_BIN_DIR  # noqa: E402
+from jobs import JOBS, LOCK, create_job, get_job, remove_job, run_in_background  # noqa: E402
 import extract  # noqa: E402
 import analyze  # noqa: E402
 import tts  # noqa: E402
 from builder import assemble, styles  # noqa: E402
 
+log = logging.getLogger("ttv.main")
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
 app = FastAPI(title="理论文章转视频")
+
+# 全局代理客户端(连接池复用)。每请求新建 AsyncClient 曾在 Studio 并行加载
+# 资源时耗尽文件描述符(OSError: Too many open files → 全站代理 500)。
+PROXY_CLIENT = httpx.AsyncClient(
+    timeout=httpx.Timeout(120.0, connect=5.0),
+    limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
+)
 
 # Studio 进程按需拉起:任务状态轮询(api_job)或 Studio 代理访问时自愈启动。
 # 不在启动时批量恢复——批处理会并发抢槽位,曾导致两个任务记录到同一端口。
@@ -35,6 +47,11 @@ STUDIO_SLOT_USED: dict[str, int] = {}         # job_id -> Studio 端口
 STUDIO_SLOT_BASE = 4150
 STUDIO_SLOTS = 4
 STUDIO_LOCK = threading.Lock()                # 串行化 Studio 启动,避免槽位竞态
+
+# 渲染全局信号量:Chrome 渲染为 CPU 密集操作,同时 ≤2 个(超出排队,不互相拖垮)
+RENDER_SEM = threading.BoundedSemaphore(2)
+# 同时进行中(analyzing/building/rendering)任务上限:防公网批量提交挤爆 LLM/GPU
+MAX_INFLIGHT_JOBS = 4
 
 # ───────────────────────── 流水线阶段 ─────────────────────────
 
@@ -57,13 +74,14 @@ def stage_analyze(job):
     text = extract.extract_text(upload)
     p["input"].write_text(text, encoding="utf-8")
     if kind == "lecture":
-        # 讲解视频:两步分析(诊断文章类型与讲解方案 → 分段生成逐帧脚本),耗时较长
+        # 讲解视频:两步分析(诊断文章类型与讲解方案 → 分段并行生成逐帧脚本),耗时较长
         script = analyze.analyze_lecture_article(
             text, int(job.state["duration_sec"]), _job_combo(job),
             progress_cb=lambda msg: job.set(progress=msg))
     else:
-        job.set(progress=f"DeepSeek 分析中(约 10-60 秒,全文 {len(text)} 字)")
-        script = analyze.analyze_article(text, int(job.state["duration_sec"]), _job_combo(job))
+        job.set(progress=f"DeepSeek 分析中(两阶段:论证分析 → 脚本生成,全文 {len(text)} 字)")
+        script = analyze.analyze_article(text, int(job.state["duration_sec"]), _job_combo(job),
+                                         progress_cb=lambda msg: job.set(progress=msg))
     p["script"].write_text(json.dumps(script, ensure_ascii=False, indent=1), encoding="utf-8")
     job.set(status="analyzed", progress="")
 
@@ -82,15 +100,16 @@ def stage_build(job):
     # 模型单轮扩写有上限,最多两轮;剩余缺口由构建期按帧留白分摊补满。
     article_text = p["input"].read_text(encoding="utf-8")
     vo_chars = sum(len((f.get("voiceover") or "").strip()) for f in script["frames"])
-    need = target * 3.4
+    need = target * analyze.VO_NEED_EXPAND
     for _pass in range(2):
-        if vo_chars >= need * 0.85:
+        if vo_chars >= need * analyze.EXPAND_ACCEPT_LINE:
             break
         job.set(progress=f"{'讲解内容' if kind == 'lecture' else '旁白量'}不足目标时长,正在拓展内容(第{_pass + 1}轮:{vo_chars} 字 → 约需 {int(need)} 字)")
         try:
             script = analyze.expand_script(script, article_text, target, kind)
-        except Exception:
+        except Exception as e:
             # 拓展失败不阻塞构建:模型扩写有天花板,剩余缺口由构建期留白分摊补足
+            log.exception("job %s 拓展失败,跳过", job.id)
             break
         p["script"].write_text(json.dumps(script, ensure_ascii=False, indent=1), encoding="utf-8")
         vo_chars = sum(len((f.get("voiceover") or "").strip()) for f in script["frames"])
@@ -106,7 +125,7 @@ def stage_build(job):
     if vo_dir.exists():
         shutil.rmtree(vo_dir)
     vo_dir.mkdir(parents=True, exist_ok=True)
-    job.set(progress=f"配音合成中({eng_names.get(provider, provider)},自然语速)")
+    job.set(progress=f"配音合成中({eng_names.get(provider, provider)},自然语速,多 GPU 并行)")
     vo = tts.synthesize_frames(script["frames"], voice, p["vo"], speed=speed, provider=provider)
     engines = {}
     for v in vo.values():
@@ -161,6 +180,7 @@ def _run_check(job):
         summary = f"{m.group(1)}错误 {m.group(2)}警告 {m.group(3)}提示" if m else "完成"
         job.set(check=f"hyperframes check: {summary}(exit {r.returncode})")
     except Exception as e:
+        log.exception("job %s hyperframes check 失败", job.id)
         job.set(check=f"check 失败: {e}")
 
 
@@ -168,22 +188,24 @@ RENDER_FORMATS = {"mp4", "mkv", "mov", "webm"}
 
 
 def stage_render(job, fmt: str = "mp4"):
-    job.set(status="rendering", progress=f"HyperFrames 渲染中({fmt},约 5-20 分钟)")
-    p = job.paths()
-    out = p["project"] / "renders" / f"out.{fmt}"
-    # 渲染期间保留 Studio,预览不中断(渲染只读项目文件,不冲突)
-    # 讲解视频可长达 30 分钟,渲染超时放宽到 3 小时
-    timeout = 10800 if job.state.get("video_kind") == "lecture" else 3600
-    r = subprocess.run(
-        ["hyperframes", "render", str(p["project"]),
-         "--output", str(out), "--format", fmt, "--quality", "high"],
-        capture_output=True, text=True, timeout=timeout, env=_hf_env(),
-    )
-    if r.returncode != 0:
-        tail = (r.stderr or r.stdout or "")[-1500:]
-        raise RuntimeError(f"渲染失败:{tail}")
-    if not out.exists() or out.stat().st_size < 10000:
-        raise RuntimeError("渲染产物缺失或过小")
+    job.set(status="rendering", progress="排队等待渲染槽位…")
+    with RENDER_SEM:
+        job.set(progress=f"HyperFrames 渲染中({fmt},约 5-20 分钟)")
+        p = job.paths()
+        out = p["project"] / "renders" / f"out.{fmt}"
+        # 渲染期间保留 Studio,预览不中断(渲染只读项目文件,不冲突)
+        # 讲解视频可长达 30 分钟,渲染超时放宽到 3 小时
+        timeout = 10800 if job.state.get("video_kind") == "lecture" else 3600
+        r = subprocess.run(
+            ["hyperframes", "render", str(p["project"]),
+             "--output", str(out), "--format", fmt, "--quality", "high"],
+            capture_output=True, text=True, timeout=timeout, env=_hf_env(),
+        )
+        if r.returncode != 0:
+            tail = (r.stderr or r.stdout or "")[-1500:]
+            raise RuntimeError(f"渲染失败:{tail}")
+        if not out.exists() or out.stat().st_size < 10000:
+            raise RuntimeError("渲染产物缺失或过小")
     # 成片就绪后回收 Studio(前端此时展示成片播放,不再需要编辑器;槽位留给其他任务)
     stop_studio(job)
     job.set(status="rendered", progress="", render_format=fmt)
@@ -235,30 +257,35 @@ def _start_studio_locked(job):
     """以 --foreground 直接拉起 Studio 进程并跟踪(不走 CLI 托管会话注册表——
     注册表会残留死会话,CLI 复用死会话时不监听新端口,是「偶发一直启动中」的根源)。
     """
+    # 自愈线程可能已为本任务拉起存活 Studio:直接复用,避免进程/端口双开
+    # (否则旧进程不被 terminate、旧端口永久占用,槽位缓慢耗尽)
+    existing = STUDIOS.get(job.id)
+    if existing is not None and existing.poll() is None:
+        port = STUDIO_SLOT_USED.get(job.id)
+        if port is not None and not _port_free(port):
+            return port
     proj = str(job.paths()["project"])
-    log = open(f"/mnt/workspace/ttv/studio-{job.id}.log", "a")
-    import time as _t
-    for retry in range(2):
-        port = _studio_slot(job.id)
-        log.write(f"[{_t.time()}] starting studio for {job.id} on {port}\n")
-        log.flush()
-        proc = subprocess.Popen(
-            ["hyperframes", "preview", "--port", str(port), "--foreground", "--no-open"],
-            cwd=proj, stdout=log, stderr=log, env=_hf_env(),
-        )
-        # 等待端口就绪(最多 90s);进程提前退出则换端口重试
-        for _ in range(90):
-            if proc.poll() is not None:
-                log.write(f"studio 进程提前退出 code={proc.returncode}\n")
-                break
-            if not _port_free(port):
-                STUDIOS[job.id] = proc
-                log.write(f"studio ready on {port}\n")
-                log.close()
-                return port
-            _t.sleep(1.0)
-        log.write(f"端口 {port} 未就绪,重试下一端口\n")
-    log.close()
+    with open(f"/mnt/workspace/ttv/studio-{job.id}.log", "a") as log:
+        import time as _t
+        for retry in range(2):
+            port = _studio_slot(job.id)
+            log.write(f"[{_t.time()}] starting studio for {job.id} on {port}\n")
+            log.flush()
+            proc = subprocess.Popen(
+                ["hyperframes", "preview", "--port", str(port), "--foreground", "--no-open"],
+                cwd=proj, stdout=log, stderr=log, env=_hf_env(),
+            )
+            # 等待端口就绪(最多 90s);进程提前退出则换端口重试
+            for _ in range(90):
+                if proc.poll() is not None:
+                    log.write(f"studio 进程提前退出 code={proc.returncode}\n")
+                    break
+                if not _port_free(port):
+                    STUDIOS[job.id] = proc
+                    log.write(f"studio ready on {port}\n")
+                    return port
+                _t.sleep(1.0)
+            log.write(f"端口 {port} 未就绪,重试下一端口\n")
     raise RuntimeError("Studio 启动超时(两个端口均未就绪)")
 
 
@@ -267,9 +294,10 @@ def _start_studio_bg(job):
         start_studio(job)
     except Exception as e:
         # 失败留痕(自愈循环会重试,但要能在日志里查到原因)
+        log.exception("job %s Studio 自愈拉起失败", job.id)
         try:
-            with open(f"/mnt/workspace/ttv/studio-{job.id}.log", "a") as log:
-                log.write(f"self-heal start failed: {e}\n")
+            with open(f"/mnt/workspace/ttv/studio-{job.id}.log", "a") as logf:
+                logf.write(f"self-heal start failed: {e}\n")
         except Exception:
             pass
     finally:
@@ -295,6 +323,11 @@ def _live_studio_port(job_id: str) -> int | None:
     if proc is not None and proc.poll() is None and port is not None and not _port_free(port):
         return port
     return None
+
+
+def _inflight_count() -> int:
+    return sum(1 for j in list(JOBS.values())
+               if j.status in ("analyzing", "building", "rendering"))
 
 
 # ───────────────────────── API ─────────────────────────
@@ -337,6 +370,9 @@ async def api_create(file: UploadFile = File(None), style: str = Form(None),
         raise HTTPException(400, f"未知配音引擎:{voice_engine}")
     if video_kind not in ("promo", "lecture"):
         raise HTTPException(400, f"未知视频类型:{video_kind}")
+    # 并发防护:进行中任务过多时拒绝新任务(公网无鉴权,防批量提交挤爆 LLM/GPU)
+    if _inflight_count() >= MAX_INFLIGHT_JOBS:
+        raise HTTPException(429, f"当前进行中任务过多(≥{MAX_INFLIGHT_JOBS}),请稍后再试")
     combo = styles.resolve_combo(style, font, palette, bg, motion)
     # 时长档位:宣传 30-600 秒;讲解 300-1800 秒(5 分钟一档,取整到 300)
     if video_kind == "lecture":
@@ -375,6 +411,9 @@ async def api_create(file: UploadFile = File(None), style: str = Form(None),
 def api_reanalyze(job_id: str):
     """重新分析(提示词升级后可用)。"""
     job = get_job(job_id) or _http404()
+    # 状态守卫:分析/构建/渲染中不得重入(否则并发写 script.json、状态互相覆盖)
+    if job.status in ("analyzing", "building", "rendering"):
+        raise HTTPException(409, f"当前状态 {job.status} 不能重新分析(等待完成)")
     job.set(status="analyzing", progress="重新分析中", error=None)
     run_in_background(job, stage_analyze)
     return {"ok": True}
@@ -384,8 +423,9 @@ def api_reanalyze(job_id: str):
 async def api_edit_script(job_id: str, request: Request):
     """用户直接编辑分析结果/逐帧脚本后保存(校验通过方可构建)。"""
     job = get_job(job_id) or _http404()
-    if job.status in ("building", "rendering"):
-        raise HTTPException(409, f"当前状态 {job.status} 不能修改脚本(等待构建/渲染完成)")
+    # 与 revise 一致:仅 analyzed/preview/failed 可改(analyzing 会并发写覆盖、uploaded 无文件)
+    if job.status not in ("analyzed", "preview", "failed"):
+        raise HTTPException(409, f"当前状态 {job.status} 不能修改脚本(需先完成分析)")
     body = await request.json()
     script = body.get("script") if isinstance(body, dict) and "script" in body else body
     article = job.paths()["input"].read_text(encoding="utf-8")
@@ -405,7 +445,7 @@ async def api_revise(job_id: str, request: Request):
     if job.status not in ("analyzed", "preview", "failed"):
         raise HTTPException(409, f"当前状态 {job.status} 不能修改(需先完成分析)")
     body = await request.json()
-    instruction = (body or {}).get("instruction", "").strip()
+    instruction = body.get("instruction", "").strip() if isinstance(body, dict) else ""
     if len(instruction) < 5:
         raise HTTPException(400, "请描述修改要求(不少于 5 字)")
     job.set(status="analyzing", progress="AI 按建议修改脚本中", error=None)
@@ -423,16 +463,17 @@ def stage_revise(job, instruction: str):
         job.set(status="analyzed", progress=f"已按建议修改:{instruction[:30]}", error=None)
     except Exception as e:
         # 修改失败不毁掉任务:保留原脚本,提示可重试或直接构建
+        log.exception("job %s AI 修改失败", job.id)
         job.set(status="analyzed", progress=f"AI 修改失败({str(e)[:50]}),保留原脚本,可重试或直接构建",
                 error=None)
 
 
 @app.get("/api/jobs/{job_id}")
-def api_job(job_id: str):
+def api_job(job_id: str, brief: int = 0):
     job = get_job(job_id)
     if not job:
         raise HTTPException(404, "任务不存在")
-    d = job.to_dict()
+    d = job.to_dict(brief=bool(brief))
     if job.status in ("preview", "rendering"):
         # 自愈:Studio 进程若已死亡则自动重建(渲染期间编辑器也应保持可用)
         port = _live_studio_port(job.id)
@@ -444,11 +485,25 @@ def api_job(job_id: str):
     return d
 
 
+@app.delete("/api/jobs/{job_id}")
+def api_delete_job(job_id: str):
+    """删除任务(rendered/failed 等终态可删;进行中 409)。"""
+    job = get_job(job_id) or _http404()
+    if job.status in ("analyzing", "building", "rendering"):
+        raise HTTPException(409, f"当前状态 {job.status} 不能删除(等待完成)")
+    stop_studio(job)
+    remove_job(job)
+    shutil.rmtree(job.dir, ignore_errors=True)
+    return {"ok": True}
+
+
 @app.post("/api/jobs/{job_id}/build")
 def api_build(job_id: str):
     job = get_job(job_id) or _http404()
     if job.status not in ("analyzed", "preview", "rendered", "failed"):
         raise HTTPException(409, f"当前状态 {job.status} 不能构建")
+    if not job.paths()["script"].exists():
+        raise HTTPException(409, "脚本尚未生成,请先完成分析")
     job.set(status="building", progress="", error=None)
     run_in_background(job, stage_build)
     return {"ok": True}
@@ -474,15 +529,11 @@ async def api_render(job_id: str, request: Request):
 @app.get("/api/jobs/{job_id}/video")
 def api_video(job_id: str):
     job = get_job(job_id) or _http404()
-    fmt = job.state.get("render_format", "mp4")
-    out = job.paths()["project"] / "renders" / f"out.{fmt}"
-    if not out.exists():
-        # 兼容旧产物名
-        out = job.paths()["render"]
-    if not out.exists():
+    out = job.video_path()
+    if out is None:
         raise HTTPException(404, "视频尚未渲染")
-    return FileResponse(out, media_type=f"video/{fmt}",
-                        filename=f"{job.id}.{fmt}")
+    return FileResponse(out, media_type=f"video/{out.suffix.lstrip('.')}",
+                        filename=f"{job.id}{out.suffix}")
 
 
 def _job_from_pid(pid: str):
@@ -508,7 +559,7 @@ def api_runtime_js():
 def api_projects_list():
     """Studio 项目列表:合成所有处于 preview 状态的任务(Studio 服务器内部 id 恒为 ttv)。"""
     items = []
-    for job in JOBS.values():
+    for job in list(JOBS.values()):
         if job.status == "preview":
             items.append({
                 "id": "ttv" + job.id,
@@ -539,8 +590,7 @@ async def api_project_root(pid: str, request: Request):
     # Studio 服务器内部项目 id 恒为 "ttv",且其根路径不带斜杠
     target = f"http://127.0.0.1:{port}/api/projects/ttv"
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.request(request.method, target)
+        r = await PROXY_CLIENT.request(request.method, target)
     except Exception:
         raise HTTPException(503, "Studio 启动中")
     ctype = r.headers.get("content-type", "application/octet-stream")
@@ -557,6 +607,8 @@ async def api_project_root(pid: str, request: Request):
 @app.api_route("/api/projects/{pid}/{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def api_projects_passthrough(pid: str, rest: str, request: Request):
     """Studio 前端以源根路径调用 /api/projects/...,转发到对应任务的 Studio 服务器。"""
+    if ".." in rest:
+        raise HTTPException(400, "非法路径")
     job = _job_from_pid(pid)
     if not job:
         raise HTTPException(404, "项目不存在")
@@ -571,9 +623,10 @@ async def api_projects_passthrough(pid: str, rest: str, request: Request):
     if request.url.query:
         target += "?" + request.url.query
     body = await request.body()
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        r = await client.request(request.method, target, content=body,
-                                 headers={"Content-Type": request.headers.get("content-type", "application/json")})
+    headers = {}
+    if request.headers.get("content-type"):
+        headers["Content-Type"] = request.headers["content-type"]
+    r = await PROXY_CLIENT.request(request.method, target, content=body, headers=headers)
     ctype = r.headers.get("content-type", "application/octet-stream")
     content = r.content
     if "javascript" in ctype or "text/html" in ctype or "json" in ctype:
@@ -615,8 +668,14 @@ async def _studio_proxy(job_id: str, path: str, request: Request, port: int):
     query = f"?{request.url.query}" if request.url.query else ""
     target = f"http://127.0.0.1:{port}/{path}{query}"
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.get(target, follow_redirects=True)
+        # 按原始方法与 body 转发(Studio 可能经此路径发 POST/PUT 保存类请求)
+        body = await request.body() if request.method in ("POST", "PUT", "PATCH", "DELETE") else None
+        headers = {}
+        if request.headers.get("content-type"):
+            headers["Content-Type"] = request.headers["content-type"]
+        r = await PROXY_CLIENT.request(
+            request.method, target, content=body, headers=headers,
+            follow_redirects=request.method in ("GET", "HEAD"))
     except Exception:
         return Response(
             content=_retry_msg("Studio 启动中", "页面会自动重试,请稍候。"),

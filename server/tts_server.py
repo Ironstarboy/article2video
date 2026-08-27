@@ -101,7 +101,8 @@ def tts(req: TTSRequest):
         raise HTTPException(400, f"text 过长({len(text)} 字,最多 400)")
     if req.voice not in VOICES:
         raise HTTPException(400, f"未知音色 {req.voice},可选:{list(VOICES)}")
-    speed = max(0.6, min(1.8, req.speed))
+    # 实测 speed<1 非线性恶化(0.8 即 5 倍时长怪音),下限钳位 1.0
+    speed = max(1.0, min(1.8, req.speed))
     import os
     ref_name, prompt = _ref_of(req.voice)
     ref_wav = os.path.join(REF_DIR, ref_name)
