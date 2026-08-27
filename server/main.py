@@ -624,6 +624,9 @@ EXT_MIME = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".woff2": "font/woff2",
     ".otf": "font/otf", ".ttf": "font/ttf", ".map": "application/json",
     ".html": "text/html",
+    # 音频/视频:内置服务器按 text/plain 下发,Chrome 拒载导致播放器与 Studio 无声
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg", ".mp4": "video/mp4", ".webm": "video/webm",
 }
 
 

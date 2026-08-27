@@ -477,6 +477,7 @@ const STATUS_TEXT = {
 };
 function poll(){
   fetch("./api/jobs/" + jobId).then(r=>r.json()).then(j=>{
+    jobStatus = j.status;
     const b = $("#banner");
     b.className = "banner" + (j.status==="failed" ? " err" : (["analyzed","preview","rendered"].includes(j.status) ? " ok":""));
     $("#banner-spin").style.display = ["analyzing","building","rendering","uploaded"].includes(j.status) ? "" : "none";
@@ -492,20 +493,17 @@ function updateActions(j){
   bb.textContent = j.status==="preview" ? "重新构建" : "构建预览";
   rb.disabled = j.status!=="preview";
   rb.textContent = "渲染成片";
-  if (j.status==="preview" && !$("#player-box").querySelector("iframe")) {
-    const f = document.createElement("iframe");
-    f.src = "./api/player/" + j.job_id + "/";
-    f.allow = "autoplay";
-    $("#player-box").innerHTML = "";
-    $("#player-box").appendChild(f);
-    // 构建完成后自动弹出播放器画面(此前需手动切标签)
-    if (currentTab === "player") {
-      $("#player-box").style.display = "";
-    } else {
-      switchTab("player");
-    }
-  }
   if (j.status==="preview") {
+    const justReady = lastStatus !== "preview";
+    // 播放器 iframe 只在两类时机创建:预览就绪瞬间,或用户正停留在播放器标签。
+    // 此前每轮 poll 都重建 iframe 并强制切回播放器,会把用户从 Studio 标签踢回去。
+    if (justReady && !$("#player-box").querySelector("iframe")) {
+      createPlayerIframe();
+      // 构建完成后自动弹出播放器画面(用户未手动选过标签时)
+      if (!userPickedTab) switchTab("player");
+    } else if (currentTab === "player" && !$("#player-box").querySelector("iframe")) {
+      createPlayerIframe();
+    }
     $("#vtab-player").style.display = "";
     $("#vtab-studio").style.display = "";
   }
@@ -518,6 +516,7 @@ function updateActions(j){
     if ($("#studio-box").querySelector("iframe")) { $("#studio-box").innerHTML = "已渲染成片"; $("#studio-box").style.display = "none"; }
     switchTab("player");
   }
+  lastStatus = j.status;
 }
 const STYLE_NAMES = {"solemn-red":"庄重肃穆 · 中国红","academic-ink":"清雅学术 · 墨黛青","modern-blue":"现代锐意 · 科技蓝"};
 function el(tag, cls, text){
@@ -623,16 +622,29 @@ function collectScript(){
 }
 /* 视频区 tab:播放器 / Studio */
 let currentTab = "player";
+let jobStatus = null;        // 最新任务状态(poll 更新)
+let lastStatus = null;       // 上一轮任务状态(识别「预览就绪」瞬间)
+let userPickedTab = false;   // 用户是否手动点过标签(自动弹出仅限未手动选择时)
+function createPlayerIframe(){
+  if ($("#player-box").querySelector("iframe") || $("#player-box").querySelector("video")) return;
+  const f = document.createElement("iframe");
+  f.src = "./api/player/" + jobId + "/";
+  f.allow = "autoplay";
+  $("#player-box").innerHTML = "";
+  $("#player-box").appendChild(f);
+}
 function switchTab(t){
   currentTab = t;
   $("#vtab-player").classList.toggle("sel", t==="player");
   $("#vtab-studio").classList.toggle("sel", t==="studio");
-  const isRendered = !!$("#player-box").querySelector("video");
   if (t === "player") {
     // 切到播放器:销毁 Studio iframe(否则其自动播放的音频在后台持续发声)
     if ($("#studio-box").querySelector("iframe")) { $("#studio-box").innerHTML = "点击「Studio 编辑器」标签后加载"; }
     $("#studio-box").style.display = "none";
     $("#player-box").style.display = "";
+    // 预览就绪后若播放器 iframe 曾被销毁,切回本标签时重建(此前依赖 poll 重建,
+    // 每轮 poll 都会把用户从 Studio 标签踢回来)
+    if (jobStatus === "preview") createPlayerIframe();
   } else {
     // 切到 Studio:销毁播放器 iframe(单声源原则)
     if ($("#player-box").querySelector("iframe")) { $("#player-box").innerHTML = "构建后在此预览"; }
@@ -646,10 +658,9 @@ function switchTab(t){
       $("#studio-box").appendChild(f);
     }
   }
-  if (isRendered && t === "player") { $("#player-box").style.display = ""; }
 }
-$("#vtab-player").onclick = ()=>switchTab("player");
-$("#vtab-studio").onclick = ()=>switchTab("studio");
+$("#vtab-player").onclick = ()=>{ userPickedTab = true; switchTab("player"); };
+$("#vtab-studio").onclick = ()=>{ userPickedTab = true; switchTab("studio"); };
 $("#btn-edit").onclick = ()=>{
   editMode = !editMode;
   $("#btn-edit").textContent = editMode ? "退出编辑" : "编辑脚本";

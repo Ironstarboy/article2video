@@ -145,7 +145,7 @@ def build(script: dict, style_key: str, vo: dict, project_dir: Path) -> dict:
             if shift > 0 and trans == "crossfade":
                 js.append(f'tl.from("#capsec{i}",{{opacity:0,duration:{shift}}},{S - shift});')
             js += [ln.replace("##S##", f"{S:.2f}") for ln in cap_js]
-            audios.append(f'<audio id="vo-{i}" src="assets/audio/vo_{i:02d}.mp3" '
+            audios.append(f'<audio id="vo-{i}" src="assets/audio/vo_{i:02d}.mp3" preload="auto" '
                           f'data-start="{S + VO_OFFSET:.2f}" data-volume="1"></audio>')
 
     # 3) BGM(循环补齐到总时长,结尾 2.5s 淡出)
@@ -201,7 +201,7 @@ html,body{{margin:0;padding:0;background:{style["bg"]};}}
 </head>
 <body>
 <div id="root" data-composition-id="{comp_id}" data-start="0" data-width="1920" data-height="1080" data-duration="{total}">
-<audio id="bgm" src="assets/bgm/bgm.mp3" data-start="0" data-volume="0.12"></audio>
+<audio id="bgm" src="assets/bgm/bgm.mp3" preload="auto" data-start="0" data-volume="0.12"></audio>
 {chr(10).join(audios)}
 {chr(10).join(sections)}
 {chr(10).join(captions)}
