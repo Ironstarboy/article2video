@@ -176,8 +176,8 @@ def _elaboration(i, c, style, S):
     for n, card in enumerate(cards):
         cid = f"f{i}-c{n+1}"
         parts.append(f'<div id="{cid}" style="flex:1;background:{style["card"]};'
-                     f'border:1px solid {style["card_border"]};border-radius:{radius}px;padding:44px 40px;'
-                     'display:flex;flex-direction:column;min-height:280px;">')
+                     f'border:1px solid {style["card_border"]};border-radius:{radius}px;padding:36px 32px;'
+                     'display:flex;flex-direction:column;min-height:320px;">')
         if style.get("cyan"):
             parts.append(f'<div id="{cid}-bar" style="height:4px;border-radius:2px;'
                          f'background:linear-gradient(90deg,{style["primary"]},{style.get("cyan", style["primary"])});margin-bottom:28px;"></div>')
@@ -230,8 +230,9 @@ def _quote(i, c, style, S):
 
 def _data(i, c, style, S):
     items = c.get("items") or []
+    num_size = 150 if len(items) <= 2 else 110   # 3 组数据时缩小字号防溢出
     parts = ['<div class="inner center" style="padding:0 320px;">',
-             '<div style="display:flex;gap:140px;justify-content:center;align-items:flex-start;">']
+             '<div style="display:flex;gap:80px;justify-content:center;align-items:flex-start;">']
     js = []
     for n, item in enumerate(items):
         val = str(item.get("value", "0"))
@@ -239,7 +240,7 @@ def _data(i, c, style, S):
         parts.append('<div style="display:flex;flex-direction:column;align-items:center;">')
         if numeric:
             parts.append('<div style="display:flex;align-items:baseline;gap:12px;">'
-                         f'<span id="f{i}-n{n+1}" style="font-family:{style["font_title"]};font-size:150px;'
+                         f'<span id="f{i}-n{n+1}" style="font-family:{style["font_title"]};font-size:{num_size}px;'
                          f'color:{style["primary"]};line-height:1;">0</span>'
                          f'<span id="f{i}-u{n+1}" style="font-family:{style["font_bold"]};font-size:32px;'
                          f'color:{style["text"]};">{E(item.get("unit", ""))}</span></div>')
