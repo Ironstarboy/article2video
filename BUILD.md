@@ -1,7 +1,7 @@
 # 搭建过程文档(从零到一)
 
 > 记录本项目在 VideoLab 云服务器(阿里云 PAI-DSW,8.130.213.80)上的完整搭建过程,供重建/排障参考。
-> 版本:v0.9(2026-08-27)
+> 版本:v2.0(2026-08-28)
 
 ## 一、环境侦察(踩坑前提)
 
@@ -20,23 +20,26 @@ hyperframes browser ensure          # 下载 chrome-headless-shell 152
 hyperframes doctor                  # 验证:Node/FFmpeg/Chrome 全绿
 
 # Python 依赖(系统 python3.12 + venv)
-pip3 install fastapi uvicorn httpx python-multipart jieba
+pip3 install fastapi uvicorn httpx python-multipart jieba fonttools
+# fonttools 已加入 server/requirements.txt(此前漏声明,全新部署构建必崩)
 ```
 
-## 三、字体(必须完整版,子集会渲染方框)
+## 三、字体(渲染必须完整版 OTF;网页端用子集)
 
-本地经 jsdelivr(<20MB 文件)与 ghfast.top 代理(>20MB 文件)下载后 scp 上传:
+**渲染用(必须完整版)**:子集字体缺生僻字会渲染成方框。`deploy/setup.sh` 已改为完整版下载。本地经 jsdelivr(<20MB 文件)与 ghfast.top 代理(>20MB 文件)下载后 scp 上传:
 
 | 文件(服务器名) | 来源 |
 |---|---|
 | NotoSansSC-Regular.otf / Bold.otf | noto-cjk Sans/OTF/SimplifiedChinese(16-17MB) |
 | SourceHanSerifCN-Heavy.otf / Regular.otf | source-han-serif OTF/SimplifiedChinese(24MB,jsdelivr 有 20MB 上限需走代理) |
 
-放置:`/mnt/workspace/ttv/assets/fonts/`(渲染项目构建时自动复制;网页端经 `/ttv/assets/` nginx 路由加载)
+放置:`/mnt/workspace/ttv/assets/fonts/`(渲染项目构建时直接引用,不再复制进每任务目录;网页端经 `/ttv/assets/` nginx 路由加载,`Cache-Control: max-age=31536000, immutable`)
 
-## 四、CosyVoice3 TTS(替换 edge-tts 全过程)
+**网页端用(子集 woff2)**:构建时用 fonttools 子集化——UI 用字约 3000 常用字 + 页面静态文案,每份 <300KB,配合 `unicode-range` 回退系统字体(修复此前 @font-face 引 /ttv/assets/ 但 nginx 无该路由导致字体 404 从未生效的问题)。
 
-1. **选型**:CosyVoice3-0.5B(中文 CER 0.000、音标控制多音字;Qwen3-TTS 中文需谨慎;COSYVoice2 已过时)
+## 四、CosyVoice3 TTS 多实例池
+
+1. **选型**:CosyVoice3-0.5B(中文 CER 0.000、音标控制多音字;Qwen3-TTS 中文需谨慎,仅作备用引擎)
 2. **权重**:ModelScope 下载(HuggingFace 文件下载在本服务器网络不通)
    ```bash
    python3 -c "from modelscope import snapshot_download; snapshot_download('FunAudioLLM/Fun-CosyVoice3-0.5B-2512', local_dir='/mnt/models/CosyVoice3-0.5B')"
@@ -53,24 +56,24 @@ pip3 install fastapi uvicorn httpx python-multipart jieba
    - **必须 `source /usr/local/PPU_SDK/envsetup.sh`**,否则 PPU 内核 JIT 报 `PPU_SDK/PPU_HOME not exist`
    - torchaudio 2.10 需要 torchcodec(无轮子)→ 服务内 monkeypatch 成 soundfile
    - v3 构造签名无 load_jit;prompt 文本必须含 `You are a helpful assistant.<|endofprompt|>` 前缀
-   - **speed<1 非线性恶化(0.8 → 5 倍时长)**,只允许 1.0/1.05;文本 <15 字 vocoder 卷积报错
-   - 三音色:edge-tts 新闻腔(云扬/云霞/云健)生成种子 wav → CosyVoice3 零样本克隆
-5. **服务**:`deploy/start-tts.sh`(8016,GPU1;pkill 模式 `tts_serve[r]`——uvicorn 进程 cmdline 是 `tts_server:app` 不带 .py)
+   - **speed<1 非线性恶化(0.8 → 5 倍时长)**,服务端钳位下限 1.0(只用 1.0);文本 <15 字 vocoder 卷积报错(Qwen3-TTS 服务补 <8 字 400)
+   - 三音色:新闻腔(云扬/云霞/云健)种子 wav → CosyVoice3 零样本克隆
+5. **服务(三实例)**:`deploy/start-tts.sh` 以三份分别监听 **8016(GPU1)/ 8018(GPU2)/ 8019(GPU3)**,后端按帧轮询分发、并行合成(重启同样由该脚本统一拉起;pkill 模式 `tts_serve[r]`——uvicorn 进程 cmdline 是 `tts_server:app` 不带 .py);Qwen3-TTS 备用引擎 `deploy/start-tts-qwen.sh`(**8017,GPU2,默认停**)
 
 ## 五、主服务部署
 
 ```bash
 mkdir -p /mnt/workspace/ttv/{jobs,assets/{fonts,bgm,vendor}}
 # 上传 server/ web/ deploy/ 后:
-bash /mnt/workspace/ttv/deploy/setup.sh     # 资产 + nginx
+bash /mnt/workspace/ttv/deploy/setup.sh     # 资产(含完整版字体)+ nginx
 bash /mnt/workspace/ttv/deploy/start.sh     # 后端 8015
-bash /mnt/workspace/ttv/deploy/start-tts.sh # TTS 8016
+bash /mnt/workspace/ttv/deploy/start-tts.sh # TTS 三实例 8016/8018/8019
 ```
 
 nginx:`/etc/nginx/ttv-locations.conf`(由 comfyui-20013 站点 include):
-- `/ttv/` → web/ 静态(alias + auth_basic off)
-- `/ttv/assets/` → assets/ 静态
-- `/ttv/api/` → 127.0.0.1:8015/api/(client_max_body_size 30M)
+- `/ttv/` → web/ 静态(alias + auth_basic off;index.html 响应加 no-cache)
+- `/ttv/assets/` → assets/ 静态(alias `/mnt/workspace/ttv/assets/`,Cache-Control max-age=31536000 immutable;gzip_types 补 text/css application/javascript application/json image/svg+xml,gzip_proxied any)
+- `/ttv/api/` → 127.0.0.1:8015/api/(client_max_body_size 30M;limit_req 每秒 10 请求、突发 20)
 
 ## 六、流水线打通顺序(经验)
 
@@ -88,6 +91,7 @@ nginx:`/etc/nginx/ttv-locations.conf`(由 comfyui-20013 站点 include):
 
 ## 八、版本与仓库
 
-- 服务器代码仓:`/mnt/workspace/ttv`(git,标签 v0.9)
+- 服务器代码仓:`/mnt/workspace/ttv`(git,标签 v2.0)
 - 本地同步:`Labssh/vtt`(Labssh 目录内,含代码/文档/demo 成片)
-- 任务与资产不入库(jobs/、venv、大字体),重建流程见本文档与 deploy/
+- **assets 不入库**:.gitignore 已合并运行时产物与数据(jobs/、test-project/、deploy-tmp/、.bak-v11/、demo/)、Python 缓存(__pycache__/、*.pyc)、日志(*.log)、大字体资产(assets/fonts/、assets/bgm/、assets/vendor/)、密钥(.secrets/)与 TTS 环境(tts-venv/、tts-qwen-venv/、cosyvoice-src/),全部从服务器/官方源获取或本地构建,重建流程见本文档与 deploy/
+- `deploy/patch-*.py` 一次性补丁脚本已从仓库移除(git 历史留档)

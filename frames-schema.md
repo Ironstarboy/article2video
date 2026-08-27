@@ -19,7 +19,7 @@
     "outline": "文章大纲分析(3-5 行:行文逻辑/层次关系)",
     "structure": "视频结构说明(开场钩子→主体层次→收束,3-5 行)"
   },
-  "frames": [ /* 8-16 帧,见下 */ ],
+  "frames": [ /* 宣传 6-20 帧,见下 */ ],
   "voiceover_full": "全部旁白按帧顺序合并(不含开场/结尾静帧)",
   "credits": { "source": "来源名称,如 人民日报", "author": "作者名,可空" }
 }
@@ -46,7 +46,7 @@
 
 - `type` 枚举:`opening | section | statement | elaboration | quote | data | points | process | contrast | closing`
 - `transition_in` 枚举:`cut | crossfade | push_up`(同章小节间 cut,章节间 crossfade,push_up 仅 modern-blue)
-- 旁白规则:每帧 1–2 句、15–35 字;总旁白字数 ≈ duration_sec × 4.2;帧时长 = 该帧旁白朗读时长 + 1.2s(opening/closing 单独定长)
+- 旁白规则:每帧 ≥8 字(静帧除外)、1–2 句;单帧旁白上限 vo_cap 按档:≤90s 40 字 / ≤180s 90 字 / ≤360s 110 字 / >360s 130 字;总旁白字数 ≈ duration_sec × 4.2(宣传档位按 3.0/3.8/3.9/4.0 字/秒规划,余量由构建期留白分摊);帧时长 = 该帧旁白朗读时长 + 1.2s(opening/closing 单独定长)
 - 结构铁律:第 1 帧必为 `opening`(开场钩子:设问/反直觉/数字),最后一帧必为 `closing`(署名静帧);
   第 2 帧即落地核心论点;主体 3–6 帧层层递进(是什么-为什么-怎么办 或 问题-分析-对策);章节 ≥2 个时用 `section` 分章
 
@@ -87,12 +87,15 @@
 
 ## 校验门(builder 侧硬校验,失败则重试分析)
 
-1. `frames[0].type == "opening"` 且 `frames[-1].type == "closing"`(closing 的 voiceover 为空)
-2. 每帧 voiceover 非空(除 opening 可为空、closing 必为空)且 ≤60 字
-3. `data` 帧的数字必须能在原文中找到(避免 DeepSeek 编造数据)
-4. 所有 content 字段与 type 对应齐全,枚举值合法
-5. |Σ duration − duration_sec| ≤ 10% × duration_sec
-6. title/quote/thesis 等长度符合各字段上限
+1. 帧数 6-20(宣传档)
+2. `frames[0].type == "opening"` 且 `frames[-1].type == "closing"`(closing 的 voiceover 为空)
+3. 每帧 voiceover ≥8 字且非空(除 opening 可为空、closing 必为空);单帧上限 vo_cap 按档:≤90s 40 字 / ≤180s 90 字 / ≤360s 110 字 / >360s 130 字
+4. `data` 帧的数字必须能在原文中找到(避免 DeepSeek 编造数据);`quote` 帧引语逐字接地到原文(精确→模糊匹配替换为原文区间),无法接地保留但写 `_meta.warning`
+5. 所有 content 字段与 type 对应齐全,枚举值合法
+6. |Σ duration − duration_sec| ≤ 10% × duration_sec
+7. title/quote/thesis 等长度符合各字段上限
+
+重试仍不合规时走**永不失败兜底**:带校验反馈重试 3 次,仍失败则对最近一次成功解析的脚本做确定性修复(丢最短旁白次要帧 + 时长缩放)后接受,`_meta.warning` 记录。
 
 ---
 

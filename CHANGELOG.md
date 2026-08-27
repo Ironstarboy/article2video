@@ -1,8 +1,43 @@
 # 理论文章转视频网站 — 项目计划与进度
 
-> 最后更新:2026-08-27
+> 最后更新:2026-08-28
 > 部署位置:**VideoLab 云服务器**(SSH `videolab`,8.130.213.80),整个项目运行在服务器上。
 > 本地此文件夹保存:计划文档、源码副本、风格脚本、部署配置。
+
+## v2.0(2026-08-28)
+
+**效率与硬件**
+- CosyVoice3 扩为三实例(GPU1@8016 / GPU2@8018 / GPU3@8019),客户端按帧轮询分发并行合成;Qwen3-TTS 备用 GPU2@8017(默认停)
+- 讲解视频分段脚本并行生成(ThreadPoolExecutor 3 workers,段间无依赖)
+- httpx 全局共享连接池,修复历史上 "Too many open files" FD 耗尽
+- 并发限制:全局 LLM 信号量 6、渲染信号量 2(同时最多 2 个)、进行中任务 >4 时新任务创建返回 429
+- 轮询轻量化:GET /api/jobs/{id}?brief=1 不含 script;terminal 状态(rendered/failed)停止轮询、active 期指数退避(2.5s→5s→10s 封顶)、页面隐藏暂停
+- 构建期字体复制去除(渲染项目直接引用 assets/fonts/,避免每任务重复拷贝大字体)
+
+**工作流**
+- 宣传视频改两阶段分析:阶段一「分析」输出小契约(核心论点/论证链节拍/数据清单(逐字核验)/金句清单(逐字)/帧计划),阶段二「脚本」按帧计划生成 frames,分析深度反哺脚本
+- 金句接地:quote 帧引语逐字接地到原文,无法接地保留但写 `_meta.warning`
+- 永不失败兜底:模型重试 3 次仍不合规时,对最近一次成功解析的脚本做确定性修复(丢最短旁白次要帧 + 时长缩放)后接受,`_meta.warning` 记录
+- max_tokens 分档(≤90s:4096 / ≤180s:8192 / ≤360s:12288 / >360s:16384),检测 finish_reason=length 截断并重试;temperature 首轮 0.35、纠错重试 0.6
+- 语速换算统一:config.CHARS_PER_SEC=4.2 全局引用,宣传档位旁白系数 3.0/3.8/3.9/4.0 字/秒(有意低于实测语速,余量由构建期留白分摊),拓展验收线统一 0.8
+- 讲解备课方案校验:chapters para_range 必须覆盖全文每个段落(无空洞/重叠,否则修复),paragraph_notes 缺失程序化补(key_idea 取段首 40 字);分段 prompt 只注入本段相关章节与段落要点(瘦身);line_analysis 重点段未获 textblock/annotation 帧打印警告;annotation 批注句同帧必须出自同一段
+
+**前端**
+- 字体子集化 woff2(UI 用字约 3000 常用字 + 静态文案,每份 <300KB),unicode-range 回退系统字体,配合 nginx assets 长缓存(immutable)与 index.html no-cache,修复此前 @font-face 引 /ttv/assets/ 但无 nginx 路由导致字体 404 从未生效的问题
+- 轮询修复:script 内容变化(JSON 比对)才重渲染,编辑模式不被轮询覆盖
+- 骨架屏(分析与逐帧区)、banner ok/err 状态样式实际使用、重新分析按钮(failed 且无 script)、删除任务按钮、下载按钮显示格式 + 文件大小
+- 无障碍:focus-visible 全局样式、上传区键盘可达
+
+**修复**
+- script title 全部 HTML 转义(修复存储型 XSS 面)
+- has_video 按 state.render_format 检查对应产物(修复非 mp4 格式刷新后无下载入口)
+- /api/studio/ 代理放开全 HTTP 方法(原硬编码 GET);api_reanalyze 增加状态守卫(analyzing/building/rendering 409);api_edit_script 守卫改为 analyzed/preview/failed
+- 服务重启时 uploaded 任务同样标记 failed(原只处理 analyzing/building/rendering)
+- api_revise body 非 dict 防护;projects 透传代理加 '..' 拦截;txt/md 上传字节数预检(>1.5MB 直接拒绝)
+- tts_server.py speed 钳位下限改 1.0(实测 speed<1 非线性恶化);tts_qwen_server.py 补 <8 字 400
+- fonttools 补入 server/requirements.txt(此前漏声明,全新部署构建必崩);deploy/setup.sh 字体改完整版
+- 死代码清理:tts.py 的 VOICES/FALLBACK_VOICE/words_meta_json/_synth_local 死块、main.py 未用 STYLES 导入;服务器遗留 server/styles.py、server/templates.py、server/assemble.py 三个旧模块已删除(builder/ 取代);deploy/patch-*.py 一次性补丁已移除;.gitignore 合并运行时产物与资产
+- 异常路径统一 logging.exception 落 backend.log
 
 ## 版本历史(近期)
 
@@ -27,17 +62,17 @@
 ## 二、技术架构
 
 ```
-浏览器 ──▶ nginx(外网端口 20015)
-              ├── /            → 前端静态页(上传页 + 预览二级页)
-              └── /api/*       → FastAPI 后端(127.0.0.1:8015)
+浏览器 ──▶ nginx(外网 20013,/ttv/ 子路径)
+              ├── /ttv/         → 前端静态页(上传页 + 预览二级页)
+              └── /ttv/api/*    → FastAPI 后端(127.0.0.1:8015)
                                    ├── extract   文本提取(txt/docx/md)
                                    ├── analyze   DeepSeek 分析 → hyperframes 脚本(JSON)
-                                   ├── build     HyperFrames composition 构建
+                                   ├── build     HyperFrames composition 构建 + TTS 配音
                                    ├── render    HyperFrames CLI 渲染 MP4
-                                   └── preview   代理 HyperFrames 预览服务器
+                                   └── studio    代理每任务 HyperFrames Studio(4150-4153 槽位)
 ```
 
-- 流水线:上传 → 文本提取 → DeepSeek 分析(含风格脚本注入)→ 脚本(JSON)→ 构建 composition HTML → TTS 配音(火山豆包)→ hyperframes 渲染 → 预览/下载
+- 流水线:上传 → 文本提取 → DeepSeek 分析(含风格脚本注入)→ 脚本(JSON)→ 构建 composition HTML → TTS 配音(CosyVoice3 三实例并行)→ hyperframes 渲染 → Studio 预览/下载
 - 三套风格各有一份**详细样式脚本**(配色 tokens、字体、背景装饰 SVG、版式规范、字幕样式、转场、开场/结尾模板),随分析请求注入 DeepSeek prompt,并在构建阶段作为渲染模板。
 
 ## 三、三套风格
@@ -93,12 +128,13 @@
 │   ├── style-2-academic-ink.md 清雅学术·墨黛青
 │   └── style-3-modern-blue.md  现代锐意·科技蓝
 ├── server/              # 后端(部署于 /mnt/workspace/ttv/server/)
-│   ├── main.py          # FastAPI:jobs API + 播放器代理
-│   ├── analyze.py       # DeepSeek 分析(本地 vLLM 优先,云 API 备份)
-│   ├── extract.py       # txt/md/docx 提取(纯标准库)
-│   ├── tts.py           # edge-tts 配音 + 词级时间轴
+│   ├── main.py          # FastAPI:jobs API(含 DELETE)+ Studio/项目代理
+│   ├── analyze.py       # DeepSeek 分析(本地 vLLM 优先,云 API 备份;宣传两阶段/讲解分段并行)
+│   ├── extract.py       # txt/md/docx 提取(纯标准库 + 字节预检)
+│   ├── tts.py           # CosyVoice3 多实例轮询并行配音 + 词级时间轴
+│   ├── tts_server.py    # CosyVoice3 服务(8016/8018/8019 三实例)
 │   ├── jobs.py          # 任务状态机
-│   └── builder/         # styles.py(tokens+SVG)/ templates.py(10 帧型)/ assemble.py(组装)
+│   └── builder/         # styles.py(tokens+SVG)/ templates.py(13 帧型)/ assemble.py(组装)
 ├── web/index.html       # 前端(上传页 + 预览二级页,单文件 SPA)
 └── deploy/              # nginx-ttv.conf / setup.sh / start.sh
 ```
@@ -120,7 +156,7 @@
 - Chrome/Chromium(hyperframes check/render 需要)→ 装 puppeteer chrome 或 apt chromium
 - hyperframes CLI → npx 安装
 - CJK 字体 → 下载思源宋体/黑体
-- edge-tts(pip,无豆包 key 的 TTS 方案)
+- TTS 引擎(已通过 CosyVoice3-0.5B 本地部署解决,见 M8;不采用 edge-tts)
 
 ### 外网端口现状(安全组已放行,无空闲端口)
 | 端口 | 现状 |
@@ -136,5 +172,5 @@
 
 - [x] 分析引擎:本地 DeepSeek-V4-Flash(20001)✓
 - [ ] 站点外网入口:20012/ttv/ 子路径(推荐)或控制台新开端口
-- [ ] TTS:edge-tts(zh-CN-YunxiNeural 男声新闻 / XiaoxiaoNeural 女声,免费无 key)
+- [x] TTS:CosyVoice3-0.5B 本地部署(M8,三音色零样本克隆,替代 edge-tts 方案)
 - [ ] Chrome + node PATH + hyperframes CLI + 字体 安装(部署阶段执行)

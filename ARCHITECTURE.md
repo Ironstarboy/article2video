@@ -1,17 +1,17 @@
-# 项目结构文档(Theory-to-Video v1.0)
+# 项目结构文档(Theory-to-Video v2.0)
 
 ## 一、总体架构
 
 ```
 浏览器 ──▶ nginx(8.130.213.80:20013 /ttv/)
-             ├── /ttv/              静态前端(web/index.html,单文件 SPA)
-             ├── /ttv/assets/       网页字体等静态资产
-             └── /ttv/api/      ──▶ FastAPI 后端(127.0.0.1:8015)
-                                      ├── DeepSeek 分析(本地 vLLM 20001,云 API 备份)
-                                      ├── CosyVoice3 TTS(127.0.0.1:8016,GPU1;豆包/Qwen3 可选)
-                                      ├── hyperframes 构建/渲染/check(CLI+Chrome)
-                                      ├── /api/studio/<job>/  → Studio 编辑器代理(唯一预览入口)
-                                      ├── /api/projects/<pid>/ → Studio 项目 API 转发(项目根/子路径/预览)
+             ├── /ttv/              静态前端(web/index.html,单文件 SPA;index.html no-cache)
+             ├── /ttv/assets/       网页字体等静态资产(woff2 子集,immutable 长缓存)
+             └── /ttv/api/      ──▶ FastAPI 后端(127.0.0.1:8015;nginx 限流每秒 10 请求、突发 20)
+                                      ├── DeepSeek 分析(本地 vLLM 20001,云 API 备份;全局 LLM 并发信号量 6)
+                                      ├── CosyVoice3 TTS 池(8016 GPU1 / 8018 GPU2 / 8019 GPU3,轮询并行合成;Qwen3-TTS 8017 GPU2 备用,默认停)
+                                      ├── hyperframes 构建/渲染/check(CLI+Chrome;渲染全局信号量 ≤2)
+                                      ├── /api/studio/<job>/  → Studio 编辑器代理(唯一预览入口,支持全 HTTP 方法)
+                                      ├── /api/projects/<pid>/ → Studio 项目 API 转发(项目根/子路径/预览,'..' 拦截)
                                       └── 每任务 Studio 进程:4150-4153(4 槽,--foreground 直管,按需自愈)
 ```
 
@@ -25,21 +25,21 @@ vtt/
 ├── frames-schema.md         DeepSeek 输出契约(hyperframes 脚本 JSON)
 ├── styles/                  三套经典风格详细样式脚本(设计文档)
 ├── server/                  后端(部署于 /mnt/workspace/ttv/server/)
-│   ├── main.py              FastAPI:任务 API、Studio/项目代理、流水线阶段、check 质量门、Studio 槽位管理(串行化+自愈)、预览音频看门狗注入
-│   ├── config.py            路径/端口/模型端点配置
-│   ├── extract.py           txt/md/docx 提取(zip 炸弹防护)
-│   ├── analyze.py           DeepSeek 分析:宣传视频(时长自适应提示词+校验门)+ 讲解视频两步分析(诊断文章类型与讲解方案 → 按章节分段生成逐帧脚本)+ 构建期二次拓展(expand_script)
-│   ├── tts.py               配音:本地 CosyVoice3(重试×3 → 静音占位)+ 词级时间轴 + 真实时长向目标靠拢(apply_real_durations)
-│   ├── tts_server.py        CosyVoice3 服务(8016,三音色零样本克隆,GPU1)
-│   ├── tts_qwen_server.py   Qwen3-TTS 服务(8017,GPU2,可选引擎)
+│   ├── main.py              FastAPI:任务 API(含 DELETE 删除)、Studio/项目代理、流水线阶段、check 质量门、Studio 槽位管理(串行化+自愈)、并发限制(LLM 信号量 6/渲染信号量 2/进行中任务 >4 返回 429)、预览音频看门狗注入
+│   ├── config.py            路径/端口/模型端点配置(CHARS_PER_SEC=4.2 语速常量全局引用)
+│   ├── extract.py           txt/md/docx 提取(zip 炸弹防护;txt/md 字节预检 >1.5MB 拒绝)
+│   ├── analyze.py           DeepSeek 分析:宣传视频两阶段(阶段一「分析」诊断小契约 → 阶段二「脚本」按帧计划生成)+ 讲解视频两步分析(备课方案 → 分段并行生成逐帧脚本,ThreadPoolExecutor 3 workers)+ 构建期二次拓展(expand_script)
+│   ├── tts.py               配音:CosyVoice3 多实例轮询并行合成(httpx 全局共享连接池,修复 FD 耗尽)+ 词级时间轴 + 真实时长向目标靠拢(apply_real_durations);失败重试×3 → 静音占位
+│   ├── tts_server.py        CosyVoice3 服务(8016/8018/8019 三实例:GPU1/GPU2/GPU3,三音色零样本克隆,speed 钳位下限 1.0)
+│   ├── tts_qwen_server.py   Qwen3-TTS 服务(8017,GPU2,备用引擎,默认停;<8 字 400)
 │   ├── smoke_test.py        冒烟回归:纯函数路径(extract/styles/时长靠拢/校验门/讲解校验)
-│   ├── jobs.py              任务状态机(磁盘持久化,重启恢复;video_kind 持久化)
+│   ├── jobs.py              任务状态机(磁盘持久化,重启恢复;video_kind 持久化;重启时 uploaded 同样置 failed)
 │   └── builder/
 │       ├── styles.py        风格系统:四维度注册表(字体×配色×背景×动效)+ 组合合成 + SVG 装饰
 │       ├── templates.py     13 种帧类型(10 种宣传 + 3 种讲解:textblock/annotation/method)× 维度属性渲染(HTML+GSAP tween 生成)
 │       └── assemble.py      script.json → HyperFrames 项目(index.html + assets + BGM,重建前清理陈旧产物)
-├── web/index.html           前端单文件 SPA(上传配置页 + 预览二级页,Studio 为唯一预览)
-└── deploy/                  nginx 路由 / 启动脚本 / 一次性补丁
+├── web/index.html           前端单文件 SPA(上传配置页 + 预览二级页,Studio 为唯一预览;woff2 字体子集 + unicode-range 回退系统字体;骨架屏/轮询退避/删除任务)
+└── deploy/                  nginx 路由 / 启动脚本(已删除一次性 patch-*.py 补丁,git 历史留档)
 ```
 
 ## 三、流水线状态机
@@ -47,9 +47,10 @@ vtt/
 ```
 uploaded → analyzing → analyzed → building → preview → rendering → rendered
               │                       │              │
-              │ DeepSeek              │ TTS+二次拓展  │ hyperframes render
-              │ 宣传:1 次调用(≈25-60s)│ +组装+Studio │ (Studio 保留,完成后回收)
-              │ 讲解:两步(≈3-10 分钟) │ 同步拉起     │ 讲解片超时放宽到 3h
+              │ DeepSeek              │ TTS 池并行   │ hyperframes render
+              │ 宣传:两阶段(诊断→脚本)│ +二次拓展     │ (渲染并发 ≤2,完成后回收)
+              │ 讲解:备课+分段并行    │ +组装+Studio │ 讲解片超时放宽到 3h
+              │ (3 worker,≈3-10 分钟) │ 同步拉起     │
               └─ 失败可 /analyze 重跑 └─ 自动 check  └─ 成片就绪
 ```
 
@@ -63,39 +64,48 @@ uploaded → analyzing → analyzed → building → preview → rendering → r
 - **段级治愈(healing)**:接地失败的批注句直接移除(宁少一条批注,绝不显示改写的"原文");引用全灭的 annotation/textblock 帧整帧丢弃
 - **重点段限流**:备课方案 line_analysis=true 的段落数 ≤ 目标分钟数×2(校验硬拦),段提示词只允许给重点段生成 textblock——引述密集的新闻稿也不会"每段一帧"撑爆时长
 - **段级旁白上下限**:下限 1.6×秒数、上限 4.2×秒数(实测语速上限,超了物理上压不回目标时长);超量时确定性压缩(丢旁白最短的次要帧);帧数按段时长占比分配硬上限(总上限 200,只兜底不硬压——模型按段落要点自然铺开,实测 5 分钟档 13-23 帧)
-- **「永不失败」管线**(文字类问题绝不中断工作流):模型重试 5 次(带校验反馈)→ 确定性修复(接地/治愈/截断/丢帧压缩)→ 专门的压缩调用 1 次 → 最后兜底接受(警告放行)。备课方案同样:5 次重试 + _fixup_plan 确定性修复(字段补默认/区间钳位/坏引用删除/重点段截断/章节程序化构造)+ 警告放行;合并校验失败只警告。只有模型/网络级故障才报错。讲解视频的校验用 strict=False:旁白成段、画面充实度等文字类软约束只作提示词指导
+- **「永不失败」管线**(文字类问题绝不中断工作流):模型重试 3 次(带校验反馈)→ 确定性修复(接地/治愈/截断/丢帧压缩)→ 最后兜底接受(警告放行,_meta.warning)。备课方案同样:3 次重试 + _fixup_plan 确定性修复(字段补默认/区间钳位/坏引用删除/重点段截断/章节程序化构造)+ 警告放行;合并校验失败只警告。只有模型/网络级故障才报错。讲解视频的校验用 strict=False:旁白成段、画面充实度等文字类软约束只作提示词指导
 - **视频类型贯通**:video_kind(promo/lecture)持久化于任务状态;分析/校验/修订/拓展/编辑保存/渲染超时/留白参数全链路按类型分支;讲解 5-30 分钟(5 分钟一档,后端钳位到 300 的整数倍)
 - **画面布局(无交叉的机制保证)**:正文区垂直中心在黄金分割点(容器限高 1080×76.5%,底部最多到 y=826,overflow 兜底);字幕为影视剧式 1-2 行窗口(每行 ≤19 字、句读断行、随旁白逐窗推进,底部 86px 起、顶部 ≥894px)——两者间恒定 78px 缓冲带,几何上不可能交叉,与具体内容无关
 - **停顿节奏**:讲解档旁白后留白 1.0s、单帧可扩展上限 4s、章节页 ≤6s;段级旁白下限 3.0×段秒数 + 构建期二次拓展——时长靠内容填,不靠静默停留凑(全片无 >2s 静音段)
 - **成片自动验证**:deploy/verify-layout.py——缓冲带深色像素检查(全片采样)+ 静音段检测
 - **预览音频看门狗**:预览 HTML 注入脚本,自动恢复「时间线播放而音频静音/暂停」的自动播放策略死状态
 
-- 任务持久化:`jobs/<id>/state.json`,重启后自动恢复;进行中任务置 failed 可重触发
+- 任务持久化:`jobs/<id>/state.json`,重启后自动恢复;进行中任务(uploaded/analyzing/building/rendering)统一置 failed 可重触发
 - 每任务:`input.<ext>`(原文)→ `input.txt`(提取文本)→ `script.json`(分析)→ `project/`(composition)→ `project/renders/out.mp4`
+
+关键设计(v2.0):
+- **宣传两阶段分析**:阶段一「分析」输出小契约(核心论点/论证链节拍/数据清单(逐字核验)/金句清单(逐字)/帧计划),阶段二「脚本」按帧计划生成 frames——分析深度反哺脚本,不再一次调用到底
+- **金句接地**:quote 帧引语逐字接地到原文(精确→模糊匹配替换为原文区间),无法接地保留但写 `_meta.warning`
+- **永不失败兜底**:模型重试 3 次仍不合规时,对最近一次成功解析的脚本做确定性修复(丢最短旁白次要帧 + 时长缩放)后接受,`_meta.warning` 记录;max_tokens 分档(≤90s:4096 / ≤180s:8192 / ≤360s:12288 / >360s:16384),检测 finish_reason=length 截断并重试;temperature 首轮 0.35、纠错重试 0.6
+- **并发与限流**:httpx 全局共享连接池(修复历史上 "Too many open files" FD 耗尽);讲解视频分段脚本并行生成(ThreadPoolExecutor 3 workers,段间无依赖);全局 LLM 并发信号量 6;渲染全局信号量 2;进行中任务 >4 时新任务创建返回 429;TTS 合成按帧分发多实例并行 + ffmpeg/ffprobe 线程池化
+- **语速常量统一**:config.CHARS_PER_SEC=4.2 全局引用;宣传档位旁白系数 3.0/3.8/3.9/4.0 字/秒(有意低于实测语速,余量由构建期留白分摊);拓展验收线统一 0.8
+- **讲解备课覆盖校验**:chapters para_range 必须覆盖全文每个段落(无空洞/重叠,否则修复);paragraph_notes 覆盖每段(缺失程序化补,key_idea 取段首 40 字);分段 prompt 只注入本段相关章节与段落要点(瘦身);合并层 line_analysis=true 重点段未获 textblock/annotation 帧则打印警告;annotation 批注句同帧必须出自同一段
+- **安全**:script title 全部 HTML 转义(修复存储型 XSS 面);api_revise body 非 dict 防护;projects 透传代理加 '..' 拦截;txt/md 上传 >1.5MB 直接拒绝;异常路径统一 logging.exception 落 backend.log
 
 ## 四、关键设计决策
 
-1. **分析 = 1 次 LLM 调用 + 确定性模板管线**(非 agent 现场创作):快(≈25s)、并发友好、输出可预期;风格 skill 规则固化在 builder 中
-2. **时长自适应**:按目标时长分四档(≤90 / ≤180 / ≤360 / ≤600s)规定帧数、旁白量、内容策略(压缩/均衡/拓展/深度拓展);旁白量按 CosyVoice3 实测语速(≈1.8-2.6 字/秒)规划
-3. **语速恒为 1.0**(自然语速):实测克隆音色 speed<1 非线性恶化(0.8 → 5 倍时长怪音)
+1. **分析 = 确定性模板管线**(非 agent 现场创作):宣传两阶段(诊断小契约 → 按帧计划生成脚本)、讲解两步 + 分段并行(3 worker),快、并发友好、输出可预期;风格 skill 规则固化在 builder 中
+2. **时长自适应**:按目标时长分四档(≤90 / ≤180 / ≤360 / >360s)规定帧数、旁白量、内容策略与 max_tokens(4096/8192/12288/16384);旁白量按 config.CHARS_PER_SEC=4.2 字/秒规划,宣传档位系数 3.0/3.8/3.9/4.0(有意低于实测语速,余量由构建期留白分摊),拓展验收线统一 0.8
+3. **语速恒为 1.0**(自然语速):tts_server 钳位下限 1.0,实测 speed<1 非线性恶化(0.8 → 5 倍时长怪音)
 4. **帧时长以真实配音为准**:DeepSeek 的 duration 仅是初始估时,构建时按 TTS 实际时长重算
-5. **字体完整版**(82MB 全 CJK):子集字体缺生僻字会渲染成方框
-6. **播放器/Studio 双预览**:play(轻量)与 preview(完整编辑器)经后端反代接入;HTML/JS 绝对路径窄化重写(/assets/、/api/ 前缀)
-7. **安全**:docx zip 炸弹防护(50MB/2000 条目)、文件名净化、路径防穿越、提示词注入隔离声明、前端 textContent 防 XSS
+5. **字体完整版**(82MB 全 CJK):渲染必须完整版 OTF(子集字体缺生僻字会渲染成方框);网页端则用 woff2 子集化(约 3000 常用字 + 静态文案,每份 <300KB,unicode-range 回退系统字体)
+6. **Studio 唯一预览**:每任务一个 hyperframes preview 进程(槽位 4150-4153,构建期同步拉起、按需自愈),经 /api/studio/ 反向代理(全 HTTP 方法)接入;HTML/JS 绝对路径窄化重写(/assets/、/api/ 前缀)
+7. **安全**:docx zip 炸弹防护(50MB/2000 条目)、文件名净化、路径防穿越(projects 代理 '..' 拦截)、txt/md 上传 >1.5MB 拒绝、script title HTML 转义(存储型 XSS)、提示词注入隔离声明、前端 textContent 防 XSS
 
 ## 五、接口清单
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | /api/styles | 四维度选项 + 预设 |
-| POST | /api/jobs | 上传(file/text + style/font/palette/bg/motion/duration/video_kind) |
-| GET | /api/jobs/{id} | 状态 + 分析结果(自愈播放器/Studio) |
-| POST | /api/jobs/{id}/analyze | 重新分析 |
+| POST | /api/jobs | 上传(file/text + style/font/palette/bg/motion/duration/video_kind);进行中任务 >4 返回 429 |
+| GET | /api/jobs/{id} | 状态 + 分析结果;?brief=1 轻量轮询(不含 script) |
+| POST | /api/jobs/{id}/analyze | 重新分析(analyzing/building/rendering 期间 409) |
 | POST | /api/jobs/{id}/build | 构建(配音+组装+自动 check) |
 | POST | /api/jobs/{id}/render | 渲染 MP4 |
-| GET | /api/jobs/{id}/video | 下载成片 |
-| GET | /api/player/{id}/… | play 播放器代理 |
-| GET | /api/studio/{id}/… | Studio 编辑器代理 |
+| DELETE | /api/jobs/{id} | 删除任务(rendered/failed 可删;building/rendering 409) |
+| GET | /api/jobs/{id}/video | 下载成片(按 state.render_format 检查对应产物,非 mp4 同样有入口) |
+| 全方法 | /api/studio/{id}/… | Studio 编辑器代理(原硬编码 GET 已放开为全 HTTP 方法) |
 
 ## 六、扩展点
 
