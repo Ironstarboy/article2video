@@ -27,22 +27,14 @@ from builder import assemble, styles  # noqa: E402
 
 app = FastAPI(title="理论文章转视频")
 
-
-@app.on_event("startup")
-def _restore_studios():
-    """服务重启后,为处于 preview 状态的任务重建 Studio 服务器。"""
-    for job in JOBS.values():
-        if job.status == "preview":
-            try:
-                start_studio(job)
-            except Exception:
-                pass
-
+# Studio 进程按需拉起:任务状态轮询(api_job)或 Studio 代理访问时自愈启动。
+# 不在启动时批量恢复——批处理会并发抢槽位,曾导致两个任务记录到同一端口。
 STUDIOS: dict[str, int] = {}                # job_id -> Studio 端口(preview --background 为托管会话)
 _studio_starting: set = set()                 # 正在后台拉起 Studio 的任务(防重复)
 STUDIO_SLOT_USED: dict[str, int] = {}
 STUDIO_SLOT_BASE = 4150
 STUDIO_SLOTS = 4
+STUDIO_LOCK = threading.Lock()                # 串行化 Studio 启动,避免槽位竞态
 
 # ───────────────────────── 流水线阶段 ─────────────────────────
 
@@ -168,14 +160,29 @@ def _studio_slot(job_id: str) -> int:
         if port not in used and _port_free(port):
             STUDIO_SLOT_USED[job_id] = port
             return port
+    # 槽满:回收最旧的,并确认端口真正释放(进程退出可能滞后),
+    # 否则新会话绑定失败会被误判为「就绪」,导致两个任务记录到同一端口
     oldest = next(iter(STUDIOS), None)
     if oldest:
         stop_studio(get_job(oldest))
+        import time as _t
+        for _ in range(30):
+            if _port_free(STUDIO_SLOT_BASE):
+                break
+            _t.sleep(1.0)
+    if not _port_free(STUDIO_SLOT_BASE):
+        raise RuntimeError("Studio 槽位回收失败(端口未释放)")
     STUDIO_SLOT_USED[job_id] = STUDIO_SLOT_BASE
     return STUDIO_SLOT_BASE
 
 
 def start_studio(job):
+    """启动 HyperFrames Studio(串行化,防槽位竞态)。"""
+    with STUDIO_LOCK:
+        return _start_studio_locked(job)
+
+
+def _start_studio_locked(job):
     """启动 HyperFrames Studio(preview --background 是 CLI 托管会话,命令返回后服务仍在)。
 
     以端口可达性判定存活,不再跟踪包装进程。
