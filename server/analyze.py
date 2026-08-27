@@ -238,7 +238,23 @@ def _ground_quote(q: str, article: str, article_norm: str,
                   min_ratio: float = 0.72) -> str | None:
     """把一条引用「接地」到原文:精确匹配原样返回;否则在原文中找最相似
     连续区间(允许差 ≤4 字且相似度 ≥min_ratio),命中则返回原文区间文本
-    (用原文替换模型改写,保证逐字忠实);找不到返回 None。"""
+    (用原文替换模型改写,保证逐字忠实);找不到返回 None。
+
+    截断引语(含……):按省略号拆段,逐段独立接地后重新拼回截断形式。"""
+    if "…" in q:
+        out_parts = []
+        for part in re.split(r"[…]+", q):
+            pn = _norm_text(part)
+            if len(pn) < 4:
+                continue
+            if pn in article_norm:
+                out_parts.append(part)
+                continue
+            g = _ground_quote(part, article, article_norm, min_ratio=max(min_ratio, 0.8))
+            if g is None:
+                return None
+            out_parts.append(g)
+        return "……".join(out_parts) if out_parts else None
     q_norm = _norm_text(q)
     if not q_norm or len(q_norm) < 4:
         return None
@@ -282,6 +298,18 @@ def _ground_quote(q: str, article: str, article_norm: str,
     s0x, s1x = best_span
     s, e = art_map[s0x], art_map[s1x - 1] + 1
     return article[s:e].strip()
+
+
+def _quote_parts_verbatim(q: str, article_norm: str) -> bool:
+    """引语逐字校验(截断感知):按省略号拆分后,每段(≥4 字)必须出现在原文。"""
+    parts = re.split(r"[…]+", q)
+    for part in parts:
+        pn = _norm_text(part)
+        if len(pn) < 4:
+            continue
+        if pn not in article_norm:
+            return False
+    return True
 
 
 def _ground_frames(frames: list, article: str) -> int:
@@ -797,6 +825,82 @@ def build_analysis_prompt(article: str, target_duration: int, combo: dict) -> st
 </article>"""
 
 
+def _default_frame_plan(target_duration: int, n_chain: int) -> list[dict]:
+    """帧计划兜底构造:按时长档位铺 statement/elaboration,保证结构可渲染。"""
+    n_frames = 8 if target_duration <= 90 else (11 if target_duration <= 180
+                                                else (15 if target_duration <= 360 else 17))
+    plan = [{"index": 1, "type": "opening", "purpose": "开场钩子:设问或数字点题"}]
+    idx = 2
+    for c in range(n_chain):
+        plan.append({"index": idx, "type": "statement",
+                     "purpose": f"论证第{c + 1}层:核心论点落地展开"})
+        idx += 1
+    while idx < n_frames:
+        plan.append({"index": idx, "type": "elaboration",
+                     "purpose": "论证展开:结构化卡片呈现论据"})
+        idx += 1
+    plan.append({"index": idx, "type": "closing", "purpose": "结尾署名"})
+    return plan
+
+
+def _fixup_analysis(ana: dict, article: str, article_norm: str,
+                    target_duration: int) -> tuple[dict, list[str]]:
+    """阶段一确定性修复(兜底):坏引用/坏数据剔除,论证链与帧计划缺失时程序化构造。
+    文字类问题绝不中断工作流。返回 (ana, warnings)。"""
+    warnings = []
+    if not isinstance(ana, dict) or not ana:
+        return _default_analysis(target_duration), ["论证分析为空,使用默认蓝图"]
+    for key, default in (("core_argument", "文章核心论点"),
+                         ("article_summary", "(兜底)文章论证概述"),
+                         ("key_visuals", [])):
+        if not ana.get(key):
+            ana[key] = default
+            warnings.append(f"缺字段 {key},已补默认")
+    chain = [c for c in (ana.get("argument_chain") or [])
+             if str(c.get("stage", "")) in ("是什么", "为什么", "怎么办", "展望升华", "背景铺垫")]
+    if len(chain) < len(ana.get("argument_chain") or []):
+        warnings.append("argument_chain 非法层已剔除")
+    if len(chain) < 2:
+        base = ana.get("article_summary", "")[:200]
+        if not chain:
+            chain = [{"stage": "是什么", "seconds": target_duration * 0.5, "frames": 3,
+                      "content": base},
+                     {"stage": "怎么办", "seconds": target_duration * 0.5, "frames": 3,
+                      "content": "基于文章观点的总结与展望"}]
+        else:
+            chain = chain + [{"stage": "展望升华", "seconds": max(10, target_duration * 0.25),
+                              "frames": 2, "content": "基于文章观点的总结与展望"}]
+        warnings.append("argument_chain 不足 2 层,已程序化补全")
+    ana["argument_chain"] = chain
+    ana["quotes"] = [q for q in (ana.get("quotes") or [])
+                     if _quote_parts_verbatim(str(q.get("quote", "")), article_norm)]
+    if len(ana["quotes"]) < len(ana.get("quotes") or []):
+        warnings.append("不逐字的引语已剔除")
+    ana["data_ledger"] = [d for d in (ana.get("data_ledger") or [])
+                          if str(d.get("value", "")) in article]
+    if len(ana["data_ledger"]) < len(ana.get("data_ledger") or []):
+        warnings.append("编造的数据条目已剔除")
+    plan = [p for p in (ana.get("frame_plan") or []) if isinstance(p, dict)]
+    plan_ok = (6 <= len(plan) <= 20 and plan[0].get("type") == "opening"
+               and plan[-1].get("type") == "closing")
+    if not plan_ok:
+        plan = _default_frame_plan(target_duration, len(chain))
+        warnings.append("frame_plan 不可用,已按档位程序化构造")
+    ana["frame_plan"] = plan
+    return ana, warnings
+
+
+def _default_analysis(target_duration: int) -> dict:
+    return {"core_argument": "文章核心论点",
+            "article_summary": "(兜底)文章论证概述",
+            "argument_chain": [{"stage": "是什么", "seconds": target_duration * 0.5, "frames": 3,
+                                "content": "文章核心论点与论据"},
+                               {"stage": "怎么办", "seconds": target_duration * 0.5, "frames": 3,
+                                "content": "基于文章观点的总结与展望"}],
+            "data_ledger": [], "quotes": [], "key_visuals": [],
+            "frame_plan": _default_frame_plan(target_duration, 2)}
+
+
 def _validate_analysis(ana: dict, article: str, article_norm: str,
                        target_duration: int) -> list[str]:
     """论证蓝图校验:字段齐全、论证链合法、数据/金句逐字、帧计划与档位相称。"""
@@ -822,11 +926,11 @@ def _validate_analysis(ana: dict, article: str, article_norm: str,
         elif val not in article:
             errs.append(f"data_ledger 数字 {val} 不在原文中(疑似编造)")
     for q in ana.get("quotes") or []:
-        qn = _norm_text(q.get("quote", ""))
-        if not qn:
+        qtext = str(q.get("quote", ""))
+        if not _norm_text(qtext):
             errs.append("quotes 存在空引语")
-        elif qn not in article_norm:
-            errs.append(f"quotes 引语不逐字(必须逐字摘自原文):{str(q.get('quote',''))[:30]}")
+        elif not _quote_parts_verbatim(qtext, article_norm):
+            errs.append(f"quotes 引语不逐字(可截断用……,其余必须逐字摘自原文):{qtext[:30]}")
     plan = ana.get("frame_plan") or []
     if not (6 <= len(plan) <= 20):
         errs.append(f"frame_plan 需 6-20 帧,实际 {len(plan)}")
@@ -1081,7 +1185,7 @@ def analyze_article(article: str, target_duration: int, combo: dict,
     if progress_cb:
         progress_cb("阶段一:深度拆解文章论证(论证链/数据/金句/帧计划)")
     ana_prompt = build_analysis_prompt(article, target_duration, combo)
-    ana, last_err = None, None
+    ana, last_cand, last_err = None, None, None
     for attempt in range(3):
         temp = 0.35 if attempt == 0 else 0.6
         content = _llm_attempt(ANALYSIS_SYSTEM, ana_prompt, max_tokens=4096,
@@ -1091,6 +1195,7 @@ def analyze_article(article: str, target_duration: int, combo: dict,
             continue
         try:
             cand = _parse_json(content)
+            last_cand = cand
             errs = _validate_analysis(cand, article, article_norm, target_duration)
             if not errs:
                 ana = cand
@@ -1100,7 +1205,13 @@ def analyze_article(article: str, target_duration: int, combo: dict,
         except Exception as e:
             last_err = f"论证分析解析失败:{e}"
     if ana is None:
-        raise RuntimeError(last_err or "论证分析失败")
+        # 确定性修复兜底:坏引用剔除、论证链/帧计划程序化构造(文字类问题不中断)
+        ana, warnings = _fixup_analysis(last_cand or {}, article, article_norm,
+                                        target_duration)
+        errs = _validate_analysis(ana, article, article_norm, target_duration)
+        if errs:
+            raise RuntimeError(last_err or "论证分析失败")
+        print(f"[promo] 论证分析兜底修复: {'; '.join(warnings)}", flush=True)
     # 金句接地到原文(蓝图中的金句从此逐字)
     for q in ana.get("quotes") or []:
         g = _ground_quote(q.get("quote", ""), article, article_norm, min_ratio=0.72)
@@ -1409,7 +1520,7 @@ def _validate_plan(plan: dict, n_paras: int, target_duration: int,
             errs.append(f"第{p}段 teach_points 需为数组")
         for q in pn.get("quote_sentences") or []:
             qn = _norm_text(q)
-            if qn and qn not in article_norm:
+            if qn and not _quote_parts_verbatim(q, article_norm):
                 errs.append(f"第{p}段 quote_sentences 引用不逐字:{str(q)[:30]}")
     missing = [p for p in range(1, n_paras + 1) if p not in seen]
     if missing:
@@ -1520,7 +1631,7 @@ def _fixup_plan(plan: dict, paras: list[str], target_duration: int,
             pn["para"] = 1
             fixed += 1
         qs = [q for q in pn.get("quote_sentences") or []
-              if _norm_text(q) and _norm_text(q) in article_norm]
+              if _norm_text(q) and _quote_parts_verbatim(q, article_norm)]
         if len(qs) != len(pn.get("quote_sentences") or []):
             pn["quote_sentences"] = qs
             fixed += 1

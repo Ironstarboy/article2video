@@ -492,6 +492,18 @@ _warn2 = analyze._ground_promo_quotes(_pq2, _larticle)
 ok("promo 金句无法接地保留并告警", _pq2[0]["content"]["quote"] == "这是编造出来的一句假金句"
    and len(_warn2) == 1)
 
+# 截断引语(……):逐字校验与接地必须分段感知
+_tq_article = "创新驱动发展之路越走越宽广。不断塑造发展新动能新优势。"
+_tq_norm = analyze._norm_text(_tq_article)
+ok("截断引语逐字校验(分段)", analyze._quote_parts_verbatim(
+    "创新驱动发展之路……不断塑造发展新动能新优势", _tq_norm))
+ok("截断引语伪造段落被拒", not analyze._quote_parts_verbatim(
+    "创新驱动……编造的句子", _tq_norm))
+_tg = analyze._ground_quote("创新驱动发展之路越走越宽……不断塑造发展新动能新优势",
+                            _tq_article, _tq_norm)
+ok("截断引语分段接地", _tg is not None and "……" in _tg
+   and analyze._norm_text(_tg.split("……")[0]) in _tq_norm, str(_tg))
+
 _pa = analyze.build_analysis_prompt(larticle, 120, lcombo)
 ok("两阶段·分析 prompt 含契约要素", "论证蓝图" in _pa and "120 秒" in _pa
    and "argument_chain" in analyze.ANALYSIS_SYSTEM and "frame_plan" in analyze.ANALYSIS_SYSTEM
