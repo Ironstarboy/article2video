@@ -486,8 +486,8 @@ function updateActions(j){
   if (j.status==="rendered" && j.has_video) {
     $("#dl").style.display = "block";
     $("#dl-link").href = "./api/jobs/" + j.job_id + "/video";
-    // 渲染完成:用成片播放替换 Studio
-    if ($("#studio-box").querySelector("iframe")) {
+    // 渲染完成:用成片播放替换 Studio(页面打开时已是 rendered 则直接创建)
+    if (!$("#studio-box").querySelector("video")) {
       $("#studio-box").innerHTML = "";
       const v = document.createElement("video");
       v.src = $("#dl-link").href;
