@@ -29,9 +29,9 @@ app = FastAPI(title="理论文章转视频")
 
 # Studio 进程按需拉起:任务状态轮询(api_job)或 Studio 代理访问时自愈启动。
 # 不在启动时批量恢复——批处理会并发抢槽位,曾导致两个任务记录到同一端口。
-STUDIOS: dict[str, int] = {}                # job_id -> Studio 端口(preview --background 为托管会话)
+STUDIOS: dict[str, subprocess.Popen] = {}   # job_id -> Studio 进程(--foreground 直接跟踪)
 _studio_starting: set = set()                 # 正在后台拉起 Studio 的任务(防重复)
-STUDIO_SLOT_USED: dict[str, int] = {}
+STUDIO_SLOT_USED: dict[str, int] = {}         # job_id -> Studio 端口
 STUDIO_SLOT_BASE = 4150
 STUDIO_SLOTS = 4
 STUDIO_LOCK = threading.Lock()                # 串行化 Studio 启动,避免槽位竞态
@@ -63,6 +63,8 @@ def stage_analyze(job):
 
 def stage_build(job):
     job.set(status="building", progress="生成配音")
+    # 重建时先停掉旧 Studio(否则新进程换端口,旧进程泄漏占着旧端口)
+    stop_studio(job)
     p = job.paths()
     script = json.loads(p["script"].read_text(encoding="utf-8"))
     style = styles.get(_job_combo(job))
@@ -85,15 +87,20 @@ def stage_build(job):
         job.set(progress=f"组装 HyperFrames 项目(配音引擎:{eng_txt})")
     tts.apply_real_durations(script, vo, tail_pad=0.9 if target <= 120 else 1.4)
     info = assemble.build(script, _job_combo(job), vo, p["project"])
-    job.set(status="preview", progress=f"总时长 {info['total']:.0f} 秒", total_sec=info["total"],
-            voice_engines=eng_txt)
+    # 在标记 preview 之前同步拉起 Studio:状态一翻转,前端就能直接展示就绪的编辑器,
+    # 用户看不到「启动中」等待页(Studio 冷启动时间被构建阶段的等待期吸收)
+    studio_err = None
     try:
         start_studio(job)
     except Exception as e:
-        # Studio 启动失败不阻塞构建(状态轮询会自愈重试拉起)
-        job.set(progress=f"总时长 {info['total']:.0f} 秒(Studio 启动失败,稍后可重试)", total_sec=info["total"],
-                voice_engines=eng_txt, studio_error=str(e)[:80])
-        return
+        studio_err = str(e)[:80]
+    if studio_err:
+        # 启动失败不阻塞预览:状态轮询自愈会重试拉起
+        job.set(status="preview", progress=f"总时长 {info['total']:.0f} 秒(Studio 启动失败,稍后自动重试)",
+                total_sec=info["total"], voice_engines=eng_txt, studio_error=studio_err)
+    else:
+        job.set(status="preview", progress=f"总时长 {info['total']:.0f} 秒",
+                total_sec=info["total"], voice_engines=eng_txt)
     # 构建后异步跑质量门(hyperframes check),结果写入任务状态,不阻塞预览
     threading.Thread(target=_run_check, args=(job,), daemon=True).start()
 
@@ -183,36 +190,27 @@ def start_studio(job):
 
 
 def _start_studio_locked(job):
-    """启动 HyperFrames Studio(preview --background 是 CLI 托管会话,命令返回后服务仍在)。
-
-    以端口可达性判定存活,不再跟踪包装进程。
-    启动前先 --stop 清理可能残留的托管会话(否则 CLI 会「复用」死会话而不监听新端口)。
+    """以 --foreground 直接拉起 Studio 进程并跟踪(不走 CLI 托管会话注册表——
+    注册表会残留死会话,CLI 复用死会话时不监听新端口,是「偶发一直启动中」的根源)。
     """
     proj = str(job.paths()["project"])
     log = open(f"/mnt/workspace/ttv/studio-{job.id}.log", "a")
-    try:
-        subprocess.run(["hyperframes", "preview", proj, "--stop"],
-                       stdout=log, stderr=log, env=_hf_env(), timeout=60)
-    except Exception:
-        pass
     import time as _t
     for retry in range(2):
         port = _studio_slot(job.id)
         log.write(f"[{_t.time()}] starting studio for {job.id} on {port}\n")
         log.flush()
-        try:
-            subprocess.run(
-                ["hyperframes", "preview", "--background", "--port", str(port)],
-                cwd=proj,
-                stdout=log, stderr=log, env=_hf_env(),
-                timeout=120,
-            )
-        except subprocess.TimeoutExpired:
-            log.write("preview 命令超时\n")
-        # 等待端口就绪(冷启动含大页面解析,最多 90s)
+        proc = subprocess.Popen(
+            ["hyperframes", "preview", "--port", str(port), "--foreground", "--no-open"],
+            cwd=proj, stdout=log, stderr=log, env=_hf_env(),
+        )
+        # 等待端口就绪(最多 90s);进程提前退出则换端口重试
         for _ in range(90):
+            if proc.poll() is not None:
+                log.write(f"studio 进程提前退出 code={proc.returncode}\n")
+                break
             if not _port_free(port):
-                STUDIOS[job.id] = port
+                STUDIOS[job.id] = proc
                 log.write(f"studio ready on {port}\n")
                 log.close()
                 return port
@@ -233,14 +231,23 @@ def _start_studio_bg(job):
 
 def stop_studio(job):
     if job and job.id in STUDIOS:
-        STUDIOS.pop(job.id, None)
+        proc = STUDIOS.pop(job.id, None)
         STUDIO_SLOT_USED.pop(job.id, None)
-        try:
-            subprocess.run(["hyperframes", "preview", str(job.paths()["project"]), "--stop"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           env=_hf_env(), timeout=60)
-        except Exception:
-            pass
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+
+def _live_studio_port(job_id: str) -> int | None:
+    """Studio 存活且端口在监听时返回端口,否则返回 None。"""
+    port = STUDIO_SLOT_USED.get(job_id)
+    proc = STUDIOS.get(job_id)
+    if proc is not None and proc.poll() is None and port is not None and not _port_free(port):
+        return port
+    return None
 
 
 # ───────────────────────── API ─────────────────────────
@@ -363,12 +370,12 @@ def api_job(job_id: str):
     d = job.to_dict()
     if job.status == "preview":
         # 自愈:Studio 进程若已死亡则自动重建
-        sp = STUDIOS.get(job.id)
-        if sp is None or _port_free(sp):
+        port = _live_studio_port(job.id)
+        if port is None:
             if job.id not in _studio_starting:
                 _studio_starting.add(job.id)
                 threading.Thread(target=_start_studio_bg, args=(job,), daemon=True).start()
-        d["studio_port"] = STUDIOS.get(job.id)
+        d["studio_port"] = port
     return d
 
 
@@ -458,8 +465,8 @@ async def api_project_root(pid: str, request: Request):
     job = _job_from_pid(pid)
     if not job:
         raise HTTPException(404, "项目不存在")
-    port = STUDIOS.get(job.id)
-    if port is None or _port_free(port):
+    port = _live_studio_port(job.id)
+    if port is None:
         if job.status == "preview" and job.id not in _studio_starting:
             _studio_starting.add(job.id)
             threading.Thread(target=_start_studio_bg, args=(job,), daemon=True).start()
@@ -488,8 +495,8 @@ async def api_projects_passthrough(pid: str, rest: str, request: Request):
     job = _job_from_pid(pid)
     if not job:
         raise HTTPException(404, "项目不存在")
-    port = STUDIOS.get(job.id)
-    if port is None or _port_free(port):
+    port = _live_studio_port(job.id)
+    if port is None:
         if job.status == "preview" and job.id not in _studio_starting:
             _studio_starting.add(job.id)
             threading.Thread(target=_start_studio_bg, args=(job,), daemon=True).start()
@@ -524,7 +531,8 @@ async def api_studio(job_id: str, path: str, request: Request):
     """
     if ".." in path:
         raise HTTPException(400, "非法路径")
-    if job_id not in STUDIOS or _port_free(STUDIOS[job_id]):
+    port = _live_studio_port(job_id)
+    if port is None:
         job = get_job(job_id)
         if job and job.status == "preview" and job_id not in _studio_starting:
             _studio_starting.add(job_id)
@@ -533,7 +541,7 @@ async def api_studio(job_id: str, path: str, request: Request):
         return Response(
             content=_retry_msg("Studio 启动中", "页面会自动重试,请稍候。"),
             status_code=503, media_type="text/html")
-    return await _studio_proxy(job_id, path, request, STUDIO_SLOT_USED[job_id])
+    return await _studio_proxy(job_id, path, request, port)
 
 
 async def _studio_proxy(job_id: str, path: str, request: Request, port: int):
