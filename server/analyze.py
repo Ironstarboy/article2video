@@ -296,7 +296,7 @@ def validate_script(script: dict, article: str, target_duration: int) -> list[st
     elif target_duration > 90:
         vo_floor = target_duration * 1.8
     else:
-        vo_floor = target_duration * 1.0
+        vo_floor = target_duration * 2.0
     if vo_total < vo_floor:
         errs.append(f"旁白总量 {vo_total} 字不足(需 ≥{int(vo_floor)} 字,请加长每帧旁白/增加帧数)")
     return errs

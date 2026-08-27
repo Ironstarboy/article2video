@@ -79,7 +79,11 @@ def stage_build(job):
         if vo_chars >= need * 0.85:
             break
         job.set(progress=f"旁白量不足目标时长,正在拓展内容(第{_pass + 1}轮:{vo_chars} 字 → 约需 {int(need)} 字)")
-        script = analyze.expand_script(script, article_text, target)
+        try:
+            script = analyze.expand_script(script, article_text, target)
+        except Exception:
+            # 拓展失败不阻塞构建:模型扩写有天花板,剩余缺口由构建期留白分摊补足
+            break
         p["script"].write_text(json.dumps(script, ensure_ascii=False, indent=1), encoding="utf-8")
         vo_chars = sum(len((f.get("voiceover") or "").strip()) for f in script["frames"])
     # 语速保持 1.0(自然说话语速,不随内容缩放)
