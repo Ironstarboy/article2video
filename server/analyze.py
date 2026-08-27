@@ -659,7 +659,9 @@ def validate_script(script: dict, article: str, target_duration: int,
             errs.append(f"目标 {target_duration}s 帧数 {len(frames)} 过多(≤90s 应 ≤12)")
         if target_duration >= 240 and len(frames) < 10:
             errs.append(f"目标 {target_duration}s 帧数 {len(frames)} 过少(≥240s 应 ≥10)")
-        vo_cap = 130 if target_duration >= 360 else (110 if target_duration >= 180 else (90 if target_duration > 90 else 40))
+        # 旁白上限分档:短视频档(≤90s)模型普遍写到 45-55 字,cap 40 过紧会
+        # 触发无谓重试;60 字仍远低于总预算(90×4.2=378),保持短促引导即可
+        vo_cap = 130 if target_duration >= 360 else (110 if target_duration >= 180 else (90 if target_duration > 90 else 60))
     if frames[0].get("type") != "opening":
         errs.append("第 1 帧必须是 opening")
     if frames[-1].get("type") != "closing":
@@ -1085,6 +1087,8 @@ def analyze_article(article: str, target_duration: int, combo: dict,
             continue
         try:
             cand = _parse_json(content)
+            # 阶段二的输出契约不含 analysis(由阶段一产生):注入蓝图分析后再校验
+            cand["analysis"] = _analysis_to_script_analysis(ana, target_duration)
             frames = cand.get("frames")
             if isinstance(frames, list) and frames:
                 last_frames = frames
