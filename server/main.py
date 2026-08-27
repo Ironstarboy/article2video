@@ -69,6 +69,13 @@ def stage_build(job):
     script = json.loads(p["script"].read_text(encoding="utf-8"))
     style = styles.get(_job_combo(job))
     target = int(job.state.get("duration_sec", 120))
+    # 旁白量不足目标时长(实测语速≈4.2字/秒)→ 构建期二次拓展内容:
+    # 「选的时间长就拓展」的核心机制,加长每帧旁白并增帧,而不是拖慢画面
+    vo_chars = sum(len((f.get("voiceover") or "").strip()) for f in script["frames"])
+    if vo_chars < target * 3.4 * 0.85:
+        job.set(progress=f"旁白量不足目标时长,正在拓展内容({vo_chars} 字 → 约需 {int(target * 3.4)} 字)")
+        script = analyze.expand_script(script, p["input"].read_text(encoding="utf-8"), target)
+        p["script"].write_text(json.dumps(script, ensure_ascii=False, indent=1), encoding="utf-8")
     # 语速保持 1.0(自然说话语速,不随内容缩放)
     speed = 1.0
     provider = job.state.get("voice_engine") or "cosyvoice3"
