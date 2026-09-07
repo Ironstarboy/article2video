@@ -4,6 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>理论文章转视频 · VideoLab</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23A61B29'/%3E%3Ctext x='16' y='23' text-anchor='middle' font-family='serif' font-size='20' font-weight='bold' fill='white'%3E论%3C/text%3E%3C/svg%3E"/>
 <link rel="preload" href="./assets/fonts-woff2/ui-song.woff2" as="font" type="font/woff2" crossorigin/>
 <style>
 /* ── 设计规范:编辑部工作台(v2.0) ──
@@ -146,8 +147,7 @@ button.primary:disabled{background:var(--line-strong);color:#fff;cursor:not-allo
 .banner.ok{border-left-color:var(--ok);background:var(--ok-soft);}
 .banner.err{border-left-color:var(--err);background:var(--err-soft);}
 @keyframes rot{to{transform:rotate(360deg);}}
-.columns{display:grid;grid-template-columns:1.15fr 1fr;gap:20px;align-items:start;}
-@media(max-width:980px){.columns{grid-template-columns:1fr;}}
+.columns{display:flex;flex-direction:column;gap:20px;}
 .panel h3{font-family:var(--serif);font-size:17px;margin:0 0 14px;padding-bottom:12px;border-bottom:1px solid var(--line);color:var(--navy);}
 .meta{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
 .meta .chip{background:var(--navy-soft);border:1px solid var(--line);color:var(--navy);border-radius:999px;padding:4px 14px;font-size:12.5px;}
@@ -169,10 +169,18 @@ table.frames input[type=number]{width:64px;}
 
 /* ── 视频区 ── */
 .video-row{margin-top:20px;}
-.studio-box{background:#0B1220;border-radius:10px;overflow:hidden;width:100%;aspect-ratio:16/9;max-height:76vh;display:flex;align-items:center;justify-content:center;color:#8CA0B3;font-size:14px;}
+.studio-wrap{position:relative;}
+.studio-box{background:#0B1220;border-radius:10px;overflow:hidden;width:100%;height:600px;max-height:85vh;display:flex;align-items:center;justify-content:center;color:#8CA0B3;font-size:14px;}
 .studio-box iframe,.studio-box video{width:100%;height:100%;border:none;display:block;}
 .studio-box .boot{padding:24px;text-align:center;line-height:2;}
 .studio-box .boot .spin{width:16px;height:16px;border:2px solid #33415C;border-top-color:#8CA0B3;border-radius:50%;animation:rot 1s linear infinite;margin:0 auto 12px;display:block;}
+.studio-resize-handle{height:10px;background:var(--line);border-radius:0 0 10px 10px;cursor:ns-resize;display:flex;align-items:center;justify-content:center;user-select:none;transition:background .15s;position:relative;}
+.studio-resize-handle:hover,.studio-resize-handle:active{background:var(--line-strong);}
+.studio-resize-handle::before{content:"";display:block;width:40px;height:4px;border-radius:3px;background:var(--faint);}
+.studio-resize-handle:hover::before{background:var(--navy);}
+.studio-resize-handle::after{content:"↕ 拖拽缩放";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:11px;color:var(--faint);white-space:nowrap;letter-spacing:0.5px;opacity:0;transition:opacity .2s;}
+.studio-resize-handle:hover::after{opacity:1;}
+.studio-resize-handle:hover::before{opacity:0;}
 #dl{display:none;margin-top:14px;}
 #dl a{display:inline-flex;align-items:center;gap:8px;background:var(--red);color:#fff;text-decoration:none;font-size:14.5px;font-weight:600;border-radius:8px;padding:12px 24px;transition:background .15s,transform .1s;}
 #dl a:hover{background:var(--red-deep);}
@@ -290,7 +298,7 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
   <div class="columns">
     <div>
       <div class="step panel" style="padding:24px 26px;">
-        <h3>分析结果</h3>
+      <h3>分析结果面板</h3>
         <div class="meta" id="meta-chips"></div>
         <div id="analysis-body">
           <div class="skl skl-line"></div>
@@ -329,7 +337,10 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
 
   <div class="step panel video-row" style="padding:24px 26px;">
     <h3>视频预览(Studio 编辑器)</h3>
-    <div class="studio-box" id="studio-box"><div class="boot"><span class="spin"></span>构建完成后在此加载 Studio 编辑器</div></div>
+    <div class="studio-wrap">
+      <div class="studio-box" id="studio-box"><div class="boot"><span class="spin"></span>构建完成后在此加载 Studio 编辑器</div></div>
+      <div class="studio-resize-handle" id="studio-resize-handle" title="上下拖拽缩放预览窗口"></div>
+    </div>
     <div class="btnrow">
       <button id="btn-build" disabled>构建预览</button>
       <button id="btn-reanalyze" class="hidden">重新分析</button>
@@ -828,15 +839,52 @@ function collectScript(){
   return s;
 }
 /* 视频区:Studio 编辑器(整个预览区只有 Studio) */
+/* 上下缩放:鼠标/触屏拖拽手柄调整预览窗口高度 */
+(function(){
+  const box = document.getElementById("studio-box");
+  const handle = document.getElementById("studio-resize-handle");
+  if (!box || !handle) return;
+  let startY, startH;
+  function onDown(e){
+    e.preventDefault();
+    const p = e.type.indexOf("touch") === 0 ? e.touches[0] : e;
+    startY = p.clientY;
+    startH = box.offsetHeight;
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.addEventListener("touchmove", onMove, {passive:false});
+    document.addEventListener("touchend", onUp);
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+  }
+  function onMove(e){
+    const p = e.type.indexOf("touch") === 0 ? e.touches[0] : e;
+    if (!p) return;
+    const d = p.clientY - startY;
+    const minH = 180, maxH = Math.min(window.innerHeight * 0.88, 960);
+    box.style.height = Math.max(minH, Math.min(maxH, startH + d)) + "px";
+  }
+  function onUp(){
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.removeEventListener("touchmove", onMove);
+    document.removeEventListener("touchend", onUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  }
+  handle.addEventListener("mousedown", onDown);
+  handle.addEventListener("touchstart", onDown, {passive:false});
+})();
 function createStudioIframe(){
   if (!$("#studio-box").querySelector("iframe") && !$("#studio-box").querySelector("video") && jobId) {
     const f = document.createElement("iframe");
-    f.src = "./api/studio/" + jobId + "/#project/ttv" + jobId;
+    f.src = "./api/studio/" + jobId + "/#project/ttv";
     f.allow = "autoplay";
     $("#studio-box").innerHTML = "";
     $("#studio-box").appendChild(f);
   }
 }
+
 $("#btn-edit").onclick = ()=>{
   editMode = !editMode;
   $("#btn-edit").textContent = editMode ? "退出编辑" : "编辑脚本";

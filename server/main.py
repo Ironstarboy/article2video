@@ -244,18 +244,24 @@ def _studio_slot(job_id: str) -> int:
             return port
     # 槽满:回收最旧的,并确认端口真正释放(进程退出可能滞后),
     # 否则新会话绑定失败会被误判为「就绪」,导致两个任务记录到同一端口
-    oldest = next(iter(STUDIOS), None)
-    if oldest:
-        stop_studio(get_job(oldest))
-        import time as _t
-        for _ in range(30):
-            if _port_free(STUDIO_SLOT_BASE):
-                break
-            _t.sleep(1.0)
-    if not _port_free(STUDIO_SLOT_BASE):
-        raise RuntimeError("Studio 槽位回收失败(端口未释放)")
-    STUDIO_SLOT_USED[job_id] = STUDIO_SLOT_BASE
-    return STUDIO_SLOT_BASE
+    oldest_job_id = next(iter(STUDIOS), None)
+    if oldest_job_id:
+        oldest_port = STUDIO_SLOT_USED.get(oldest_job_id)
+        if oldest_port:
+            stop_studio(get_job(oldest_job_id))
+            import time as _t
+            for _ in range(30):
+                if _port_free(oldest_port):
+                    break
+                _t.sleep(1.0)
+        # 清理已回收的槽位
+        STUDIOS.pop(oldest_job_id, None)
+        STUDIO_SLOT_USED.pop(oldest_job_id, None)
+        # 重新分配该端口
+        if oldest_port and _port_free(oldest_port):
+            STUDIO_SLOT_USED[job_id] = oldest_port
+            return oldest_port
+    raise RuntimeError("Studio 槽位回收失败(端口未释放)")
 
 
 def start_studio(job):
@@ -555,6 +561,8 @@ def _job_from_pid(pid: str):
         job = get_job(pid[3:])
         if job:
             return job
+    # Studio 内部 projectName 为 "ttv",前端可能直接传 "ttv"
+    # 此时无法精确反查任务,交给调用链处理
     return None
 
 
@@ -591,7 +599,21 @@ async def api_project_root(pid: str, request: Request):
     版本再 404(重定向 Location 还用 nginx 传来的无端口 Host,直接生成坏地址),
     导致 Studio 左上角组件列表永远为空。
     """
-    job = _job_from_pid(pid)
+    # pid 可能是 "ttv123abc" 或纯 "ttv"(后端项目名无任务后缀)
+    # 从 Referer 头提取 job_id
+    job_id = None
+    if pid.startswith("ttv") and len(pid) > 3:
+        job_id = pid[3:]
+    if not job_id:
+        ref = str(request.headers.get("referer", ""))
+        import re as _re
+        # Referer 来源:主页面 /ttv/?job={job_id} 或 iframe /ttv/api/studio/{job_id}/...
+        for pat in (r"/ttv/\?job=([a-f0-9]+)", r"/api/studio/([a-f0-9]+)/"):
+            m = _re.search(pat, ref)
+            if m:
+                job_id = m.group(1)
+                break
+    job = get_job(job_id) if job_id else None
     if not job:
         raise HTTPException(404, "项目不存在")
     port = _live_studio_port(job.id)
@@ -600,7 +622,8 @@ async def api_project_root(pid: str, request: Request):
             _studio_starting.add(job.id)
             threading.Thread(target=_start_studio_bg, args=(job,), daemon=True).start()
         raise HTTPException(503, "Studio 启动中")
-    # Studio 服务器内部项目 id 恒为 "ttv",且其根路径不带斜杠
+    # Studio 服务器内部 projectName 为 "ttv" (从 __hyperframes_config 实测).
+    # resolveProjectOrThrow 用 id === projectName 比较,所以转发时必须使用 "ttv".
     target = f"http://127.0.0.1:{port}/api/projects/ttv"
     try:
         r = await PROXY_CLIENT.request(request.method, target)
@@ -622,7 +645,17 @@ async def api_projects_passthrough(pid: str, rest: str, request: Request):
     """Studio 前端以源根路径调用 /api/projects/...,转发到对应任务的 Studio 服务器。"""
     if ".." in rest:
         raise HTTPException(400, "非法路径")
+    # pid 可能为 "ttv{job_id}"(来自主页面)或纯 "ttv"(来自 Studio iframe 内部)
     job = _job_from_pid(pid)
+    if not job:
+        # 纯 "ttv" pid → 从 Referer 头提取 job_id
+        ref = str(request.headers.get("referer", ""))
+        import re as _re2
+        for pat in (r"/ttv/\?job=([a-f0-9]+)", r"/api/studio/([a-f0-9]+)/"):
+            m = _re2.search(pat, ref)
+            if m:
+                job = _job_from_pid("ttv" + m.group(1))
+                break
     if not job:
         raise HTTPException(404, "项目不存在")
     port = _live_studio_port(job.id)
@@ -631,7 +664,8 @@ async def api_projects_passthrough(pid: str, rest: str, request: Request):
             _studio_starting.add(job.id)
             threading.Thread(target=_start_studio_bg, args=(job,), daemon=True).start()
         raise HTTPException(503, "Studio 启动中")
-    # Studio 服务器内部项目 id 恒为 "ttv"(与 composition id 无关),转发时改写回
+    # Studio 内部 projectName 实测为 "ttv",resolveProjectOrThrow 用 id === projectName 比较。
+    # 前端以 "ttv{job_id}" 请求,需要重写为 ttv,同时响应时反向重写引用。
     target = f"http://127.0.0.1:{port}/api/projects/ttv/{rest}"
     if request.url.query:
         target += "?" + request.url.query
@@ -644,7 +678,7 @@ async def api_projects_passthrough(pid: str, rest: str, request: Request):
     content = r.content
     if "javascript" in ctype or "text/html" in ctype or "json" in ctype:
         text = content.decode("utf-8", errors="ignore")
-        # Studio 服务器内部项目 id 恒为 ttv:把响应里的引用改写为带任务 id 的形式
+        # Studio 服务器内部 project id = "ttv":把响应里的引用改写为带任务 id 的形式
         text = text.replace("/api/projects/ttv/", f"/api/projects/ttv{job.id}/")
         text = text.replace('"/assets/', f'"/ttv/api/studio/{job.id}/assets/')
         text = text.replace("'/assets/", f"'/ttv/api/studio/{job.id}/assets/")
@@ -655,10 +689,14 @@ async def api_projects_passthrough(pid: str, rest: str, request: Request):
                     headers={"Content-Type": _fix_mime(rest, ctype)})
 
 
+@app.get("/api/studio/{job_id}")
+@app.get("/api/studio/{job_id}/")
 @app.get("/api/studio/{job_id}/{path:path}")
-async def api_studio(job_id: str, path: str, request: Request):
+async def api_studio(job_id: str, request: Request, path: str = ""):
     """反向代理到该任务的 HyperFrames Studio(preview 完整编辑器)。
 
+    注意:同时注册带/不带尾斜杠的根路径以及带子路径的三条路由,
+    因为 {path:path} 无法匹配空路径(根目录访问).
     Studio 页面与静态资源使用绝对路径(/assets/、/favicon.svg、/api/),
     经本代理下发时改写为 /ttv/api/studio/<job_id>/ 前缀。
     """
@@ -679,7 +717,20 @@ async def api_studio(job_id: str, path: str, request: Request):
 
 async def _studio_proxy(job_id: str, path: str, request: Request, port: int):
     query = f"?{request.url.query}" if request.url.query else ""
-    target = f"http://127.0.0.1:{port}/{path}{query}"
+    # Studio 内部 projectName 实测为 "ttv" (由 __hyperframes_config 返回).
+    # 前端 iframe 中 JS 以 ttv{job_id} 为项目 id 调用 API,
+    # 但我们转发到 Studio 时必须使用 Studio 认识的内部 projectName "ttv".
+    target_path = path
+    path_before = target_path
+    # 重写请求路径中的 project id: /api/projects/ttv{job_id}/ → /api/projects/ttv/
+    target_path = re.sub(
+        rf"^api/projects/ttv{re.escape(job_id)}/",
+        "api/projects/ttv/",
+        target_path,
+    )
+    target = f"http://127.0.0.1:{port}/{target_path}{query}"
+    log.warning("### STUDIO PROXY: job=%s path_before=%s path_after=%s target=%s",
+                job_id, path_before, target_path, target)
     try:
         # 按原始方法与 body 转发(Studio 可能经此路径发 POST/PUT 保存类请求)
         body = await request.body() if request.method in ("POST", "PUT", "PATCH", "DELETE") else None
@@ -696,10 +747,17 @@ async def _studio_proxy(job_id: str, path: str, request: Request, port: int):
     ctype = r.headers.get("content-type", "application/octet-stream")
     content = r.content
     prefix = f"/ttv/api/studio/{job_id}/"
+    # 响应中的项目 id 重写:把 /api/projects/ttv/ 映射回 /api/projects/ttv{job_id}/
+    # 这样前端 JS 中的项目 id 保持一致
+    response_pid = "ttv"
+    response_pid_from = f"/api/projects/{response_pid}/"
+    response_pid_to = f"/api/projects/ttv{job_id}/"
     if "text/html" in ctype:
         text = content.decode("utf-8", errors="ignore")
         text = text.replace('src="/', f'src="{prefix}')
         text = text.replace('href="/', f'href="{prefix}')
+        # 响应中将 Studio 内部项目 id 重新映射回前端的外部 id
+        text = text.replace(response_pid_from, response_pid_to)
         content = text.encode("utf-8")
     elif "javascript" in ctype:
         # JS 内窄化重写(仅 /assets/ 与 /api/ 前缀,避免破坏字符串字面量)
@@ -708,6 +766,10 @@ async def _studio_proxy(job_id: str, path: str, request: Request, port: int):
         text = text.replace("'/assets/", f"'{prefix}assets/")
         text = text.replace('"/api/', f'"{prefix}api/')
         text = text.replace("'/api/", f"'{prefix}api/")
+        # 模板字面量中的 /api/ 前缀重写(Studio 的 _0 函数用 backtick 构造 API 路径)
+        text = text.replace('`/api/', f'`{prefix}api/')
+        # Studio 接口响应中的项目 id 重写
+        text = text.replace(response_pid_from, response_pid_to)
         content = text.encode("utf-8")
     ctype = _fix_mime(path, ctype)
     return Response(content=content, status_code=r.status_code,

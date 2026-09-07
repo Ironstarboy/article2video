@@ -85,6 +85,20 @@ def _comp_id(project_dir: Path) -> str:
     return "ttv" + project_dir.parent.name
 
 
+HYPERFRAMES_JSON = """{
+  "$schema": "https://hyperframes.heygen.com/schema/hyperframes.json",
+  "registry": "https://raw.githubusercontent.com/heygen-com/hyperframes/main/registry",
+  "paths": {
+    "blocks": "compositions",
+    "components": "compositions/components",
+    "assets": "assets"
+  },
+  "media": {
+    "autoProxy": true
+  }
+}"""
+
+
 def build(script: dict, style_key: str, vo: dict, project_dir: Path) -> dict:
     """生成 HyperFrames 项目。返回 {total, starts: {frame_index: 绝对开始秒}}。"""
     style = styles.get(style_key)
@@ -99,6 +113,11 @@ def build(script: dict, style_key: str, vo: dict, project_dir: Path) -> dict:
     (project_dir / "assets" / "audio").mkdir(parents=True, exist_ok=True)
     # 字体子集化后 base64 内联进 index.html,gsap 同样内联——
     # 无需再复制 82MB 完整字体/gsap 到项目目录(v2.0 起移除 _copy_shared)
+    # hyperframes.json 必须存在,否则 HyperFrames Studio 不认为本项目目录有效
+    # (否则 preview 显示 404)
+    hf_json = project_dir / "hyperframes.json"
+    if not hf_json.exists():
+        hf_json.write_text(HYPERFRAMES_JSON, encoding="utf-8")
 
 
     frames = script["frames"]
