@@ -22,6 +22,9 @@ tts-qwen-venv/
 cosyvoice-src/
 assets/fonts-woff2/
 
+# 生成产物(渲染成片等, 不入库, 仅保留本地)
+复旦大学校长-金立-对话视频.mp4
+
 # InfiniteTalk(数字人视频生成): 整个目录不入库, 代码/权重/产物均只保留在本地工作区
 InfiniteTalk/
 
