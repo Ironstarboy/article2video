@@ -12,6 +12,12 @@ FONTS_DIR = ASSETS_DIR / "fonts"
 BGM_DIR = ASSETS_DIR / "bgm"
 VENDOR_DIR = ASSETS_DIR / "vendor"
 
+# 日志统一收在 ROOT/logs 下(不污染项目根目录;deploy/*.sh 的重定向路径与此一致)
+LOG_DIR = Path(os.environ.get("TTV_LOG_DIR", str(ROOT / "logs")))
+BACKEND_LOG = LOG_DIR / "backend.log"      # 后端 uvicorn(由 deploy/start.sh 重定向)
+STUDIO_LOG_DIR = LOG_DIR / "studio"        # 每任务一个 <job_id>.log(hyperframes preview 输出)
+TTS_LOG_DIR = LOG_DIR / "tts"              # CosyVoice3 多实例 / Qwen3-TTS 服务日志
+
 # 本地 DeepSeek(vLLM,OpenAI 兼容,纯 HTTP 走网关)
 DEEPSEEK_LOCAL_URL = os.environ.get("TTV_DEEPSEEK_URL", "http://8.130.213.80:20001/v1")
 DEEPSEEK_MODEL = os.environ.get("TTV_DEEPSEEK_MODEL", "DeepSeek-V4-Flash")

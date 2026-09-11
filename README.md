@@ -62,8 +62,10 @@
 ssh videolab "bash /mnt/workspace/ttv/deploy/start.sh"
 # 重启 TTS 服务(含 PPU SDK 环境)
 ssh videolab "bash /mnt/workspace/ttv/deploy/start-tts.sh"
-# 查看日志
-tail -f /mnt/workspace/ttv/backend.log /mnt/workspace/ttv/tts.log
+# 查看日志(统一在 logs/ 下,不进项目根目录)
+tail -f /mnt/workspace/ttv/logs/backend.log
+tail -f /mnt/workspace/ttv/logs/tts/tts-8016.log
+tail -f /mnt/workspace/ttv/logs/studio/<job_id>.log   # 每任务的 Studio(hyperframes preview)输出
 ```
 
 BGM:把授权曲目放入 `/mnt/workspace/ttv/assets/bgm/`(solemn-red.mp3 / academic-ink.mp3 / modern-blue.mp3),缺文件时自动静音占位。

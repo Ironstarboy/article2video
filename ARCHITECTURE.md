@@ -81,7 +81,8 @@ uploaded → analyzing → analyzed → building → preview → rendering → r
 - **并发与限流**:httpx 全局共享连接池(修复历史上 "Too many open files" FD 耗尽);讲解视频分段脚本并行生成(ThreadPoolExecutor 3 workers,段间无依赖);全局 LLM 并发信号量 6;渲染全局信号量 2;进行中任务 >4 时新任务创建返回 429;TTS 合成按帧分发多实例并行 + ffmpeg/ffprobe 线程池化
 - **语速常量统一**:config.CHARS_PER_SEC=4.2 全局引用;宣传档位旁白系数 3.0/3.8/3.9/4.0 字/秒(有意低于实测语速,余量由构建期留白分摊);拓展验收线统一 0.8
 - **讲解备课覆盖校验**:chapters para_range 必须覆盖全文每个段落(无空洞/重叠,否则修复);paragraph_notes 覆盖每段(缺失程序化补,key_idea 取段首 40 字);分段 prompt 只注入本段相关章节与段落要点(瘦身);合并层 line_analysis=true 重点段未获 textblock/annotation 帧则打印警告;annotation 批注句同帧必须出自同一段
-- **安全**:script title 全部 HTML 转义(修复存储型 XSS 面);api_revise body 非 dict 防护;projects 透传代理加 '..' 拦截;txt/md 上传 >1.5MB 直接拒绝;异常路径统一 logging.exception 落 backend.log
+- **安全**:script title 全部 HTML 转义(修复存储型 XSS 面);api_revise body 非 dict 防护;projects 透传代理加 '..' 拦截;txt/md 上传 >1.5MB 直接拒绝;异常路径统一 logging.exception 落 logs/backend.log(日志统一收在 ROOT/logs,路径常量见 config.LOG_DIR)
+- **日志布局**:`logs/backend.log`(后端)、`logs/tts/*.log`(TTS 实例)、`logs/studio/<job_id>.log`(每任务 hyperframes preview 输出;原先散落项目根目录)
 
 ## 四、关键设计决策
 

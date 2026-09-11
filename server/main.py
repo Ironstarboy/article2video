@@ -19,7 +19,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 
 sys.path.insert(0, str(Path(__file__).parent))
-from config import BACKEND_PORT, NODE_BIN_DIR  # noqa: E402
+from config import BACKEND_PORT, NODE_BIN_DIR, STUDIO_LOG_DIR  # noqa: E402
 from jobs import JOBS, LOCK, create_job, get_job, remove_job, run_in_background  # noqa: E402
 import extract  # noqa: E402
 import analyze  # noqa: E402
@@ -264,6 +264,12 @@ def _studio_slot(job_id: str) -> int:
     raise RuntimeError("Studio 槽位回收失败(端口未释放)")
 
 
+def studio_log_path(job_id: str) -> Path:
+    """Studio 日志统一落在 logs/studio/<job_id>.log(旧版散落在项目根目录)。"""
+    STUDIO_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    return STUDIO_LOG_DIR / f"{job_id}.log"
+
+
 def start_studio(job):
     """启动 HyperFrames Studio(串行化,防槽位竞态)。"""
     with STUDIO_LOCK:
@@ -282,7 +288,7 @@ def _start_studio_locked(job):
         if port is not None and not _port_free(port):
             return port
     proj = str(job.paths()["project"])
-    with open(f"/mnt/workspace/ttv/studio-{job.id}.log", "a") as log:
+    with open(studio_log_path(job.id), "a") as log:
         import time as _t
         for retry in range(2):
             port = _studio_slot(job.id)
@@ -313,7 +319,7 @@ def _start_studio_bg(job):
         # 失败留痕(自愈循环会重试,但要能在日志里查到原因)
         log.exception("job %s Studio 自愈拉起失败", job.id)
         try:
-            with open(f"/mnt/workspace/ttv/studio-{job.id}.log", "a") as logf:
+            with open(studio_log_path(job.id), "a") as logf:
                 logf.write(f"self-heal start failed: {e}\n")
         except Exception:
             pass

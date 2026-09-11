@@ -4,6 +4,13 @@
 > 部署位置:**VideoLab 云服务器**(SSH `videolab`,8.130.213.80),整个项目运行在服务器上。
 > 本地此文件夹保存:计划文档、源码副本、风格脚本、部署配置。
 
+## v2.1(2026-09-10)
+
+**运维**
+- 日志统一收进 `/mnt/workspace/ttv/logs/`:`backend.log`(后端)、`tts/*.log`(CosyVoice3 三实例 / Qwen3-TTS)、`studio/<job_id>.log`(每任务 Studio 输出),项目根目录不再落日志文件
+- 路径常量集中在 `server/config.py`(LOG_DIR / BACKEND_LOG / STUDIO_LOG_DIR / TTS_LOG_DIR,可用 `TTV_LOG_DIR` 覆盖),`server/main.py` 写 Studio 日志前自动建目录
+- `deploy/start.sh`、`start-tts.sh`、`start-tts-qwen.sh`、`setup.sh` 的重定向与目录创建同步更新;start.sh 增加 `uvicorn server.main:app` 进程匹配(此前只杀 `uvicorn main:app`,以 `server.main:app` 方式启动的实例会漏杀)
+
 ## v2.0(2026-08-28)
 
 **效率与硬件**

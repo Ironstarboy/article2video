@@ -7,7 +7,8 @@ demo/
 # Python
 __pycache__/
 *.pyc
-# 日志
+# 日志(统一收在 logs/,不污染项目根目录)
+logs/
 *.log
 # 大文件资产(字体/BGM/vendor 从服务器/官方源获取,见 BUILD.md)
 assets/fonts/
@@ -20,3 +21,16 @@ tts-venv/
 tts-qwen-venv/
 cosyvoice-src/
 assets/fonts-woff2/
+
+# InfiniteTalk(数字人视频生成)
+InfiniteTalk/weights/
+InfiniteTalk/env/
+InfiniteTalk/vendor_wheels/
+InfiniteTalk/code/__pycache__/
+InfiniteTalk/code/save_audio/
+InfiniteTalk/code/*.mp4
+
+# CyberVerse(第三方嵌套仓库, 从 upstream 单独拉取, 不入库)
+CyberVerse/
+# InfiniteTalk 生成产物(视频/音频 embedding, 可重新生成)
+InfiniteTalk/outputs/

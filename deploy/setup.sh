@@ -13,7 +13,7 @@ echo "== python 依赖 =="
 pip3 install -q -r server/requirements.txt || pip3 install -q jieba python-multipart fonttools
 
 echo "== 目录 =="
-mkdir -p jobs assets/fonts assets/bgm assets/vendor web/assets
+mkdir -p jobs logs/studio logs/tts assets/fonts assets/bgm assets/vendor web/assets
 
 echo "== 字体(必须完整版 OTF:子集版会渲染方框,历史教训见 docs/问题修复说明) =="
 # 构建期按任务子集化的源字体,务必用完整版(单个 ≥10MB);下载后校验大小

@@ -6,6 +6,7 @@ source /usr/local/PPU_SDK/envsetup.sh 2>/dev/null
 pkill -f "tts_serve[r]" 2>/dev/null || true
 sleep 1
 cd /mnt/workspace/ttv
+mkdir -p logs/tts
 
 # GPU1@8016 / GPU2@8018 / GPU3@8019(8017 预留给 Qwen3-TTS 备用)
 # OMP_NUM_THREADS 限制 torch CPU 线程自旋(缓解空载高 CPU 占用)
@@ -15,7 +16,7 @@ for i in 0 1 2; do
   OMP_NUM_THREADS=8 PYTHONPATH=/mnt/workspace/ttv/cosyvoice-src:/mnt/workspace/ttv/cosyvoice-src/third_party/Matcha-TTS \
   CUDA_VISIBLE_DEVICES=${GPUS[$i]} nohup tts-venv/bin/python -u -m uvicorn tts_server:app \
     --host 127.0.0.1 --port ${PORTS[$i]} --app-dir server \
-    >> /mnt/workspace/ttv/tts-${PORTS[$i]}.log 2>&1 &
+    >> /mnt/workspace/ttv/logs/tts/tts-${PORTS[$i]}.log 2>&1 &
 done
 
 # 健康检查:逐个等待实例就绪,至少 1 个存活才算成功
@@ -33,7 +34,7 @@ for i in 0 1 2; do
 done
 if [ "$ok" -lt 1 ]; then
   echo "错误:TTS 实例全部启动失败,日志尾部:" >&2
-  tail -5 /mnt/workspace/ttv/tts-*.log 2>/dev/null >&2
+  tail -5 /mnt/workspace/ttv/logs/tts/tts-*.log 2>/dev/null >&2
   exit 1
 fi
 
