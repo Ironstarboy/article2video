@@ -22,15 +22,35 @@ tts-qwen-venv/
 cosyvoice-src/
 assets/fonts-woff2/
 
-# InfiniteTalk(数字人视频生成)
-InfiniteTalk/weights/
-InfiniteTalk/env/
-InfiniteTalk/vendor_wheels/
-InfiniteTalk/code/__pycache__/
-InfiniteTalk/code/save_audio/
-InfiniteTalk/code/*.mp4
+# InfiniteTalk(数字人视频生成): 整个目录不入库, 代码/权重/产物均只保留在本地工作区
+InfiniteTalk/
 
-# CyberVerse(第三方嵌套仓库, 从 upstream 单独拉取, 不入库)
+# CyberVerse(第三方项目, 从 upstream 单独拉取): 代码与权重均不入库
 CyberVerse/
-# InfiniteTalk 生成产物(视频/音频 embedding, 可重新生成)
-InfiniteTalk/outputs/
+CyberVerse-main/
+CyberVerse-main.zip
+
+# 模型权重(一律不入库)
+*.safetensors
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.onnx
+*.gguf
+*.h5
+weights/
+checkpoints/
+
+# 本地环境/缓存/工具链(仓库根级, 不入库)
+.venv/
+node_modules/
+.cache/
+.wheels/
+.tools/
+.home/
+.run/
+.golang/
+.npm-cache/
+.agent-teams/
+.pytest_cache/
