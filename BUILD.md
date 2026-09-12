@@ -56,12 +56,14 @@ pip3 install fastapi uvicorn httpx python-multipart jieba fonttools
    ```
 4. **关键坑**:
    - **必须 `source /usr/local/PPU_SDK/envsetup.sh`**,否则 PPU 内核 JIT 报 `PPU_SDK/PPU_HOME not exist`
-   - **`transformers` 必须钉 4.51.3**(2026-09-12 定位,见 CHANGELOG v2.2「配音乱码根因」):语音 LLM 跑在 Qwen2 backbone 上,4.52+ 会让 speech token 序列乱掉 —— 听感「读音完全不正常、断断续续」,而**时长与峰值都正常**(ratio 0.84–0.88、峰值 -2dB),时长/静音验收全都发现不了。`tts-venv` 是 `--system-site-packages` 建的,不显式安装就会继承系统里更新的 transformers,所以这一条最容易被漏掉;`tts_server` 启动时会硬校验(不符即拒启,`TTV_TTS_ALLOW_UNPINNED=1` 可跳过),`python server/smoke_test.py` 也会校验 tts-venv 的实际版本
+   - **`transformers` 必须钉 4.51.3**(2026-09-12 定位,见 CHANGELOG v2.3「配音乱码根因」):语音 LLM 跑在 Qwen2 backbone 上,4.52+ 会让 speech token 序列乱掉 —— 听感「读音完全不正常、断断续续」,而**时长与峰值都正常**(ratio 0.84–0.88、峰值 -2dB),时长/静音验收全都发现不了。`tts-venv` 是 `--system-site-packages` 建的,不显式安装就会继承系统里更新的 transformers,所以这一条最容易被漏掉;`tts_server` 启动时会硬校验(不符即拒启,`TTV_TTS_ALLOW_UNPINNED=1` 可跳过),`python server/smoke_test.py` 也会校验 tts-venv 的实际版本
    - torchaudio 2.10 需要 torchcodec(无轮子)→ 服务内 monkeypatch 成 soundfile
    - v3 构造签名无 load_jit;prompt 文本必须含 `You are a helpful assistant.<|endofprompt|>` 前缀
    - **speed<1 非线性恶化(0.8 → 5 倍时长)**,服务端钳位下限 1.0(只用 1.0);文本 <15 字 vocoder 卷积报错(Qwen3-TTS 服务补 <8 字 400)
    - 三音色:新闻腔(云扬/云霞/云健)种子 wav → CosyVoice3 零样本克隆
-5. **服务(三实例)**:`deploy/start-tts.sh` 以三份分别监听 **8016(GPU1)/ 8018(GPU2)/ 8019(GPU3)**,后端按帧轮询分发、并行合成(重启同样由该脚本统一拉起;pkill 模式 `tts_serve[r]`——uvicorn 进程 cmdline 是 `tts_server:app` 不带 .py);Qwen3-TTS 备用引擎 `deploy/start-tts-qwen.sh`(**8017,GPU2,默认停**)
+5. **本机已验证的运行时组合**(2026-09-12 实测配音可懂;重建时请对齐,完整表见 `CHANGELOG.md` v2.3):
+   `Python 3.10.12` · `torch/torchaudio 2.8.0+cu128` · `transformers 4.51.3` · `tokenizers 0.21.4` · `onnxruntime 1.23.2(仅 CPU provider)` · `soundfile 0.14.0`(RTX 5090 / 驱动 595.58.03)
+6. **服务(三实例)**:`deploy/start-tts.sh` 以三份分别监听 **8016(GPU1)/ 8018(GPU2)/ 8019(GPU3)**,后端按帧轮询分发、并行合成(重启同样由该脚本统一拉起;pkill 模式 `tts_serve[r]`——uvicorn 进程 cmdline 是 `tts_server:app` 不带 .py);Qwen3-TTS 备用引擎 `deploy/start-tts-qwen.sh`(**8017,GPU2,默认停**)
 
 ## 五、主服务部署
 
