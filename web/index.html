@@ -243,6 +243,25 @@ table.frames input[type=number]{width:64px;}
 .av-pref.busy{opacity:.6;cursor:progress;}
 .av-pref.disabled{opacity:.55;cursor:not-allowed;}
 
+/* ── 设置页 ──
+   面向不懂计算机的使用者:一页三块(分析服务 / 成片保存位置 / 默认设置),
+   每块自带一句说明与一个「保存」,页面里不出现环境变量名与配置文件路径。 */
+.set-card{border:1px solid var(--line);border-radius:10px;padding:20px 22px;margin-bottom:16px;background:var(--card);}
+.set-card h3{margin:0 0 6px;font-family:var(--serif);font-size:16.5px;font-weight:600;color:var(--navy);letter-spacing:1px;}
+.set-tip{font-size:13px;color:var(--muted);line-height:1.75;margin:0 0 16px;}
+.set-row{display:flex;align-items:center;gap:12px;margin-bottom:8px;}
+.set-label{flex:none;width:84px;font-size:13.5px;color:var(--ink);}
+.set-row input[type=text],.set-row input[type=password]{flex:1;min-width:240px;border:1.5px solid var(--line-strong);border-radius:8px;padding:9px 12px;font-size:13.5px;font-family:inherit;background:var(--card);color:var(--ink);}
+.set-row input[type=text]:focus,.set-row input[type=password]:focus{outline:none;border-color:var(--navy);}
+.set-row input:disabled{background:#F7F5F1;color:var(--muted);}
+.set-hint2{font-size:12.5px;color:var(--muted);line-height:1.65;margin:0 0 12px 96px;}
+.set-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px;}
+.set-status{font-size:13px;line-height:1.6;color:var(--muted);}
+.set-status.ok{color:var(--ok);}
+.set-status.err{color:var(--err);}
+.set-link{border:none;background:none;padding:0;color:var(--navy);font-size:12.5px;cursor:pointer;text-decoration:underline;}
+.set-sep{height:1px;background:var(--line);margin:20px 0;}
+
 /* ── 视频区 ── */
 .video-row{margin-top:20px;}
 .studio-wrap{position:relative;}
@@ -352,6 +371,7 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
     </div>
     <div class="head-note">文章分析 · 逐帧脚本 · 自动配音 · 一键成片</div>
     <button type="button" class="head-nav" id="nav-avatars" title="管理数字人形象(上传 / 设为默认 / 重命名 / 删除)">数字人形象</button>
+    <button type="button" class="head-nav" id="nav-settings" title="分析服务、成片保存位置与默认选项">设置</button>
   </div>
 </header>
 <main>
@@ -576,6 +596,7 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
       「一键出片」＝ 构建(配音/组装/数字人片段)+ 渲染一次跑完,中途不用再点;想先看 Studio 时间线就用「构建预览」。
     </p>
     <div id="dl"><a id="dl-link" target="_blank">下载成片 <small id="dl-size"></small></a></div>
+    <p class="bc-note hidden" id="dl-export"></p>
   </div>
 </div>
 
@@ -608,6 +629,76 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
       超过服务端原生输出边长(464)的图只会被缩放使用,清晰度不会再增加。
     </p>
     <div id="av-grid" class="av-grid"></div>
+  </div>
+</div>
+
+<!-- ═══════════ 设置页(全局:分析服务 / 成片保存位置 / 默认选项) ═══════════
+     面向不懂计算机的使用者:每块一句说明 + 一个「保存」,不出现环境变量与配置文件路径。
+     密钥只写不读:输入框永远不回显明文,留空 = 不改动。 -->
+<div id="view-settings" class="hidden">
+  <a class="back" id="set-back" href="./">← 返回项目列表</a>
+  <div class="step">
+    <div class="step-head"><h2>设置</h2><span class="no">全局</span></div>
+    <p class="hint">这里改的设置保存后立刻生效,不用重启服务;已经做好的项目和成片都不会受影响。</p>
+
+    <div class="set-card">
+      <h3>文字分析服务</h3>
+      <p class="set-tip">把文章变成脚本要用到的大模型服务,地址和密钥由服务方提供。改完可以点「测试连接」确认能不能用。</p>
+      <div class="set-row">
+        <span class="set-label">服务地址</span>
+        <input type="text" id="set-llm-url" placeholder="https://llmapi.paratera.com/v1" autocomplete="off" spellcheck="false"/>
+      </div>
+      <div class="set-row">
+        <span class="set-label">密钥</span>
+        <input type="password" id="set-llm-key" placeholder="留空表示不改动" autocomplete="new-password"/>
+        <button type="button" class="set-link hidden" id="set-key-clear">清除密钥</button>
+      </div>
+      <p class="set-hint2" id="set-key-hint">已保存的密钥不会显示出来;要换就直接填新的。</p>
+      <div class="set-row">
+        <span class="set-label">模型名称</span>
+        <input type="text" id="set-llm-model" placeholder="DeepSeek-V4-Flash" autocomplete="off" spellcheck="false"/>
+      </div>
+      <p class="set-hint2">不用改,除非服务方指定了别的模型名称。</p>
+      <div class="set-actions">
+        <button type="button" class="smallbtn" id="set-llm-test">测试连接</button>
+        <button type="button" class="smallbtn" id="set-llm-save">保存</button>
+        <span class="set-status" id="set-llm-status"></span>
+      </div>
+    </div>
+
+    <div class="set-card">
+      <h3>成片保存位置</h3>
+      <p class="set-tip">做好的成片会额外复制一份放到这里,方便在文件管理器或共享盘里直接取用。留空表示只在项目里保留一份(和以前一样)。</p>
+      <div class="set-row">
+        <span class="set-label">保存到</span>
+        <input type="text" id="set-export-dir" placeholder="例如 /mnt/data/成片(留空 = 不额外保存)" autocomplete="off" spellcheck="false"/>
+      </div>
+      <p class="set-hint2" id="set-export-hint"></p>
+      <div class="set-actions">
+        <button type="button" class="smallbtn" id="set-export-save">保存</button>
+        <span class="set-status" id="set-export-status"></span>
+      </div>
+    </div>
+
+    <div class="set-card">
+      <h3>默认设置</h3>
+      <label class="av-pref" id="set-pref-cutout-wrap" for="set-pref-cutout" style="margin-bottom:0;">
+        <input type="checkbox" id="set-pref-cutout"/>
+        <span>
+          <b>新任务默认抠掉数字人背景</b>
+          <span class="tip" id="set-pref-cutout-tip">只保留人像、背景透明,幻灯片内容从人像四周透出来。上传照片后建议开着;抠像不可用时自动回退成圆角卡片,不影响出片。</span>
+        </span>
+      </label>
+    </div>
+
+    <div class="set-card">
+      <h3>恢复默认</h3>
+      <p class="set-tip" id="set-reset-tip">把上面两项改回服务器原本的设置(默认偏好不受影响)。</p>
+      <div class="set-actions">
+        <button type="button" class="smallbtn" id="set-reset">恢复默认</button>
+        <span class="set-status" id="set-reset-status"></span>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -864,9 +955,10 @@ $("#submit").onclick = ()=>{
 /* ── 预览页逻辑 ── */
 const q = new URLSearchParams(location.search);
 jobId = q.get("job");
-// 入口页/创作页/项目详情页由 URL 决定:?job= 详情页、?new=1 创作页、?avatars=1 形象页、其余为项目历史列表
+// 入口页/创作页/项目详情页由 URL 决定:?job= 详情页、?new=1 创作页、?avatars=1 形象页、?settings=1 设置页、其余为项目历史列表
 const wantNew = q.get("new") === "1";
 const wantAvatars = q.get("avatars") === "1";
+const wantSettings = q.get("settings") === "1";
 // ?step= 直达:项目列表点某一步时带上,进入详情页后滚到那一步的结果并高亮
 const focusStep = q.get("step") || "";
 const STATUS_TEXT = {
@@ -1051,6 +1143,14 @@ function updateActions(j){
     const fmt = (j.render_format || "mp4").toUpperCase();
     $("#dl-link").childNodes[0].textContent = "下载成片(" + fmt + ") ";
     $("#dl-size").textContent = j.video_size ? ("· " + (j.video_size/1024/1024).toFixed(1) + " MB") : "";
+    // 「设置 → 成片保存位置」另存成功后显示去向;失败也如实说一句(不影响下载)
+    const ex = $("#dl-export");
+    if (ex) {
+      const dest = j.export_path || "";
+      ex.textContent = dest ? ("已另存到:" + dest)
+                            : (j.export_error ? ("另存到指定位置失败:" + j.export_error) : "");
+      ex.classList.toggle("hidden", !ex.textContent);
+    }
     const box = $("#studio-box");
     if (!box.querySelector("video") || stamp !== lastFinalStamp) {
       lastFinalStamp = stamp;
@@ -2081,6 +2181,7 @@ function renderAvatarPref(){
       ? "已开启:新建任务的数字人默认只保留人像、背景透明(幻灯片内容从人像四周透出来)。单个任务仍可在创作页/预览页改。"
       : "已关闭:新建任务的数字人默认是带背景的圆角卡片。上传真实照片时建议开启。";
   }
+  renderSetPref();   // 设置页有同一个开关(同一份全局偏好),两边保持同步
 }
 
 async function loadPreferences(){
@@ -2358,10 +2459,207 @@ function wireAvatarPage(){
   });
 }
 
-/* ═══════════ 启动路由:入口页 / 创作页 / 项目详情页 / 形象库 ═══════════ */
+/* ═══════════ 设置页(分析服务 / 成片保存位置 / 默认设置) ═══════════
+   面向不懂计算机的使用者,所以:
+     · 每块只有一个「保存」,保存后立刻生效,不用重启服务;
+     · 全程不出现环境变量名、配置文件路径、TTV_* 这类词;
+     · 密钥**只写不读** —— 输入框永远不回显明文,留空 = 不改动,
+       要清除得单独点「清除密钥」(避免"留空"被误当成"清空")。 */
+let setData = null;         // 最近一次 GET /api/settings 的载荷
+let setSaving = false;
+
+function setStatus(sel, msg, kind){
+  const el = $(sel);
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = "set-status" + (kind ? " " + kind : "");
+}
+
+function fmtGB(v){ return (typeof v === "number") ? (Math.round(v * 10) / 10) : null; }
+
+/* 把服务端载荷铺到界面上。正在输入的框不覆盖(保存失败时用户填的内容不能被抹掉)。 */
+function renderSettings(){
+  const d = setData || {};
+  const url = $("#set-llm-url"), model = $("#set-llm-model"), key = $("#set-llm-key");
+  if (url && document.activeElement !== url) url.value = d.llm_url || "";
+  if (model && document.activeElement !== model) model.value = d.llm_model || "";
+  if (key && document.activeElement !== key) {
+    key.value = "";
+    key.placeholder = d.llm_key_set
+      ? "留空表示不改动(已保存 " + (d.llm_key_masked || "") + ")"
+      : "未填写";
+  }
+  const clear = $("#set-key-clear");
+  if (clear) clear.classList.toggle("hidden", !d.llm_key_set);
+  const kh = $("#set-key-hint");
+  if (kh) {
+    kh.textContent = d.llm_key_set
+      ? "已保存密钥 " + (d.llm_key_masked || "") + ";要换就直接填新的,留空表示不改动。"
+      : "目前没有填密钥 —— 服务方不需要密钥时可以一直留空。";
+  }
+  const dir = $("#set-export-dir");
+  if (dir && document.activeElement !== dir) dir.value = d.export_dir || "";
+  const cap = d.export_dir_capacity || {};
+  const free = fmtGB(cap.free_gb);
+  const eh = $("#set-export-hint");
+  if (eh) {
+    const where = d.export_dir
+      ? ("当前另存到 " + d.export_dir)
+      : ("当前只在项目里保留一份(位置:" + (d.export_dir_used || "") + ")");
+    eh.textContent = where + (free === null ? "" : ",这个位置还有 " + free + " GB 可用。");
+  }
+  const rt = $("#set-reset-tip");
+  if (rt && d.factory) {
+    rt.textContent = "把上面两项改回服务器原本的设置(服务地址 " + (d.factory.llm_url || "—")
+      + ",模型 " + (d.factory.llm_model || "—")
+      + (d.factory.export_dir ? ",成片另存到 " + d.factory.export_dir : ",成片不额外另存")
+      + ")。默认设置不受影响。";
+  }
+  renderSetPref();
+}
+
+/* 默认设置里的抠像开关与形象页共用同一份全局偏好(avPrefCutout / loadPreferences) */
+function renderSetPref(){
+  const box = $("#set-pref-cutout"), wrap = $("#set-pref-cutout-wrap");
+  if (!box) return;
+  if (avPrefCutout === null) {
+    wrap.classList.add("disabled");
+    box.disabled = true;
+    return;
+  }
+  wrap.classList.remove("disabled");
+  box.checked = !!avPrefCutout;
+  box.disabled = avPrefSaving;
+}
+
+async function loadSettings(){
+  try {
+    const r = await fetch("./api/settings", {cache: "no-store"});
+    if (!r.ok) throw new Error("服务端返回 " + r.status);
+    setData = await r.json();
+    setStatus("#set-llm-status", "");
+    renderSettings();
+  } catch (e) {
+    setStatus("#set-llm-status", "读不到设置:" + (e && e.message ? e.message : e), "err");
+  }
+}
+
+async function saveSettings(body){
+  const r = await fetch("./api/settings", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  const d = await r.json().catch(()=>({}));
+  if (!r.ok) throw new Error(d.detail || ("服务端返回 " + r.status));
+  setData = d;
+  return d;
+}
+
+function wireSettingsPage(){
+  const back = $("#set-back");
+  if (back) back.onclick = (e)=>{ e.preventDefault(); location.href = "./"; };
+  const pref = $("#set-pref-cutout");
+  if (pref) pref.onchange = ()=>saveAvatarPrefCutout(pref.checked);
+
+  const btnSave = $("#set-llm-save");
+  if (btnSave) btnSave.onclick = async ()=>{
+    if (setSaving) return;
+    const body = {llm_url: $("#set-llm-url").value.trim(), llm_model: $("#set-llm-model").value.trim()};
+    const k = $("#set-llm-key").value.trim();
+    if (k) body.llm_key = k;              // 留空 = 不改动已保存的密钥
+    setSaving = true;
+    setStatus("#set-llm-status", "保存中…", "");
+    try {
+      await saveSettings(body);
+      renderSettings();
+      setStatus("#set-llm-status", "已保存,立刻生效。", "ok");
+      toast("分析服务设置已保存");
+    } catch (e) {
+      setStatus("#set-llm-status", (e && e.message ? e.message : String(e)), "err");
+    } finally {
+      setSaving = false;
+      renderSetPref();
+    }
+  };
+
+  const btnTest = $("#set-llm-test");
+  if (btnTest) btnTest.onclick = async ()=>{
+    if (setSaving) return;
+    const body = {llm_url: $("#set-llm-url").value.trim(), llm_model: $("#set-llm-model").value.trim()};
+    const k = $("#set-llm-key").value.trim();
+    if (k) body.llm_key = k;              // 没填就用已保存的密钥试
+    setSaving = true;
+    btnTest.disabled = true;
+    setStatus("#set-llm-status", "正在连接,请稍候…", "");
+    try {
+      const r = await fetch("./api/settings/llm/test", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      const d = await r.json().catch(()=>({}));
+      if (!r.ok) throw new Error(d.detail || ("服务端返回 " + r.status));
+      setStatus("#set-llm-status", d.message || (d.ok ? "连接正常" : "连接失败"), d.ok ? "ok" : "err");
+    } catch (e) {
+      setStatus("#set-llm-status", "测试失败:" + (e && e.message ? e.message : e), "err");
+    } finally {
+      setSaving = false;
+      btnTest.disabled = false;
+    }
+  };
+
+  const btnClear = $("#set-key-clear");
+  if (btnClear) btnClear.onclick = async ()=>{
+    if (!confirm("确定清除已保存的密钥?清除后分析服务将不带密钥访问。")) return;
+    try {
+      await saveSettings({llm_key: ""});
+      renderSettings();
+      setStatus("#set-llm-status", "密钥已清除。", "ok");
+    } catch (e) {
+      setStatus("#set-llm-status", (e && e.message ? e.message : String(e)), "err");
+    }
+  };
+
+  const btnDir = $("#set-export-save");
+  if (btnDir) btnDir.onclick = async ()=>{
+    if (setSaving) return;
+    setSaving = true;
+    setStatus("#set-export-status", "保存中…", "");
+    try {
+      await saveSettings({export_dir: $("#set-export-dir").value.trim()});
+      renderSettings();
+      setStatus("#set-export-status", "已保存,以后出片会自动另存一份。", "ok");
+      toast("成片保存位置已保存");
+    } catch (e) {
+      setStatus("#set-export-status", (e && e.message ? e.message : String(e)), "err");
+    } finally {
+      setSaving = false;
+    }
+  };
+
+  const btnReset = $("#set-reset");
+  if (btnReset) btnReset.onclick = async ()=>{
+    if (!confirm("确定把分析服务和成片保存位置改回服务器原本的设置?")) return;
+    setStatus("#set-reset-status", "正在恢复…", "");
+    try {
+      const r = await fetch("./api/settings/reset", {method: "POST"});
+      const d = await r.json().catch(()=>({}));
+      if (!r.ok) throw new Error(d.detail || ("服务端返回 " + r.status));
+      setData = d;
+      renderSettings();
+      setStatus("#set-reset-status", "已恢复默认。", "ok");
+    } catch (e) {
+      setStatus("#set-reset-status", (e && e.message ? e.message : String(e)), "err");
+    }
+  };
+}
+
+/* ═══════════ 启动路由:入口页 / 创作页 / 项目详情页 / 形象库 / 设置 ═══════════ */
 /* 顶栏「数字人形象」入口:三个页面都能进(形象是全局设置,与具体任务无关) */
 const _navAv = $("#nav-avatars");
 if (_navAv) _navAv.onclick = ()=>{ location.href = "./?avatars=1"; };
+/* 顶栏「设置」入口:三块全局设置(分析服务 / 成片保存位置 / 默认选项) */
+const _navSet = $("#nav-settings");
+if (_navSet) _navSet.onclick = ()=>{ location.href = "./?settings=1"; };
 
 if (jobId) {
   $("#view-preview").classList.remove("hidden");
@@ -2372,6 +2670,11 @@ if (jobId) {
   $("#view-avatars").classList.remove("hidden");
   loadAvatarLibrary(true);
   loadPreferences();
+} else if (wantSettings) {
+  wireSettingsPage();
+  $("#view-settings").classList.remove("hidden");
+  loadSettings();
+  loadPreferences();     // 默认设置里的抠像开关与形象页共用同一份偏好
 } else if (wantNew) {
   $("#view-upload").classList.remove("hidden");
 } else {

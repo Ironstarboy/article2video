@@ -200,6 +200,33 @@ global.fetch = async (url, opts) => {
     if (global.__deleteFail) return mk({detail: "内置形象不可删除"}, 409);
     return mk({ok: true, items: lib.items, default_id: "jinli", current: lib.current}, 200);
   }
+  // ── 设置页(分析服务 / 成片保存位置,保存即生效) ──
+  if (url.endsWith("/api/settings") && (!opts || !opts.method || opts.method === "GET")) {
+    if (global.__setGetFail) return mk({detail: "boom"}, 500);
+    return mk(Object.assign({}, global.__settings), 200);
+  }
+  if (url.endsWith("/api/settings") && opts.method === "POST") {
+    const body = JSON.parse(opts.body || "{}");
+    if (global.__setFail) return mk({detail: "服务地址要以 http:// 或 https:// 开头"}, 400);
+    if ("llm_key" in body) global.__settings.llm_key_set = !!body.llm_key;
+    ["llm_url", "llm_model", "export_dir"].forEach(k => {
+      if (k in body) global.__settings[k] = body[k];
+    });
+    return mk(Object.assign({ok: true}, global.__settings), 200);
+  }
+  if (url.endsWith("/api/settings/llm/test")) {
+    return mk(global.__setTestResult
+      || {ok: true, latency_ms: 120, message: "连接正常(用时 0.1 秒)"}, 200);
+  }
+  if (url.endsWith("/api/settings/reset")) {
+    // 恢复默认 = 服务端删掉设置文件,于是载荷里的当前值就是**出厂默认**(与真实接口一致)
+    const f = settingsPayload();
+    global.__settings = Object.assign({}, f, {
+      llm_url: f.factory.llm_url, llm_model: f.factory.llm_model,
+      export_dir: f.factory.export_dir, llm_key_set: false, llm_key_masked: "",
+    });
+    return mk(Object.assign({ok: true}, global.__settings), 200);
+  }
   return mk({}, 404);
 };
 global.FormData = class { constructor(){ this.d = {}; } append(k, v){ this.d[k] = v; } };
@@ -224,6 +251,21 @@ const lib = () => ({
 global.__lib = lib();
 global.__pref = true;          // 默认抠背景(出厂默认)
 
+// 设置页的服务端载荷(密钥只有掩码 —— 页面永远拿不到明文)
+function settingsPayload(){
+  return {
+    llm_url: "https://llmapi.paratera.com/v1",
+    llm_model: "DeepSeek-V4-Flash",
+    llm_key_masked: "••••••••ybfg", llm_key_set: true,
+    export_dir: "", export_dir_used: "/data/Avatar/jobs",
+    export_dir_capacity: {path: "/data/Avatar/jobs", total_gb: 97.9, free_gb: 42.2},
+    factory: {llm_url: "http://8.130.213.80:20001/v1", llm_model: "DeepSeek-V4-Flash",
+              export_dir: ""},
+    file: "/data/Avatar/.run/settings.json",
+  };
+}
+global.__settings = settingsPayload();
+
 let PASS = 0, FAIL = 0;
 function ok(name, cond, detail) {
   console.log((cond ? "PASS" : "FAIL") + " [" + name + "]" + (detail ? "  " + detail : ""));
@@ -232,7 +274,7 @@ function ok(name, cond, detail) {
 
 // 用 eval 在全局执行(脚本是 IIFE 之外的一堆函数与顶层绑定)
 try {
-  eval(js + "\n;global.__api = {loadAvatarLibrary, renderAvatarLibrary, avUpload, avDelete, avAction, avRename, wireAvatarPage, fmtSize, renderUploadAvatarHint, applyAvatarMeta, renderAvatarControls, loadPreferences, saveAvatarPrefCutout, renderAvatarPref};");
+  eval(js + "\n;global.__api = {loadAvatarLibrary, renderAvatarLibrary, avUpload, avDelete, avAction, avRename, wireAvatarPage, fmtSize, renderUploadAvatarHint, applyAvatarMeta, renderAvatarControls, loadPreferences, saveAvatarPrefCutout, renderAvatarPref, wireSettingsPage, loadSettings, renderSettings};");
 } catch (e) {
   console.error("FAIL 脚本执行抛异常:", e && e.message);
   process.exit(1);
@@ -471,6 +513,129 @@ const api = global.__api;
        !head.querySelector(".rename-input") && getById("toast").textContent.includes("用户改的标题"));
     ok("改名成功后:容器里的静态元素回到文档",
        !!head.querySelector(".proj-h-title"));
+  }
+
+  // ⑪ 设置页:分析服务(地址 / 密钥 / 模型)—— 保存即生效,密钥只写不读
+  {
+    getById("view-settings").classList.remove("hidden");
+    api.wireSettingsPage();
+    calls.length = 0;
+    await api.loadSettings();
+    ok("设置页读取 GET /api/settings", calls.some(c => c.url === "./api/settings"));
+    ok("地址与模型回显到输入框",
+       getById("set-llm-url").value === "https://llmapi.paratera.com/v1"
+       && getById("set-llm-model").value === "DeepSeek-V4-Flash");
+    ok("密钥输入框为空(不回显明文),只在说明里给掩码",
+       getById("set-llm-key").value === ""
+       && getById("set-llm-key").placeholder.includes("••••")
+       && getById("set-key-hint").textContent.includes("••••"));
+    ok("保存位置提示带当前去向与剩余空间",
+       getById("set-export-hint").textContent.includes("/data/Avatar/jobs")
+       && getById("set-export-hint").textContent.includes("42.2 GB"),
+       getById("set-export-hint").textContent);
+
+    // 保存:密钥留空**不能**顺手把已保存的密钥清掉(最危险的一类回归)
+    calls.length = 0;
+    getById("set-llm-url").value = "https://new.test/v1";
+    getById("set-llm-key").value = "";
+    getById("set-llm-save").onclick();
+    await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+    const saveCall = calls.find(c => c.url === "./api/settings" && c.method === "POST");
+    const saveBody = saveCall ? JSON.parse(saveCall.body) : {};
+    ok("保存时密钥留空 = 不改动(请求体里没有 llm_key)",
+       !("llm_key" in saveBody), JSON.stringify(saveBody));
+    ok("保存成功后有明确反馈", getById("set-llm-status").textContent.includes("已保存"),
+       getById("set-llm-status").textContent);
+
+    calls.length = 0;
+    getById("set-llm-key").value = "sk-new-123456";
+    getById("set-llm-save").onclick();
+    await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+    const b2 = JSON.parse(calls.find(c => c.url === "./api/settings" && c.method === "POST").body);
+    ok("填了新密钥时随保存一起提交", b2.llm_key === "sk-new-123456");
+
+    // 测试连接:用页面上**还没保存**的地址与密钥试
+    calls.length = 0;
+    getById("set-llm-url").value = "https://probe.test/v1";
+    getById("set-llm-key").value = "sk-probe-1";
+    global.__setTestResult = {ok: true, latency_ms: 130, message: "连接正常(用时 0.1 秒)"};
+    getById("set-llm-test").onclick();
+    await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+    const t1 = calls.find(c => c.url === "./api/settings/llm/test");
+    const t1b = t1 ? JSON.parse(t1.body) : {};
+    ok("测试连接用页面上未保存的地址与密钥试",
+       t1b.llm_url === "https://probe.test/v1" && t1b.llm_key === "sk-probe-1", JSON.stringify(t1b));
+    ok("测试成功时状态行显示连接正常并标绿",
+       getById("set-llm-status").textContent.includes("连接正常")
+       && getById("set-llm-status")._classes.has("ok"));
+    ok("测试连接结束后按钮恢复可用", getById("set-llm-test").disabled === false);
+
+    global.__setTestResult = {ok: false, message: "连不上这个地址,请核对地址与网络"};
+    getById("set-llm-test").onclick();
+    await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+    ok("测试失败时把人话原因显示出来并标红",
+       getById("set-llm-status").textContent.includes("连不上这个地址")
+       && getById("set-llm-status")._classes.has("err"));
+    global.__setTestResult = null;
+
+    // 保存失败(400):如实显示服务端原话,且**不清掉用户刚填的内容**
+    global.__setFail = true;
+    getById("set-llm-url").value = "没有协议头";
+    getById("set-llm-save").onclick();
+    await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+    ok("保存失败显示服务端原话(人话)",
+       getById("set-llm-status").textContent.includes("http://"),
+       getById("set-llm-status").textContent);
+    ok("保存失败不会把用户填的内容抹掉", getById("set-llm-url").value === "没有协议头");
+    global.__setFail = false;
+    await api.loadSettings();   // 回到服务端真实值
+
+    // 清除密钥:必须二次确认,且只提交 llm_key 空串
+    calls.length = 0;
+    global.confirmCalls.length = 0;
+    getById("set-key-clear").onclick();
+    await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+    ok("清除密钥前先弹二次确认",
+       global.confirmCalls.length === 1 && global.confirmCalls[0].includes("清除"),
+       JSON.stringify(global.confirmCalls));
+    const cb = JSON.parse(calls.find(c => c.url === "./api/settings" && c.method === "POST").body);
+    ok("清除密钥只提交 llm_key 空串", cb.llm_key === "" && Object.keys(cb).length === 1,
+       JSON.stringify(cb));
+  }
+
+  // ⑫ 设置页:成片保存位置 / 默认开关 / 恢复默认
+  {
+    calls.length = 0;
+    getById("set-export-dir").value = "/mnt/data/成片";
+    getById("set-export-save").onclick();
+    await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+    const eb = JSON.parse(calls.find(c => c.url === "./api/settings" && c.method === "POST").body);
+    ok("保存位置只提交 export_dir(不动分析服务)",
+       eb.export_dir === "/mnt/data/成片" && Object.keys(eb).length === 1, JSON.stringify(eb));
+    ok("保存位置成功后提示「以后出片会自动另存」",
+       getById("set-export-status").textContent.includes("另存"),
+       getById("set-export-status").textContent);
+
+    // 默认设置里的抠像开关 = 形象页那份全局偏好(同一个接口、同一个值)
+    getById("set-pref-cutout").checked = false;
+    calls.length = 0;
+    getById("set-pref-cutout").onchange();
+    await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+    const pc = calls.find(c => c.url === "./api/preferences" && c.method === "POST");
+    ok("设置页的抠像开关走同一个 /api/preferences",
+       !!pc && JSON.parse(pc.body).avatar_cutout_new_jobs === false);
+    ok("形象页与设置页的开关状态保持一致",
+       getById("set-pref-cutout").checked === false
+       && getById("av-pref-cutout").checked === false);
+
+    calls.length = 0;
+    getById("set-reset").onclick();
+    await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+    ok("恢复默认后地址回到服务器原本的值",
+       getById("set-llm-url").value === "http://8.130.213.80:20001/v1",
+       getById("set-llm-url").value);
+    ok("恢复默认有结果反馈", getById("set-reset-status").textContent.includes("已恢复"),
+       getById("set-reset-status").textContent);
   }
 
   console.log("\n" + PASS + " passed, " + FAIL + " failed");

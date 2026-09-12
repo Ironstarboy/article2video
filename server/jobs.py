@@ -379,7 +379,7 @@ class Job:
                 "filename", "has_video", "video_size", "artifacts", "history",
                 "avatar", "avatar_geom", "avatar_broadcast", "total_sec",
                 "render_format", "render_progress", "direct_render",
-                "script_updated_at")
+                "export_path", "script_updated_at")
         return {k: d[k] for k in keys if k in d}
 
     def to_dict(self, brief: bool = False):

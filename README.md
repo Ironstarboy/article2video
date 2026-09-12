@@ -37,6 +37,7 @@
 - **一键出片** —— 分析完成后一个按钮跑完「构建 → 渲染」:中途不停在预览态、不等你点第二次,也不拉起用不到的 Studio 编辑器;想先改时间线仍可走「构建预览 → 渲染成片」两步。
 - **Studio 编辑器构建即就绪** —— 构建预览完成时编辑器已同步拉起,进入页面即可改时间线、逐帧编辑、实时预览。
 - **项目历史入口页** —— 打开站点先看到历史项目(按最近更新倒序):每步结果都留档、可重命名、可直达;大模型自动总结项目标题,也能手动改。渲染很花时间,关掉页面回来接着看就行。
+- **网页「设置」页** —— 顶栏入口,把「分析服务地址与密钥」「成片保存位置」这类**只有使用者自己能定**的东西搬到网页上:保存即生效、不用改环境变量、不用重启;带「测试连接」当场验证网关,密钥只回掩码不回明文。面向不懂服务器的使用者,不出现任何技术名词。
 - **质量门 + 「永不失败」管线** —— 引文逐字接地校验、段级确定性修复、脚本疑似问题兜底放行;文字类问题绝不中断工作流。
 - **并发与健壮性** —— 全局 LLM 并发 6、渲染并发 2、任务状态持久化重启恢复、冒烟回归测试覆盖纯函数与接口契约。
 
@@ -146,7 +147,7 @@ bash deploy/start-tts-qwen.sh # 备用引擎 Qwen3-TTS 8017(默认不启)
 curl -s http://127.0.0.1:8015/health          # 后端
 curl -s http://127.0.0.1:8016/health          # 配音(回报钉版版本)
 .venv/bin/python server/smoke_test.py         # 冒烟回归(须用 .venv 解释器,系统 python3 缺 httpx)
-node tests/avatar-page.test.js                # 前端形象页逻辑回归(无 npm 依赖,仓库根直接跑)
+node tests/avatar-page.test.js                # 前端页面逻辑回归(形象页 / 设置页,无 npm 依赖,仓库根直接跑)
 ```
 
 > [!TIP]
@@ -154,7 +155,7 @@ node tests/avatar-page.test.js                # 前端形象页逻辑回归(无 
 
 ## 使用流程
 
-0. **进入项目历史页**:打开站点就是历史项目列表(按最近更新倒序),每条显示标题、当前状态/阶段进度与「分析脚本 → 构建预览 → 渲染成片 → 播报视频」四个步骤胶囊(**点任意一步直达那一步的结果**)。标题由大模型在分析完成后自动总结,可随时就地重命名;点「＋ 新建视频」进入创作页。
+0. **进入项目历史页**:打开站点就是历史项目列表(按最近更新倒序),每条显示标题、当前状态/阶段进度与「分析脚本 → 构建预览 → 渲染成片 → 播报视频」四个步骤胶囊(**点任意一步直达那一步的结果**)。标题由大模型在分析完成后自动总结,可随时就地重命名;点「＋ 新建视频」进入创作页。顶栏另有两个二级页:「**数字人形象**」(见第 4 步)与「**设置**」(填分析服务与成片保存位置,保存即生效、一遍设好就不用再管)。
 1. **上传文章**(txt / md / docx ≤20MB)或**粘贴文字**(≥50 字)。
 2. **选风格与视频类型**:三套预设或四维自由组合;宣传/讲解共用一个时长滑杆,切换类型自动换档。
 3. **开始分析**:调用 DeepSeek 网关。讲解视频为多轮调用(30 分钟档约 6-8 次),耗时 5-15 分钟属正常,页面显示阶段进度;分析完可就地「**编辑脚本**」逐帧改,或用一句话「**AI 按建议修改**」让模型按意见修订(保存前跑同一套校验,不达标会被拦下)。
@@ -206,7 +207,7 @@ node tests/avatar-page.test.js                # 前端形象页逻辑回归(无 
 | `TTV_PORT` | `8015` | 后端端口 |
 | `TTV_PYTHON` | `<根>/.venv/bin/python` | 后端解释器 |
 | `TTV_NODE_BIN` | 自动探测 | Node 不在 PATH 时指向其 bin 目录 |
-| `TTV_DEEPSEEK_URL` / `_MODEL` / `_KEY` | 内网 vLLM / `DeepSeek-V4-Flash` / 空 | 分析端点(通常写在 `.secrets/llm.env`) |
+| `TTV_DEEPSEEK_URL` / `_MODEL` / `_KEY` | 内网 vLLM / `DeepSeek-V4-Flash` / 空 | 分析端点的**出厂默认**(通常写在 `.secrets/llm.env`);网页「设置」页写过之后以网页为准,且保存即生效 |
 | `TTV_TTS_URL` | `http://127.0.0.1:8016` | TTS 池入口 |
 | `TTV_TTS_GPUS` / `TTV_TTS_PORTS` | `0` / `8016` | 多卡多实例,如 `"1 2 3"` / `"8016 8018 8019"` |
 | `TTV_TTS_VENV` / `TTV_COSYVOICE_SRC` | `<根>/tts-venv` / `<根>/cosyvoice-src` | 配音环境与源码 |
@@ -216,6 +217,8 @@ node tests/avatar-page.test.js                # 前端形象页逻辑回归(无 
 | `TTV_AVATAR_LIBRARY` / `_BUILTIN` / `_UPLOAD_MAX` | `<根>/assets/avatars` / `<根>/assets/avatars/jinli.png` / `20971520` | 形象库目录(图片 + `library.json`)、内置回退形象、单张上传上限(20MB) |
 | `TTV_AVATAR_CUTOUT` | `1` | **出厂默认**是否抠背景(新任务);用户在形象页改过之后以偏好文件为准 |
 | `TTV_PREFERENCES` | `<根>/.run/preferences.json` | 全局偏好文件(目前只有「新任务默认抠背景」) |
+| `TTV_SETTINGS` | `<根>/.run/settings.json` | 网页「设置」页的运行参数(分析端点 + 成片保存位置;权限 0600,含密钥则只写不读);`TTV_*` 是出厂默认,文件里的值压过它 |
+| `TTV_EXPORT_DIR` | 空 | **出厂默认**的成片保存位置(网页可改);空 = 不额外另存 |
 | `TTV_MATTE_MODEL` / `_PYTHON` | `<根>/models/matte/modnet.onnx` / `<根>/tts-venv/bin/python` | 抠像权重与跑它的解释器(需要 onnxruntime + numpy) |
 | `TTV_MATTE_VERSION` / `_MODEL_TAG` | `1` / `modnet` | 遮罩缓存键;换模型或改预处理时递增版本即可失效旧遮罩 |
 | `TTV_MATTE_REF` / `_CRF` / `_TIMEOUT` | `512` / `12` / `1800` | 抠像模型输入最短边 / 遮罩编码 CRF / 单段墙钟上限(秒) |
@@ -227,7 +230,19 @@ node tests/avatar-page.test.js                # 前端形象页逻辑回归(无 
 
 **端口一览**:8015 后端 · 8016/8018/8019 CosyVoice3 实例池 · 8017 Qwen3-TTS 备用(默认停) · 4150-4153 每任务 Studio 编辑器 · 50051 数字人 gRPC。
 
-日志统一收在 `logs/`:`backend.log`(后端)、`tts/*.log`(配音实例)、`studio/<job_id>.log`(每任务 Studio 输出);全局偏好(`.run/preferences.json`)与 Studio 端口注册在 `.run/`。
+日志统一收在 `logs/`:`backend.log`(后端)、`tts/*.log`(配音实例)、`studio/<job_id>.log`(每任务 Studio 输出);全局偏好(`.run/preferences.json`)、网页设置(`.run/settings.json`)与 Studio 端口注册在 `.run/`。
+
+### 网页「设置」页(不用改环境变量、不用重启)
+
+顶栏「设置」(`/?settings=1`)面向不懂服务器的使用者,只有三块,保存**立刻生效**、不动已做好的项目:
+
+| 项 | 作用 | 生效方式 |
+|---|---|---|
+| 文字分析服务(地址 / 密钥 / 模型名) | 生成脚本用的大模型网关;带「测试连接」按钮(实测延迟 + 人话报错,密钥错误/地址写错/超时分别给不同提示) | `analyze.py` 每次调用现读,不重启 |
+| 成片保存位置 | 渲染完成后额外**复制**一份成片过去(项目里那份仍保留,是下载来源);面板显示该磁盘剩余空间;保存时当场校验目录可建可写 | 下一个出片任务生效 |
+| 默认设置 | 「新任务默认抠掉数字人背景」,与形象页同一份全局偏好 | 立刻生效 |
+
+密钥**只写不读**:输入框永远不回显明文(只显示 `••••••••末4位`),留空 = 不改动,要清空得点「清除密钥」并二次确认;落盘文件权限 `0600`。环境变量 `TTV_*` 仍是从厂默认,网页里的值压过它;「恢复默认」= 删掉设置文件,回到环境变量口径。
 
 ## 项目结构
 
@@ -243,18 +258,19 @@ node tests/avatar-page.test.js                # 前端形象页逻辑回归(无 
 │   ├── avatar.py            数字人:片段生成/时间轴/叠加(圆角卡片或抠像)+ 播报视频
 │   ├── avatar_library.py    数字人形象库(清单读写 / 图片头解析 / 上传去重 / 自愈)
 │   ├── preferences.py       全局偏好(跨任务记住的设置,落盘 .run/preferences.json)
+│   ├── settings.py          网页「设置」页的运行参数(分析端点 + 成片保存位置;保存即生效、密钥只写不读)
 │   ├── matte.py             抠像 worker(MODNet ONNX → 灰度遮罩,独立解释器)
 │   ├── jobs.py              任务状态机(磁盘持久化,重启恢复)
 │   ├── smoke_test.py        冒烟回归(纯函数 + 接口契约)
 │   └── builder/             风格注册表 / 帧模板 / script.json → HyperFrames 工程
-├── web/index.html           单文件 SPA(项目历史入口页 + 创作页 + 预览页 + 数字人形象页,Studio 为唯一预览入口)
-├── tests/avatar-page.test.js 前端形象页逻辑回归(node 直跑,无 npm 依赖)
+├── web/index.html           单文件 SPA(项目历史入口页 + 创作页 + 预览页 + 数字人形象页 + 设置页,Studio 为唯一预览入口)
+├── tests/avatar-page.test.js 前端页面逻辑回归(形象页 / 详情页改名 / 设置页,node 直跑,无 npm 依赖)
 ├── deploy/                  setup / 启动脚本 / nginx 路由 / 校验脚本
 ├── styles/                  三套经典风格设计脚本
 ├── proto/                   数字人 gRPC 契约
 ├── docs/adr/                架构决策记录
 ├── assets/                  品牌 Logo、形象库(内置 jinli.png 入库;上传的形象与 library.json 不入库)、字体/BGM/GSAP(后三者不入库)
-├── .run/                    运行时状态(全局偏好、Studio 端口注册);不入库
+├── .run/                    运行时状态(全局偏好、网页设置、Studio 端口注册);不入库
 └── jobs/<job_id>/           每任务:原文 → script.json → project/ → renders/
 ```
 
@@ -264,6 +280,8 @@ node tests/avatar-page.test.js                # 前端形象页逻辑回归(无 
 |---|---|---|
 | `GET` | `/api/styles` | 四维度选项 + 预设 + 数字人尺寸档位、抠像默认值、当前形象与全局偏好 |
 | `GET` · `POST` | `/api/preferences` | 读 / 改全局偏好(目前只有「新任务默认抠背景」) |
+| `GET` · `POST` | `/api/settings` | 网页「设置」页:读(含保存位置磁盘余量与出厂默认,**永不含密钥明文**)/ 改(字段可选;非法地址或目录 400 人话) |
+| `POST` | `/api/settings/reset` · `/api/settings/llm/test` | 恢复默认(删设置文件)/ 「测试连接」试连网关(回延迟与人话报错) |
 | `GET` · `POST` | `/api/avatars` | 形象库列表 / 上传形象(png·jpg·webp ≤20MB,同图去重) |
 | `POST` | `/api/avatars/{id}/default` · `/rename` | 把某张形象设为默认 / 重命名(不动文件) |
 | `DELETE` · `GET` | `/api/avatars/{id}` · `/api/avatars/{id}/file` | 删除形象(内置不可删)/ 取形象图片本体 |
@@ -316,7 +334,7 @@ node tests/avatar-page.test.js                # 前端形象页逻辑回归(无 
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 总体架构、状态机、关键设计决策、接口清单、扩展点 |
 | [`BUILD.md`](BUILD.md) | 从零搭建全过程与踩坑记录 |
 | [`CONTEXT.md`](CONTEXT.md) | 领域词汇表(帧 / 台词 / 成片 / 播报视频…统一口径) |
-| [`CHANGELOG.md`](CHANGELOG.md) | 版本与变更记录(当前 v2.12) |
+| [`CHANGELOG.md`](CHANGELOG.md) | 版本与变更记录(当前 v2.13) |
 | [`frames-schema.md`](frames-schema.md) | 分析输出契约(帧 JSON 结构) |
 | [`使用说明.md`](使用说明.md) | 面向使用者的操作手册 |
 | [`CyberVerse-DEPLOY-GPU.md`](CyberVerse-DEPLOY-GPU.md) | 数字人(FlashHead)部署与排障 |

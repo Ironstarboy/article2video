@@ -149,6 +149,7 @@ analyzed / preview / rendered / failed ──▶ building ──▶ rendering �
    - **挂载前缀**:`_client_base(request)` 从 Referer/Origin 推断(根部署 `""`、nginx `/ttv/` 部署 `"/ttv"`)—— nginx 的 proxy_pass 会把前缀剥掉,后端自己看不见它
    - **Studio 项目 id**:hyperframes 用**工作区根目录名**(`/mnt/workspace/ttv` → `ttv`,本工作区 `/data/Avatar` → `Avatar`),由 `_studio_project_id()` 向 Studio 的 `/api/projects` 探测(按 dir 匹配,失败按目录名兜底),请求与响应两侧做 id 桥接(前端 iframe 的 `#project/ttv` 保持不变)
 7. **安全**:docx zip 炸弹防护(50MB/2000 条目)、文件名净化、路径防穿越(projects 代理 '..' 拦截)、txt/md 上传 >1.5MB 拒绝、script title HTML 转义(存储型 XSS)、提示词注入隔离声明、前端 textContent 防 XSS
+8. **运行参数「保存即生效」**:分析端点(地址/模型/密钥)与成片保存位置是**使用者要改**的东西,所以不再只在 `config.py` 里 import 时固化 —— 值落 `.run/settings.json`(0600,含密钥),`TTV_*` 仍是从厂默认,文件里的值压过它;`analyze._call_local` 每次调用现读 `settings.llm_endpoint()`,成片渲染完由 `export_final()` 另存一份。三条口径与偏好/形象库一致(原子写、读坏自愈、写失败不致命),另加两条只属于它的:**密钥只写不读**(载荷只回掩码,明文不出后端)、**恢复默认 = 删文件**(写进文件会让以后改环境变量不再生效)
 
 ## 五、接口清单
 
@@ -157,6 +158,10 @@ analyzed / preview / rendered / failed ──▶ building ──▶ rendering �
 | GET | /api/styles | 四维度选项 + 预设 + 数字人尺寸/四角/抠像默认值 + `avatar_library`(当前生效形象、是否被 `TTV_AVATAR_IMAGE` 覆盖、上传规格)+ `preferences` |
 | GET | /api/preferences | 全局偏好(当前值 + 出厂默认 + 文件路径) |
 | POST | /api/preferences | 改全局偏好(目前只有 `avatar_cutout_new_jobs`;只认真正的 JSON 布尔,字符串 400;空体不改动原值) |
+| GET | /api/settings | 设置页载荷(分析服务地址/模型 + 密钥**掩码** + 成片保存位置 + 该位置磁盘余量 + 出厂默认;**永不含密钥明文**) |
+| POST | /api/settings | 保存设置(字段可选,只改传入项;地址非 `http(s)://`、保存位置非绝对路径/不可写 → 400 人话;写盘失败也 400)。改完**立刻生效**(analyze 每次调用现读、成片渲染完另存) |
+| POST | /api/settings/reset | 恢复默认(= 删掉 `.run/settings.json`,回到环境变量口径;不是把默认值写进文件) |
+| POST | /api/settings/llm/test | 试连分析服务(可带页面上**未保存**的地址/密钥);先 GET `/models` 不支持再退回一次极短对话;返回 `{ok, message, latency_ms[, models]}` |
 | GET | /api/avatars | 数字人形象库列表(条目含名称/分辨率/体积/时间/是否内置)+ 当前生效形象 + 上传上限与允许格式 |
 | POST | /api/avatars | 上传形象图(multipart `file` + 可选 `name`;扩展名/大小/文件头三重校验,坏图 400、超 20MB 413;同内容重复上传返回既有条目 `duplicate:true`) |
 | POST | /api/avatars/{item_id}/default | 把某个形象设为当前默认(之后新构建的数字人片段都用它) |

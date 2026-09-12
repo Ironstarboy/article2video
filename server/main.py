@@ -18,6 +18,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -39,6 +40,7 @@ import tts  # noqa: E402
 import avatar  # noqa: E402
 import avatar_library  # noqa: E402
 import preferences  # noqa: E402
+import settings  # noqa: E402
 from builder import assemble, styles  # noqa: E402
 
 log = logging.getLogger("ttv.main")
@@ -710,6 +712,40 @@ def _run_render(job, cmd: list, total_sec: float, timeout: int) -> tuple[int, st
     return code, "\n".join(seen["lines"])
 
 
+def _safe_filename(name: str, fallback: str, limit: int = 60) -> str:
+    """把项目标题变成一个能当文件名的字符串(去掉路径分隔符与保留字符)。"""
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", (name or "").strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned[:limit] or fallback
+
+
+def export_final(job, path: Path) -> None:
+    """把成片另存一份到「设置 → 成片保存位置」。
+
+    纯增强:没设置、目录不存在、磁盘满、跨盘复制失败 —— 一律只记日志(和任务上的一条
+    提示),**绝不影响出片**。复制而不是移动:项目目录里那份仍是下载/回放的唯一来源,
+    导出目录只是给使用者一个"打开就能拿到文件"的地方。
+    """
+    try:
+        dest_dir = settings.export_dir()
+        if dest_dir is None or not path.exists():
+            return
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        stem = _safe_filename(job.state.get("title") or "", job.id)
+        dest = dest_dir / f"{stem}{path.suffix}"
+        if dest.exists():
+            dest = dest_dir / f"{stem}_{job.id[:6]}{path.suffix}"
+        shutil.copy2(path, dest)
+        job.set(export_path=str(dest))
+        log.info("任务 %s 成片已另存到 %s", job.id, dest)
+    except Exception as e:  # noqa: BLE001 - 另存失败不能拖垮出片
+        log.warning("任务 %s 成片另存失败:%s", job.id, e)
+        try:
+            job.set(export_error=str(e)[:160])
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def stage_render(job, fmt: str = "mp4"):
     if not _job_alive(job):
         return
@@ -800,6 +836,9 @@ def stage_render(job, fmt: str = "mp4"):
             job._record_artifact("ppt", ppt)
     # 成片就绪后回收 Studio(前端此时展示成片播放,不再需要编辑器;槽位留给其他任务)
     stop_studio(job)
+    # 另存到「设置 → 成片保存位置」:放在渲染槽位**之外** —— 跨盘复制大文件可能要好几秒,
+    # 不该占着槽位让下一个任务排队(复制失败只记日志,见 export_final)
+    export_final(job, final)
     job.set(status="rendered", progress="", render_format=fmt,
             render_progress={"step": 1, "step_name": "渲染 PPT 视频", "detail": "完成",
                              "done": 1, "total": 1, "percent": 100,
@@ -1118,6 +1157,62 @@ async def api_set_preferences(request: Request):
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
     return {"ok": True, **preferences.payload()}
+
+
+# ── 设置(网页「设置」页) ──
+# 面向不懂计算机的使用者:只暴露「分析服务」与「成片保存位置」两件事,不出现环境变量、
+# 不出现 TTV_*、也不回密钥明文。值落 .run/settings.json,保存即生效:
+# analyze.py 每次调用时读 settings.llm_endpoint(),成片渲染完由 export_final 另存一份。
+# GET 返回的载荷**永远只有密钥掩码** —— 设置页是最容易变成泄密面的地方。
+
+async def _json_body(request: Request) -> dict:
+    """请求体解析:无体/非 JSON/非对象一律当空对象(与偏好接口同一口径)。"""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+@app.get("/api/settings")
+def api_settings():
+    """当前设置(含密钥掩码、保存位置的磁盘余量与出厂默认)。"""
+    return settings.public()
+
+
+@app.post("/api/settings")
+async def api_update_settings(request: Request):
+    """保存设置。字段都可选,只改传进来的项;校验失败回一句人话(400)。"""
+    body = await _json_body(request)
+    try:
+        settings.update(body)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    return {"ok": True, **settings.public()}
+
+
+@app.post("/api/settings/reset")
+def api_reset_settings():
+    """恢复默认(删掉设置文件,回到服务器环境变量口径)。"""
+    try:
+        settings.reset_to_factory()
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    return {"ok": True, **settings.public()}
+
+
+@app.post("/api/settings/llm/test")
+async def api_settings_llm_test(request: Request):
+    """试连分析服务。可用页面上**还没保存**的地址/密钥试(不必先保存)。
+
+    探针是阻塞式 HTTP(最长 20 秒),丢到线程池里跑,别卡住事件循环 ——
+    否则「测试连接」期间整个页面的轮询都会一起卡住。
+    """
+    body = await _json_body(request)
+    url = body.get("llm_url") if isinstance(body.get("llm_url"), str) else None
+    model = body.get("llm_model") if isinstance(body.get("llm_model"), str) else None
+    key = body.get("llm_key") if isinstance(body.get("llm_key"), str) else None
+    return await run_in_threadpool(settings.probe_llm, url, model, key)
 
 
 # ── 数字人形象库 ──

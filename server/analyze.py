@@ -19,8 +19,9 @@ import httpx
 
 from config import (
     CHARS_PER_SEC, DEEPSEEK_CLOUD_KEYFILE, DEEPSEEK_CLOUD_MODEL, DEEPSEEK_CLOUD_URL,
-    DEEPSEEK_LOCAL_KEY, DEEPSEEK_LOCAL_URL, DEEPSEEK_MODEL, read_cloud_api_key,
+    read_cloud_api_key,
 )
+import settings  # noqa: E402 - 分析服务端点每次调用时现读(网页「设置」页保存即生效)
 
 # ═══════════════════════ 换算常量(全局统一,禁止各处硬编码) ═══════════════════════
 # VO_CPS:本地 TTS 实测语速 4.2 字/秒(= config.CHARS_PER_SEC)
@@ -109,7 +110,8 @@ def _call_local(prompt_system: str, prompt_user: str, max_tokens: int = 8192,
                 temperature: float = 0.35) -> str | None:
     """本地 vLLM(或任何 OpenAI 兼容网关)。返回内容文本,失败返回 None。
 
-    DEEPSEEK_LOCAL_KEY 非空时带 Bearer 头(指向需鉴权的网关时用),否则保持原样。
+    端点三件套(地址/模型/密钥)在**每次调用时**从 settings 现读:网页「设置」页
+    保存后立刻生效,不必改 .secrets/llm.env、不必重启后端。密钥非空时带 Bearer 头。
 
     思考型网关(如 DeepSeek-V4-Flash 经 paratera)会把 max_tokens 同时用于思考链和正文:
     思考过长时正文会是空串,下游 JSON 解析直接失败。这里在检测到"正文空、思考非空"时
@@ -117,9 +119,10 @@ def _call_local(prompt_system: str, prompt_user: str, max_tokens: int = 8192,
     """
     global _last_truncated
     _last_truncated = False
-    headers = {"Authorization": f"Bearer {DEEPSEEK_LOCAL_KEY}"} if DEEPSEEK_LOCAL_KEY else {}
+    base_url, model, api_key = settings.llm_endpoint()
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     base_payload = {
-        "model": DEEPSEEK_MODEL,
+        "model": model,
         "messages": [
             {"role": "system", "content": prompt_system},
             {"role": "user", "content": prompt_user},
@@ -133,7 +136,7 @@ def _call_local(prompt_system: str, prompt_user: str, max_tokens: int = 8192,
         """返回 (正文, 是否截断, 思考是否非空)。"""
         with LLM_SEM:
             with httpx.Client(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
-                r = client.post(f"{DEEPSEEK_LOCAL_URL}/chat/completions",
+                r = client.post(f"{base_url}/chat/completions",
                                 headers=headers, json={**base_payload, **extra})
                 r.raise_for_status()
                 choice = r.json()["choices"][0]

@@ -17,6 +17,7 @@ import avatar_library
 import config
 import extract
 import preferences
+import settings
 import tts
 from builder import styles, templates
 
@@ -1025,6 +1026,205 @@ finally:
         _os2.environ["TTV_PREFERENCES"] = _pref_orig_env
     _il2.reload(config)
     _shutil.rmtree(_pref_dir, ignore_errors=True)
+
+
+# ═══════════════ 设置(分析服务端点 / 成片保存位置) ═══════════════
+#
+# 网页「设置」页写的东西要**保存即生效**:分析服务三件套(地址/模型/密钥)必须每次调用
+# 现读(原来是 import 时固化的常量),成片保存位置要在渲染完成后被真正用上。
+# 这一段的重点是"泄漏面"与"生效链路"两件事:
+#   · public() 只回密钥掩码,序列化后绝不能出现明文;
+#   · analyze 真的把**刚保存的**地址与密钥发出去(用假 httpx 捕获请求,不联网);
+#   · 另存失败不能拖垮出片(export_final 自己吞异常)。
+
+import importlib as _il3  # noqa: E402
+import os as _os3  # noqa: E402
+import shutil as _shutil3  # noqa: E402
+import tempfile as _tempfile3  # noqa: E402
+import types as _types3  # noqa: E402
+
+set_dir = Path(_tempfile3.mkdtemp(prefix="ttv_smoke_set_"))
+_set_orig_env = {k: _os3.environ.get(k) for k in
+                 ("TTV_SETTINGS", "TTV_DEEPSEEK_URL", "TTV_DEEPSEEK_MODEL",
+                  "TTV_DEEPSEEK_KEY", "TTV_EXPORT_DIR")}
+_set_orig_cfg, _set_orig_mod = config, settings
+_set_orig_httpx = analyze.httpx
+try:
+    _os3.environ.update({
+        "TTV_SETTINGS": str(set_dir / "settings.json"),
+        "TTV_DEEPSEEK_URL": "http://factory.test/v1",
+        "TTV_DEEPSEEK_MODEL": "FactoryModel",
+        "TTV_DEEPSEEK_KEY": "sk-factory-9999",
+        "TTV_EXPORT_DIR": "",
+    })
+    _il3.reload(config)
+    settings = _il3.reload(_set_orig_mod)
+
+    ok("设置出厂默认来自环境变量(文件不存在时)",
+       settings.llm_endpoint() == ("http://factory.test/v1", "FactoryModel", "sk-factory-9999")
+       and settings.export_dir() is None)
+
+    settings.update({"llm_url": "https://cloud.test/v1/", "llm_model": "NewModel",
+                     "llm_key": "sk-user-abcdef", "export_dir": str(set_dir / "out")})
+    ok("保存后立刻生效(地址结尾斜杠被规范化)",
+       settings.llm_endpoint() == ("https://cloud.test/v1", "NewModel", "sk-user-abcdef"))
+    ok("成片保存位置保存后立刻生效",
+       settings.export_dir() == set_dir / "out" and (set_dir / "out").is_dir())
+    ok("设置文件是纯 JSON 且权限收紧到 0600",
+       isinstance(json.loads(Path(config.SETTINGS_FILE).read_text(encoding="utf-8")), dict)
+       and (Path(config.SETTINGS_FILE).stat().st_mode & 0o777) == 0o600)
+
+    pub = settings.public()
+    ok("接口载荷只给密钥掩码,明文不出后端",
+       "sk-user-abcdef" not in json.dumps(pub, ensure_ascii=False)
+       and pub["llm_key_set"] is True and pub["llm_key_masked"].endswith("cdef"))
+    ok("载荷里的出厂默认同样不含密钥明文",
+       "sk-factory-9999" not in json.dumps(pub.get("factory") or {}, ensure_ascii=False))
+
+    settings.update({"llm_key": ""})
+    ok("密钥可清除,且不会被出厂默认「复活」", settings.llm_endpoint()[2] == "")
+    settings.update({"export_dir": ""})
+    ok("保存位置可清空(= 不额外另存)", settings.export_dir() is None)
+
+    ok("地址不合法时抛人话 ValueError",
+       _raises(lambda: settings.update({"llm_url": "8.130.213.80:20001"}), ValueError))
+    ok("保存位置不是绝对路径时抛人话 ValueError",
+       _raises(lambda: settings.update({"export_dir": "relative/dir"}), ValueError))
+    ok("保存位置指向一个已存在的文件时被拒",
+       _raises(lambda: settings.update({"export_dir": __file__}), ValueError))
+    ok("字段类型不对时被拒(不做隐式转换)",
+       _raises(lambda: settings.update({"llm_url": 123}), ValueError))
+    ok("校验失败不会写坏已有设置",
+       settings.llm_endpoint() == ("https://cloud.test/v1", "NewModel", ""))
+
+    Path(config.SETTINGS_FILE).write_text("{ 不是 JSON", encoding="utf-8")
+    ok("设置文件损坏时自愈回出厂默认",
+       settings.llm_endpoint()[0] == "http://factory.test/v1")
+    Path(config.SETTINGS_FILE).write_text('{"llm_url": "不是地址"}', encoding="utf-8")
+    ok("设置里字段非法时回出厂默认(不把必然失败的值当用户设置)",
+       settings.llm_endpoint()[0] == "http://factory.test/v1")
+    Path(config.SETTINGS_FILE).unlink()
+
+    # 生效链路:analyze 必须把**刚保存的**地址/密钥发出去(假 httpx,不联网)
+    _cap3 = {}
+
+    class _FakeResp3:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]}
+
+    class _FakeClient3:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            _cap3["url"], _cap3["headers"] = url, headers or {}
+            return _FakeResp3()
+
+    analyze.httpx = _types3.SimpleNamespace(Client=_FakeClient3,
+                                            Timeout=lambda *a, **k: None)
+    settings.update({"llm_url": "https://live.test/v1", "llm_model": "LiveModel",
+                     "llm_key": "sk-live-123456"})
+    _content3 = analyze._call_local("sys", "user", max_tokens=16)
+    ok("分析调用现读设置里的地址(不是 import 时固化的常量)",
+       _cap3.get("url") == "https://live.test/v1/chat/completions", str(_cap3.get("url")))
+    ok("分析调用带上了刚保存的密钥",
+       (_cap3.get("headers") or {}).get("Authorization") == "Bearer sk-live-123456")
+    ok("假网关的返回被正常解析", isinstance(_content3, str))
+    analyze.httpx = _set_orig_httpx
+
+    # 成片另存:真的复制一份、文件名来自项目标题、失败不影响出片
+    _set_main = __import__("main")
+    _src3 = set_dir / "final.mp4"
+    _src3.write_bytes(b"x" * 4096)
+
+    class _FakeJob3:
+        def __init__(self):
+            self.id = "abcdef123456"
+            self.state = {"title": "测试:成片/标题"}
+            self.saved = {}
+
+        def set(self, **kw):
+            self.saved.update(kw)
+
+    _job3 = _FakeJob3()
+    settings.update({"export_dir": str(set_dir / "out")})
+    _set_main.export_final(_job3, _src3)
+    _dest3 = set_dir / "out" / "测试_成片_标题.mp4"
+    ok("另存到指定位置:文件名由项目标题洗净得到(非法字符换成下划线)",
+       _dest3.exists() and _dest3.stat().st_size == 4096
+       and _job3.saved.get("export_path") == str(_dest3))
+    ok("另存是复制不是移动(项目里那份仍是下载来源)", _src3.exists())
+
+    _job3b = _FakeJob3()
+    _set_main.export_final(_job3b, _src3)
+    ok("同名已有文件时加任务号后缀,不覆盖上一次的成片",
+       (set_dir / "out" / "测试_成片_标题_abcdef.mp4").exists())
+
+    _job3c = _FakeJob3()
+    settings.update({"export_dir": ""})
+    _set_main.export_final(_job3c, _src3)
+    ok("没设置保存位置时什么都不做(行为与设置页出现之前一致)",
+       "export_path" not in _job3c.saved)
+
+    _job3d = _FakeJob3()
+    settings.update({"export_dir": str(set_dir / "out")})
+    _set_main.export_final(_job3d, set_dir / "不存在.mp4")
+    ok("源文件不存在时静默跳过,不抛异常影响出片",
+       "export_path" not in _job3d.saved)
+
+    # 接口:GET 读、POST 写、非法 400、空体不改动、恢复默认
+    settings = _il3.reload(_set_orig_mod)
+    settings.update({"llm_url": "https://api.test/v1", "llm_model": "ApiModel",
+                     "llm_key": "sk-api-777777", "export_dir": str(set_dir / "exp")})
+    _scli = __import__("fastapi.testclient", fromlist=["TestClient"]).TestClient(_set_main.app)
+    _g3 = _scli.get("/api/settings")
+    ok("接口 GET /api/settings 回掩码与保存位置",
+       _g3.status_code == 200 and _g3.json()["llm_key_set"] is True
+       and "sk-api-777777" not in _g3.text and _g3.json()["export_dir"] == str(set_dir / "exp"))
+    ok("接口 POST 空体不改动原值",
+       _scli.post("/api/settings", json={}).status_code == 200
+       and _scli.get("/api/settings").json()["llm_model"] == "ApiModel")
+    ok("接口 POST 改模型立刻生效",
+       _scli.post("/api/settings", json={"llm_model": "ApiModel2"}).json()["llm_model"] == "ApiModel2")
+    _bad3 = _scli.post("/api/settings", json={"llm_url": "没有协议头"})
+    ok("接口 POST 非法地址 400 且回的是人话", _bad3.status_code == 400
+       and "http://" in _bad3.json()["detail"])
+    ok("接口 POST 400 后原值不变",
+       _scli.get("/api/settings").json()["llm_url"] == "https://api.test/v1")
+    ok("接口 POST 字段类型不对 400",
+       _scli.post("/api/settings", json={"llm_model": 5}).status_code == 400)
+    _ok3 = _scli.post("/api/settings/reset")
+    ok("接口 POST /api/settings/reset 回到出厂默认(文件被删,不是把默认写死进文件)",
+       _ok3.status_code == 200 and _ok3.json()["llm_url"] == "http://factory.test/v1"
+       and not Path(config.SETTINGS_FILE).exists())
+    ok("恢复默认后成片保存位置也不额外另存", _ok3.json()["export_dir"] == "")
+
+    # 试连探针:指向一个必然连不上的本地端口,必须回一句人话而不是抛异常
+    _probe3 = settings.probe_llm("http://127.0.0.1:1/v1")
+    ok("测试连接连不上时回人话(不抛异常)",
+       _probe3.get("ok") is False and isinstance(_probe3.get("message"), str)
+       and len(_probe3["message"]) > 0, str(_probe3.get("message"))[:40])
+finally:
+    analyze.httpx = _set_orig_httpx
+    settings = _set_orig_mod
+    for _k3, _v3 in _set_orig_env.items():
+        if _v3 is None:
+            _os3.environ.pop(_k3, None)
+        else:
+            _os3.environ[_k3] = _v3
+    _il3.reload(config)
+    _shutil3.rmtree(set_dir, ignore_errors=True)
 
 
 # ═══════════════ 数字人形象库(上传/查看/设默认/重命名/删除,零第三方依赖) ═══════════════

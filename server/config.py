@@ -133,6 +133,10 @@ DEEPSEEK_MODEL = os.environ.get("TTV_DEEPSEEK_MODEL", "DeepSeek-V4-Flash")
 # 可选:本地端点需要鉴权时(如指向 paratera 等 OpenAI 兼容网关)填 Bearer key。
 # 生产 vLLM 不校验鉴权,留空即可保持原行为。
 DEEPSEEK_LOCAL_KEY = os.environ.get("TTV_DEEPSEEK_KEY", "")
+# 上面三项是**出厂默认**:网页「设置」页写过之后以网页里的为准(server/settings.py,
+# 保存即生效,不用重启后端)。analyze.py 也因此在**每次调用时**读设置,而不是 import 时固化。
+# 成片保存位置(出厂默认):空 = 不额外另存,只在项目目录里留一份;网页「设置」页可改。
+EXPORT_DIR = os.environ.get("TTV_EXPORT_DIR", "")
 # 云 API 备份(工作区内的 key 文件,不存在则跳过)
 DEEPSEEK_CLOUD_KEYFILE = os.environ.get(
     "TTV_DEEPSEEK_KEYFILE", str(ROOT / ".secrets" / "deepseek.env"))
@@ -257,6 +261,10 @@ AVATAR_CUTOUT = os.environ.get("TTV_AVATAR_CUTOUT", "1") == "1"
 # 全局偏好文件(跨任务记住的设置;缺失/损坏时回退出厂默认)
 PREFERENCES_FILE = Path(os.environ.get(
     "TTV_PREFERENCES", str(ROOT / ".run" / "preferences.json")))
+# 网页「设置」页写入的运行参数(分析服务端点 / 成片保存位置;server/settings.py)。
+# 与偏好同目录、同样不入库;里面有密钥,所以写盘时权限收紧到 0600。
+SETTINGS_FILE = Path(os.environ.get(
+    "TTV_SETTINGS", str(ROOT / ".run" / "settings.json")))
 # 抠像模式下**下排角落**离画面下缘的留白(默认 0 = 齐平)。四个角落都能摆,上下口径不同:
 # 上排(tl/tr)用 AVATAR_Y 留出头顶空间;下排贴下缘是因为片段本就是齐胸特写、底部整行都是
 # 躯干(alpha≈1),让那道平切口落在画面外沿才不像"悬浮的半身像"(调大这个值切口就会露出来)。
