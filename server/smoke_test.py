@@ -586,6 +586,8 @@ import importlib as _il
 import os as _os
 import tempfile as _tmpf
 
+import asyncio as _asyncio
+
 _orig_root = _os.environ.get("TTV_ROOT")
 try:
     _os.environ["TTV_ROOT"] = _tmpf.mkdtemp(prefix="ttv_jobs_")
@@ -812,17 +814,24 @@ ok("avatar 抠像开关只认布尔(字符串不算)",
    and _raises(_via(avatar.normalize_cutout, "true"), ValueError))
 ok("avatar 抠像开关宽松版对坏值回退",
    avatar.safe_cutout("是") is False and avatar.safe_cutout("是", True) is True)
-# 贴下缘:y 恒等于 video_h - size(切口落在画面外沿),左右只由角落的第一个字母决定
-_cut_tr = avatar.cutout_xy("tr", 300, margin_x=40, video_w=1920, video_h=1080)
-_cut_bl = avatar.cutout_xy("bl", 300, margin_x=40, video_w=1920, video_h=1080)
-_cut_br = avatar.cutout_xy("br", 300, margin_x=40, video_w=1920, video_h=1080)
-ok("avatar 抠像位置贴画面下缘", _cut_tr[1] == 1080 - 300 == _cut_bl[1] == _cut_br[1])
-ok("avatar 抠像位置左右按角落决定",
-   _cut_tr[0] == 1920 - 300 - 40 and _cut_bl[0] == 40 and _cut_br[0] == 1920 - 300 - 40)
-ok("avatar 抠像上下角等价(tl≡bl、tr≡br)",
-   avatar.cutout_xy("tl", 300) == _cut_bl and avatar.cutout_xy("tr", 300) == _cut_br)
+# 四个角落都能摆:左右按角落的 左/右,纵向按 上/下;只有下排贴画面下缘(切口落在画面外沿)
+_cut_tl = avatar.cutout_xy("tl", 300, margin_x=40, margin_y=36, video_w=1920, video_h=1080)
+_cut_tr = avatar.cutout_xy("tr", 300, margin_x=40, margin_y=36, video_w=1920, video_h=1080)
+_cut_bl = avatar.cutout_xy("bl", 300, margin_x=40, margin_y=36, video_w=1920, video_h=1080)
+_cut_br = avatar.cutout_xy("br", 300, margin_x=40, margin_y=36, video_w=1920, video_h=1080)
+ok("avatar 抠像位置四个角落各不相同",
+   len({_cut_tl, _cut_tr, _cut_bl, _cut_br}) == 4)
+ok("avatar 抠像上排留头顶空间(tl/tr → margin_y)",
+   _cut_tl[1] == 36 and _cut_tr[1] == 36)
+ok("avatar 抠像下排贴画面下缘(bl/br → 画面高 - 边长)",
+   _cut_bl[1] == 1080 - 300 and _cut_br[1] == 1080 - 300)
+ok("avatar 抠像左右按角落决定",
+   _cut_tl[0] == 40 and _cut_bl[0] == 40
+   and _cut_tr[0] == 1920 - 300 - 40 and _cut_br[0] == 1920 - 300 - 40)
 ok("avatar 抠像位置受下缘留白影响",
    avatar.cutout_xy("br", 300, bottom_margin=24)[1] == 1080 - 300 - 24)
+ok("avatar 抠像位置不会把画面顶出去(尺寸过大时夹回)",
+   avatar.cutout_xy("tl", 1080, margin_y=36, video_w=1920, video_h=1080)[1] == 0)
 
 # ── 抠像 worker(server/matte.py):纯函数部分不依赖 numpy/onnxruntime ──
 import matte  # noqa: E402
@@ -1130,6 +1139,174 @@ try:
        _main._cutout_missing({"cutout": True}, [{"matte": None}]).startswith("抠像不可用"))
     ok("没有时间轴时不报降级",
        _main._cutout_missing({"cutout": True}, []) == "")
+
+    # ── 一键出片:构建 + 渲染一次触发(不拉 Studio、不停在预览态、失败账各记各的) ──
+    # 重活(配音/组装/渲染/Studio)全部打桩,这里只验阶段编排与状态口径。
+    _sb = _jobs_mod.create_job("solemn-red", 60, "build-direct.txt")
+    _studio_calls = []
+    _leaves = (_main._synthesize_and_fit, _main.assemble.build, _main.start_studio, _main._run_check)
+    try:
+        _main._synthesize_and_fit = lambda job, reuse_vo=True: ({"frames": []}, {}, "cosyvoice3", True)
+        _main.assemble.build = lambda script, combo, vo, proj: {"total": 12.0, "starts": {}}
+        _main.start_studio = lambda job: _studio_calls.append(job.id)
+        _main._run_check = lambda job: None
+        _main.stage_build(_sb, preview=False)
+        ok("构建 preview=False 不拉 Studio(直达出片没人看编辑器)", _studio_calls == [])
+        ok("构建 preview=False 停在 building(不等用户点渲染)", _sb.status == "building",
+           _sb.status)
+        ok("构建 preview=False 照记 build 历史",
+           _sb.history()[-1]["step"] == "build" and _sb.status != "preview")
+        _main.stage_build(_sb, preview=True)
+        ok("构建 preview=True 照旧拉 Studio 并停在 preview",
+           _studio_calls == [_sb.id] and _sb.status == "preview", _sb.status)
+    finally:
+        (_main._synthesize_and_fit, _main.assemble.build,
+         _main.start_studio, _main._run_check) = _leaves
+
+    _drs = _jobs_mod.create_job("solemn-red", 60, "direct.txt")
+    _drs.set(status="building")   # api_render 在 dispatch 前就是这个状态
+    _calls = []
+
+    def _stub_build(job, force_voice=False, preview=True):
+        _calls.append(("build", preview, job.status))
+        job.set(total_sec=12.0)
+        job.record_history("build", detail="总时长 12 秒")
+
+    def _stub_render(job, fmt="mp4"):
+        _calls.append(("render", fmt, job.status))
+        job.set(status="rendered", render_format=fmt)
+        job.record_history("render", detail="成片 1.0 MB")
+
+    _stages = (_main.stage_build, _main.stage_render)
+    try:
+        _main.stage_build, _main.stage_render = _stub_build, _stub_render
+        _main.stage_direct_render(_drs, "mp4")
+    finally:
+        _main.stage_build, _main.stage_render = _stages
+    ok("一键出片:先构建后渲染,构建段用 preview=False",
+       _calls == [("build", False, "building"), ("render", "mp4", "building")], str(_calls))
+    ok("一键出片:构建段不停在 preview(前端因此不会去加载 Studio)",
+       _calls[0][2] == "building")
+    ok("一键出片:状态最终为 rendered", _drs.status == "rendered")
+    ok("一键出片:跑完清掉 direct_render 标记", _drs.state.get("direct_render") is False)
+    ok("一键出片:构建与渲染各留一条历史",
+       [h["step"] for h in _drs.history()] == ["build", "render"],
+       str([h["step"] for h in _drs.history()]))
+
+    # 失败口径:构建炸了记 build(且不再往下渲染),渲染炸了记 render —— 与分步走完全一样
+    _drb = _jobs_mod.create_job("solemn-red", 60, "direct-build-fail.txt")
+    _bfail = []
+
+    def _boom_build(job, force_voice=False, preview=True):
+        _bfail.append("build")
+        raise RuntimeError("构建炸了")
+
+    def _count_render(job, fmt="mp4"):
+        _bfail.append("render")
+
+    try:
+        _main.stage_build, _main.stage_render = _boom_build, _count_render
+        try:
+            _main.stage_direct_render(_drb, "mp4")
+        except RuntimeError:
+            pass
+    finally:
+        _main.stage_build, _main.stage_render = _stages
+    ok("一键出片:构建段失败不再进入渲染", _bfail == ["build"], str(_bfail))
+    ok("一键出片:构建段失败记在 build 上",
+       _drb.history()[-1]["step"] == "build" and _drb.history()[-1]["status"] == "failed",
+       str(_drb.history()))
+    ok("一键出片:构建段失败也清掉 direct_render 标记",
+       _drb.state.get("direct_render") is False)
+
+    _drr = _jobs_mod.create_job("solemn-red", 60, "direct-render-fail.txt")
+
+    def _ok_build(job, force_voice=False, preview=True):
+        pass
+
+    def _boom_render(job, fmt="mp4"):
+        raise RuntimeError("渲染炸了")
+
+    try:
+        _main.stage_build, _main.stage_render = _ok_build, _boom_render
+        try:
+            _main.stage_direct_render(_drr, "mp4")
+        except RuntimeError:
+            pass
+    finally:
+        _main.stage_build, _main.stage_render = _stages
+    ok("一键出片:渲染段失败记在 render 上",
+       _drr.history()[-1]["step"] == "render" and _drr.history()[-1]["status"] == "failed",
+       str(_drr.history()))
+
+    # 接口层:build=true 从 analyzed 就能触发,且在 dispatch 之前就把状态翻成 building(防连点)
+    class _Req:
+        def __init__(self, payload):
+            self._p = payload
+
+        async def json(self):
+            return self._p
+
+    def _code(fn):
+        try:
+            fn()
+            return 0
+        except _main.HTTPException as e:
+            return e.status_code
+        except Exception:
+            return -1
+
+    _ar = _jobs_mod.create_job("solemn-red", 60, "api-direct.txt")
+    _ar.paths()["script"].write_text(json.dumps({"frames": []}), encoding="utf-8")
+    _ar.set(status="analyzed")
+    _bg = []
+    _real_bg = _main.run_in_background
+    try:
+        _main.run_in_background = lambda job, fn, *a, **kw: _bg.append((fn.__name__, a, kw))
+        _res = _asyncio.run(_main.api_render(_ar.id, _Req({"format": "mp4", "build": True})))
+        ok("接口:build=true 回 direct 标记", _res == {"ok": True, "direct": True}, str(_res))
+        ok("接口:直达出片在 dispatch 前把状态翻成 building(窗口内连点会被 409 挡下)",
+           _ar.status == "building", _ar.status)
+        ok("接口:直达出片打上 direct_render 标记", _ar.state.get("direct_render") is True)
+        ok("接口:直达出片派发 stage_direct_render 且 step=None(失败账由阶段自己记)",
+           _bg and _bg[0][0] == "stage_direct_render" and _bg[0][2].get("step") is None,
+           str(_bg))
+        ok("接口:忙态(building)再点一键出片被 409 挡下",
+           _code(lambda: _asyncio.run(
+               _main.api_render(_ar.id, _Req({"build": True})))) == 409)
+        ok("接口:build 传字符串不算布尔(400)",
+           _code(lambda: _asyncio.run(
+               _main.api_render(_ar.id, _Req({"build": "true"})))) == 400)
+        _ar.state["status"] = "analyzed"     # 回到可触发态,单独验"没有脚本"
+        _ar.paths()["script"].unlink()
+        ok("接口:没有脚本时一键出片被 409 挡下",
+           _code(lambda: _asyncio.run(
+               _main.api_render(_ar.id, _Req({"build": True})))) == 409)
+        # 老路径不受影响:不传 build 时仍要求已构建好预览,并派发 stage_render(step=render)
+        _bg.clear()
+        _ar.paths()["script"].write_text(json.dumps({"frames": []}), encoding="utf-8")
+        _ar.state["status"] = "preview"
+        _res2 = _asyncio.run(_main.api_render(_ar.id, _Req({"format": "mov"})))
+        ok("接口:不传 build 时仍只渲染(回 direct=false)",
+           _res2 == {"ok": True, "direct": False}, str(_res2))
+        ok("接口:只渲染仍要求已构建好预览",
+           _bg and _bg[0][0] == "stage_render" and _bg[0][2].get("step") == "render"
+           and _bg[0][1] == ("mov",), str(_bg))
+        _ar.state["status"] = "analyzed"
+        ok("接口:analyzed 时只渲染被 409 挡下(必须先构建)",
+           _code(lambda: _asyncio.run(
+               _main.api_render(_ar.id, _Req({"format": "mp4"})))) == 409)
+        ok("接口:坏格式仍 400",
+           _code(lambda: _asyncio.run(
+               _main.api_render(_ar.id, _Req({"format": "avi"})))) == 400)
+    finally:
+        _main.run_in_background = _real_bg
+
+    # 列表项要能自己判断"能不能一键出片":有脚本(script_updated_at)+ 不在忙态
+    _sum_direct = _ar.summary()
+    ok("列表项带 script_updated_at 与 direct_render",
+       "script_updated_at" in _sum_direct and "direct_render" in _sum_direct,
+       str(sorted(_sum_direct)))
 
     # 配音复用指纹:必须含「合成口径」—— 运行时修好了,烧坏的旧配音不能还接着用
     # (2026-09-12 乱码事故:transformers 4.52+ 打乱语音 LLM 输出,时长正常、读音全错)

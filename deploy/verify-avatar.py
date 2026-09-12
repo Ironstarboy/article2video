@@ -10,8 +10,9 @@
     .venv/bin/python deploy/verify-avatar.py [--keep]
 
 退出码 0 表示:项目构建成功、片段按帧起点叠加、成片里确实出现数字人;
-第 ⑥ 步再验一次抠像(人像框内应有一大块像素与纯 PPT 完全一致)。
-抠像权重/解释器缺失时第 ⑥ 步跳过,不影响退出码。
+第 ⑥ 步再验一次抠像(人像框内应有一大块像素与纯 PPT 完全一致);
+第 ⑦ 步把同一帧分别叠到 tl/tr/bl/br,验"选哪个角就落在哪个角"(四个框内平均像素差)。
+抠像权重/解释器缺失时第 ⑥ 步跳过、第 ⑦ 步改验圆角卡片路径,都不影响退出码。
 """
 import argparse
 import os
@@ -114,6 +115,70 @@ def cutout_same_ratio(raw: bytes, composed: bytes, x: int, y: int) -> float:
     return same / max(1, total)
 
 
+def box_mean_diff(a: bytes, b: bytes, x: int, y: int) -> float:
+    """一个 size×size 框内平均像素差(采样 5px、四边内缩 10px)。
+
+    用"均值"而不是"包围盒":叠加要重编码一遍,整幅画面都有几个灰度级的编码噪声;
+    包围盒会被边上零星几个噪声像素撑到全屏,均值只由真正变了的那块(人像)决定。
+    """
+    s = n = 0
+    for yy in range(y + 10, y + SIZE - 10, 5):
+        for xx in range(x + 10, x + SIZE - 10, 5):
+            i = (yy * config.WIDTH + xx) * 3
+            s += abs(a[i] - b[i]) + abs(a[i + 1] - b[i + 1]) + abs(a[i + 2] - b[i + 2])
+            n += 1
+    return s / max(1, n)
+
+
+def corner_box(corner: str) -> tuple[int, int]:
+    """四个角落各自**期望**的框(独立于 avatar.cutout_xy:直接用 config 的边距重算)。
+
+    刻意不复用被测函数 —— 否则 cutout_xy 写错时这里跟着一起错,测试就成了自证。
+    """
+    x = config.AVATAR_X if corner in ("tl", "bl") else config.WIDTH - SIZE - config.AVATAR_X
+    y = (config.AVATAR_Y if corner in ("tl", "tr")
+         else config.HEIGHT - SIZE - config.AVATAR_CUTOUT_BOTTOM_MARGIN)
+    return x, y
+
+
+def check_corners(raw_out: Path, timeline: list, project: Path) -> bool:
+    """四个角落都要**真的**落到位:同一帧上,只有所选角落那个框出现人像。
+
+    针对 2026-09-13 的实际故障:服务里跑的旧 `cutout_xy` 把纵向一律钉在画面下缘 ——
+    界面上选左上/右上、重新出片,人像照样在下排,用户看到的就是"位置改了没用"。
+    只测纯函数拦不住它(纯函数是对的、被调用的那一份不对),所以必须在**真实叠加产物**上量。
+    """
+    ok, why = avatar.matte_available()
+    tl = [dict(t) for t in timeline]
+    if ok:
+        avatar.ensure_mattes(tl, progress_cb=lambda m: print(f"   {m}"))
+    cut = bool(ok and any(t.get("matte") for t in tl))
+    if ok and not cut:
+        print("   一条遮罩都没生成出来 → 改验圆角卡片路径")
+    t = float(tl[1]["start"]) + 0.5
+    raw = frame(raw_out, t)
+    boxes = {c: corner_box(c) for c in ("tl", "tr", "bl", "br")}
+    print(f"   模式={'抠像' if cut else '圆角卡片'} · 取帧 {t:.1f}s · 框内平均像素差(人像落进去才有几百)")
+    bad = []
+    for c in ("tl", "tr", "bl", "br"):
+        out = project / "renders" / f"out_{c}.mp4"
+        avatar.composite_onto_video(raw_out, tl, out, size=SIZE, corner=c,
+                                    cutout=cut, fps=FPS)
+        f = frame(out, t)
+        vals = {k: box_mean_diff(raw, f, *boxes[k]) for k in boxes}
+        best = max(vals, key=vals.get)
+        hit = best == c and vals[c] > 100 and all(vals[k] < 40 for k in vals if k != c)
+        if not hit:
+            bad.append(c)
+        print(f"   {c}: " + " ".join(f"{k}={vals[k]:6.1f}" for k in ("tl", "tr", "bl", "br"))
+              + f"  → {'✅ 落在 ' + c if hit else '❌ 落在 ' + best}")
+    if bad:
+        print(f"   ❌ 这些角落没落到所选位置:{bad}")
+        return False
+    print("   ✅ 四个角落都落到了所选位置")
+    return True
+
+
 def check_cutout(raw_out: Path, timeline: list, project: Path):
     """抠像校验:人像框内应有一大块像素与纯 PPT 完全一致(背景透明),卡片版这里是 0。
 
@@ -204,6 +269,11 @@ def main() -> int:
     if cut is not None:
         print("   通过 ✅" if cut else "   未通过 ❌")
     ok = ok and (cut is not False)
+
+    print("⑦ 四个角落都要真的落到位(改了位置必须真的换角)…")
+    corners = check_corners(raw_out, timeline, project)
+    print("   通过 ✅" if corners else "   未通过 ❌")
+    ok = ok and corners
 
     if not a.keep:
         shutil.rmtree(WORK, ignore_errors=True)

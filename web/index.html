@@ -396,7 +396,7 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
         只保留人像(背景透明)
       </label>
     </div>
-    <p class="hint" style="margin:0 0 12px;">选「不出镜」就是纯 PPT 成片;选一个角落则逐帧生成数字人片段并叠加到该角落,构建与渲染时间会明显变长。勾上「只保留人像」会把数字人背景抠掉(贴画面下缘),幻灯片内容不再被那块不透明卡片盖住 —— 抠像不可用时自动回退成带边框的卡片。位置与大小之后也能在预览页改。</p>
+    <p class="hint" style="margin:0 0 12px;">选「不出镜」就是纯 PPT 成片;选一个角落则逐帧生成数字人片段并叠加到该角落,构建与渲染时间会明显变长。勾上「只保留人像」会把数字人背景抠掉(角落照样四选一;下排贴画面下缘、上排留头顶空间),幻灯片内容不再被那块不透明卡片盖住 —— 抠像不可用时自动回退成带边框的卡片。位置与大小之后也能在预览页改。</p>
     <button class="primary" id="submit" disabled>开始分析</button>
   </div>
 </div>
@@ -516,6 +516,7 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
     <div class="btnrow">
       <button id="btn-build" disabled>构建预览</button>
       <button id="btn-reanalyze" class="hidden">重新分析</button>
+      <button id="btn-render" disabled>渲染成片</button>
       <span class="fmt-row">格式
         <select id="fmt">
           <option value="mp4">MP4</option>
@@ -523,9 +524,13 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
           <option value="webm">WebM</option>
         </select>
       </span>
-      <button id="btn-render" class="primary" disabled>渲染成片</button>
+      <button id="btn-direct" class="primary" disabled
+              title="构建 + 渲染一次触发:不用先点「构建预览」再点「渲染成片」">一键出片</button>
       <button id="btn-delete" class="danger">删除任务</button>
     </div>
+    <p class="hint" style="margin:10px 0 0;">
+      「一键出片」＝ 构建(配音/组装/数字人片段)+ 渲染一次跑完,中途不用再点;想先看 Studio 时间线就用「构建预览」。
+    </p>
     <div id="dl"><a id="dl-link" target="_blank">下载成片 <small id="dl-size"></small></a></div>
   </div>
 </div>
@@ -881,16 +886,26 @@ document.addEventListener("visibilitychange", ()=>{
   else if (!wantNew) { loadProjects(); }
 });
 
-/* ── 成片渲染进度(渲染 + 叠加两步,数据来自后端 job.render_progress) ── */
+/* ── 成片渲染进度(渲染 + 叠加两步,数据来自后端 job.render_progress) ──
+   一键出片(direct_render)时最前面多一段「构建」:它没有可量化的百分比(配音/组装/
+   数字人片段各是一段黑盒),所以那段只给步骤与后端原文案,不摆假进度条。 */
 function renderRenderProgress(j){
+  const direct = !!j.direct_render;
   const rendering = j.status === "rendering";
+  const building = direct && j.status === "building";   // 一键出片的构建段
   const rp = j.render_progress || {};
-  $("#render-steps").classList.toggle("hidden", !rendering);
-  $("#render-bar-wrap").classList.toggle("hidden", !rendering);
-  if (!rendering) return;
-  const hasAvatar = (j.avatar_clips || 0) > 0;
-  const names = hasAvatar ? ["渲染 PPT 视频", "叠加数字人片段"] : ["渲染 PPT 视频"];
-  const cur = rp.step || 1;
+  $("#render-steps").classList.toggle("hidden", !(rendering || building));
+  // 进度条只在渲染段有意义;构建段仍要用这一块显示文案(render-meta 在 bar-wrap 里)
+  $("#render-bar-wrap").classList.toggle("hidden", !(rendering || building));
+  if (!rendering && !building) return;
+  const bar = $("#render-bar-wrap").querySelector(".bc-bar");
+  if (bar) bar.style.display = building ? "none" : "";
+  // 构建段还没有权威的片段数(avatar_clips 是上一次构建的结果),先按任务的出镜开关摆上
+  const hasAvatar = (j.avatar_clips || 0) > 0 || (building && !!j.avatar);
+  const names = (direct ? ["构建(配音/组装/片段)"] : [])
+    .concat(hasAvatar ? ["渲染 PPT 视频", "叠加数字人片段"] : ["渲染 PPT 视频"]);
+  const base = direct ? 1 : 0;                          // 直达出片时「渲染 PPT」排在第 2 步
+  const cur = building ? 1 : Math.min(base + (rp.step || 1), names.length);
   const box = $("#render-steps");
   box.innerHTML = "";
   names.forEach((name, i)=>{
@@ -901,6 +916,10 @@ function renderRenderProgress(j){
     chip.appendChild(el("span", null, name));
     box.appendChild(chip);
   });
+  if (building) {   // 构建段:进度文案来自后端 job.progress,没有百分比
+    $("#render-meta").textContent = "构建中:" + (j.progress || "准备中…") + " · 完成后自动渲染";
+    return;
+  }
   const pct = rp.percent == null ? 0 : rp.percent;
   $("#render-bar-fill").style.width = Math.round(pct) + "%";
   const bits = [];
@@ -911,35 +930,58 @@ function renderRenderProgress(j){
   $("#render-meta").textContent = bits.join(" · ");
 }
 
+let lastFinalStamp = null;   // 成片产物指纹(重新渲染后播放器要换到新文件,而不是继续放上一版)
+
 function updateActions(j){
-  const bb = $("#btn-build"), rb = $("#btn-render");
+  const bb = $("#btn-build"), rb = $("#btn-render"), bd = $("#btn-direct");
   renderAvatarPanel(j);
   syncGeomRow(j);
   renderRenderProgress(j);
   syncProjectTitle(j);
   renderHistory(j);
   const hasScript = !!(j.script_updated_at);
-  bb.disabled = !(["analyzed","preview","rendered","failed"].includes(j.status) && hasScript);
+  // 一键出片与「构建预览」同一套可用性:有脚本、且不在忙态(analyzed/preview/rendered/failed)
+  const canProduce = ["analyzed","preview","rendered","failed"].includes(j.status) && hasScript;
+  bb.disabled = !canProduce;
   bb.textContent = j.status==="preview" ? "重新构建" : "构建预览";
+  bd.disabled = !canProduce;
+  bd.textContent = (j.direct_render && (j.status==="building" || j.status==="rendering")) ? "出片中…" : "一键出片";
   rb.disabled = j.status!=="preview";
   rb.textContent = j.status==="rendering" ? "渲染中…" : "渲染成片";
   $("#btn-reanalyze").classList.toggle("hidden", !(j.status==="failed" || (!hasScript && j.status!=="analyzing")));
   if (j.status==="preview") {
     createStudioIframe();   // 预览就绪:加载 Studio 编辑器(整个预览区只有 Studio)
   }
+  if (j.direct_render && (j.status==="building" || j.status==="rendering")) {
+    // 一键出片整条流水线不经过 Studio:别在这里摆「构建完成后加载 Studio」的文案
+    // (顺带把上一版成片的播放器收走 —— 它马上要被新产物替换)
+    const box = $("#studio-box");
+    if (box && !box.querySelector(".boot-direct")) {
+      box.innerHTML = '<div class="boot boot-direct"><span class="spin"></span>一键出片:构建完成后自动渲染,不用再点。</div>';
+    }
+  }
   if (j.status==="rendered" && j.has_video) {
+    // 成片播放替换 Studio(页面打开时已是 rendered 则直接创建)。按产物指纹决定要不要换播放器:
+    // 再次出片后 URL 没变,不换的话页面放的是上一版成片(用户会以为"渲染没生效");
+    // 指纹没变则不动,避免每轮轮询打断正在播放的视频。
+    // URL 也带上产物时间戳:光换 <video> 元素不够 —— 同一个 URL 浏览器/媒体栈会拿旧缓存,
+    // 用户改了数字人位置、重新出片,看到的还是上一版("位置改了没用"就是这么来的)。
+    // 播报视频早就这么做(见 renderAvatarPanel);成片这里补上。
+    const art = (j.artifacts || {}).final || {};
+    const stamp = (art.at || 0) + ":" + (art.bytes || 0);
     $("#dl").style.display = "block";
-    $("#dl-link").href = "./api/jobs/" + j.job_id + "/video";
+    $("#dl-link").href = "./api/jobs/" + j.job_id + "/video?t=" + Math.round((art.at || 0) * 1000);
     const fmt = (j.render_format || "mp4").toUpperCase();
     $("#dl-link").childNodes[0].textContent = "下载成片(" + fmt + ") ";
     $("#dl-size").textContent = j.video_size ? ("· " + (j.video_size/1024/1024).toFixed(1) + " MB") : "";
-    // 渲染完成:用成片播放替换 Studio(页面打开时已是 rendered 则直接创建)
-    if (!$("#studio-box").querySelector("video")) {
-      $("#studio-box").innerHTML = "";
+    const box = $("#studio-box");
+    if (!box.querySelector("video") || stamp !== lastFinalStamp) {
+      lastFinalStamp = stamp;
+      box.innerHTML = "";
       const v = document.createElement("video");
       v.src = $("#dl-link").href;
       v.controls = true;
-      $("#studio-box").appendChild(v);
+      box.appendChild(v);
     }
   }
   applyStepFocus(j);   // 元素可见性在这一轮才定下来,聚焦放在最后
@@ -1541,6 +1583,21 @@ $("#btn-render").onclick = ()=>{
     poll();
   }).catch(e=>toast("渲染失败:" + e.message, true));
 };
+/* 一键出片:构建 + 渲染一次触发(build:true),中途不停在预览态、不点第二次。
+   这条路不拉 Studio(见后端 stage_direct_render),状态 building → rendering → rendered;
+   进度与失败仍走同一套轮询/历史,前端不为它准备第二套状态。 */
+$("#btn-direct").onclick = ()=>{
+  const bd = $("#btn-direct");
+  bd.disabled = true; $("#btn-build").disabled = true; $("#btn-render").disabled = true;
+  bd.textContent = "出片中…";
+  $("#studio-box").innerHTML = '<div class="boot boot-direct"><span class="spin"></span>一键出片:构建完成后自动渲染,不用再点。</div>';
+  fetch("./api/jobs/"+jobId+"/render", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({format: $("#fmt").value, build: true})}).then(r=>r.json()).then(j=>{
+    if (!j.ok) { toast(j.detail || "出片触发失败", true); poll(); return; }
+    toast("已开始一键出片(构建完成后自动渲染)");
+    poll();
+  }).catch(e=>{ toast("出片失败:" + e.message, true); poll(); });
+};
 $("#btn-delete").onclick = ()=>{
   if (!confirm("确定删除该任务?项目文件与成片将一并清除,不可恢复。")) return;
   fetch("./api/jobs/"+jobId, {method:"DELETE"}).then(r=>r.json()).then(j=>{
@@ -1681,6 +1738,24 @@ function projectCard(it){
   const open = el("a", "smallbtn", "打开项目");
   open.href = "./?job=" + encodeURIComponent(it.job_id);
   act.appendChild(open);
+  // 有脚本且不在忙态的项目:卡片上直接一键出片(构建 + 渲染),不必先进详情页点两次
+  if (it.script_updated_at && ["analyzed","preview","rendered","failed"].includes(it.status)) {
+    const pr = el("button", "smallbtn", "一键出片"); pr.type = "button";
+    pr.title = "构建 + 渲染一次触发:不用先「构建预览」再「渲染成片」";
+    pr.onclick = async ()=>{
+      pr.disabled = true; pr.textContent = "出片中…";
+      try {
+        await postJSON("./api/jobs/" + encodeURIComponent(it.job_id) + "/render",
+                       {build: true, format: it.render_format || "mp4"});
+        toast("已开始一键出片(构建完成后自动渲染)");
+      } catch (e) {
+        toast("出片触发失败:" + (e.message || e), true);
+        pr.disabled = false; pr.textContent = "一键出片";
+      }
+      loadProjects();
+    };
+    act.appendChild(pr);
+  }
   if (it.has_video) {
     const dl = el("a", "smallbtn", "下载成片");
     dl.href = "./api/jobs/" + encodeURIComponent(it.job_id) + "/video";

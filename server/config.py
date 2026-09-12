@@ -199,9 +199,9 @@ def avatar_corner_options() -> list:
 # 叠加时 `[片段][遮罩]alphamerge` 得到带 alpha 的人像(见 ADR-0004)。
 # 默认关闭;按任务走(state.avatar_geom.cutout),创作页与预览页都能开。
 AVATAR_CUTOUT = os.environ.get("TTV_AVATAR_CUTOUT", "0") == "1"
-# 抠像模式下人像**贴画面下缘**:片段本就是齐胸特写,底部整行都是躯干(alpha≈1),
-# 只有让那道平切口落在画面边缘,看上去才是"站在画面下沿"而不是"悬浮的半身像"。
-# 左右仍由角落选择决定(tl/bl → 左,tr/br → 右),上下不再区分。
+# 抠像模式下**下排角落**离画面下缘的留白(默认 0 = 齐平)。四个角落都能摆,上下口径不同:
+# 上排(tl/tr)用 AVATAR_Y 留出头顶空间;下排贴下缘是因为片段本就是齐胸特写、底部整行都是
+# 躯干(alpha≈1),让那道平切口落在画面外沿才不像"悬浮的半身像"(调大这个值切口就会露出来)。
 AVATAR_CUTOUT_BOTTOM_MARGIN = int(os.environ.get("TTV_AVATAR_CUTOUT_BOTTOM_MARGIN", "0"))
 # 遮罩版本:抠像模型/预处理/编码口径变化时递增,自动失效旧的遮罩缓存(片段缓存不受影响)
 MATTE_VERSION = os.environ.get("TTV_MATTE_VERSION", "1")

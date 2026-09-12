@@ -59,6 +59,29 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
               「数字人播报视频」:配音 → 逐帧片段 → 顺序拼接(不经过 HyperFrames)
 ```
 
+**一键出片**(`POST /render {"build": true}`)走的是同一条 PPT 主线,只是**不在 `preview` 站停**:
+
+```
+analyzed / preview / rendered / failed ──▶ building ──▶ rendering ──▶ rendered
+                                            │             │
+                       stage_build(preview=False):   stage_render(fmt):
+                       配音(复用)→ 组装 → 数字人片段    渲染 PPT → 叠加数字人
+                       ── 不拉 Studio,状态停在 building ──
+```
+
+两个阶段原样复用(`stage_direct_render` 只做编排),所以产物、时长、历史与失败口径跟"分步点两次"完全一致:
+构建段失败记 `build` 且不再往下走,渲染段失败记 `render`;`state.direct_render` 标记只表示"正在直达出片",
+结束(成功或失败)一律清掉,前端据此在进度区多画一段"构建"、并把按钮改成"出片中…"。
+
+关键设计(v2.10 一键出片):
+- **只加编排,不加状态**:`stage_direct_render` = `stage_build(preview=False)` + `stage_render(fmt)`,两个阶段一行不改地复用 —— 于是"一键"与"分步"在产物、时长、历史、失败口径上不可能分叉。代价是 `preview` 这一站被跳过,前端不能靠状态猜"这是不是一次直达出片",所以由 `state.direct_render` 明确标记(跨阶段状态必须落进任务里,前端不猜)
+- **`preview=False` 的两点不同**:① 不调 `start_studio` —— 这条路没人看编辑器,省下一次冷启动与一个 Studio 端口槽位;② 结束时状态停在 `building` 而不是翻 `preview` —— 前端因此不会去加载 Studio(`createStudioIframe` 只在 `preview` 触发),由 `stage_render` 接手续上 `rendering`
+- **防连点**:`api_render` 在 dispatch **之前**就把状态翻成 `building`(与 `api_build` 同口径)。构建要跑几分钟,若像老 `api_render` 那样等阶段线程自己去翻状态,窗口内连点两下会并发起两条出片流水线(两条都想写同一份 `renders/final.mp4`)
+- **失败账按阶段记**:`run_in_background(..., step=None)` 不兜底记历史,由 `stage_direct_render` 自己按阶段写 `build` / `render` 的 failed 历史(构建段失败就不再进入渲染);否则构建失败会被记成"渲染失败",用户看历史会找错地方
+- **重启不继承**:`load_from_disk` 把进行中任务置 failed 时一并清掉 `direct_render` —— 标记只描述"此刻正在直达出片",不描述历史
+- **前端两处入口**:详情页主按钮「一键出片」+ 项目列表卡片(有脚本且不在忙态才出现,`GET /api/jobs` 为此带上 `script_updated_at` 与 `direct_render`)。进度区在直达出片时多一段"构建"步骤,但**不给百分比** —— 构建段(配音/组装/逐帧片段)没有可量化的进度,只显示后端 `progress` 原文案,不摆假进度条
+- **顺带修的陈旧播放器**:再次出片后成片 URL 没变,原来的 `<video>` 会继续放上一版(用户以为"渲染没生效");改为按 `artifacts.final` 的 `at:bytes` 指纹决定是否重建播放器 —— 指纹没变就不动,不打断正在播放的视频
+
 关键设计(v2.6 项目历史):
 - **入口页 = 项目历史列表**(`GET /api/jobs`):按 `state.updated_at` 倒序,只带列表字段(不含 script);进行中的任务带 `progress`/`render_progress`,卡片上直接看"现在到哪一步";有任务进行中时前端 4 秒刷新,空闲 20 秒。路由用查询串区分:`?job=<id>` 详情页、`?new=1` 创作页、无参数 = 入口页
 - **项目标题三段来源**(`state.title` + `state.title_source`):`file`(新建时的文件名占位)→ `auto`(分析完成后 `analyze.summarize_title` 用一次小调用总结,失败回退脚本标题)→ `user`(`POST /api/jobs/{id}/rename`)。**`source=user` 是硬闸**:`_auto_title` 在设置前再查一次,用户改过就绝不覆盖。标题一律单行、≤60 字(`jobs.normalize_title`,空标题 400)
@@ -133,7 +156,7 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
 | POST | /api/jobs/{id}/rename | 重命名项目(单行 ≤60 字,空标题 400;改后 title_source=user,自动总结不再覆盖) |
 | POST | /api/jobs/{id}/analyze | 重新分析(analyzing/building/rendering 期间 409) |
 | POST | /api/jobs/{id}/build | 构建(配音+组装+自动 check);默认**复用已有配音**,`?force_voice=1` 强制重新合成 |
-| POST | /api/jobs/{id}/render | 渲染 MP4 |
+| POST | /api/jobs/{id}/render | 渲染成片;请求体 `{"build": true}` 即**一键出片**(先构建再渲染,不拉 Studio、不停在 preview;`build` 只认真布尔) |
 | POST | /api/jobs/{id}/avatar/broadcast | 生成「数字人播报视频」(独立支线;analyzing/building/avatar_building/rendering 期间 409) |
 | GET | /api/jobs/{id}/avatar/broadcast/video | 播报视频预览/下载(支持 Range;未生成 404) |
 | DELETE | /api/jobs/{id} | 删除任务(rendered/failed 可删;building/rendering 409) |
@@ -189,8 +212,10 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
 - **抠像(可选)**:`cutout=true` 时不叠卡片,改用片段自己的 alpha —— 每段片段旁多一条
   `clip_*.modnet<版本>.mp4` 灰度遮罩(`server/matte.py`,MODNet ONNX,独立解释器),叠加时
   `[片段][遮罩]alphamerge` 得到透明背景的人像。三条硬口径:
-  1. **贴画面下缘**:片段是齐胸特写、底边整行都是躯干,摆在画面中间会像悬浮的半身像;
-     贴下缘后切口落在画面外沿。上下角在抠像模式下等价,只有左右由角落决定(`avatar.cutout_xy`)。
+  1. **四个角落都能摆**:左右按角落的 左/右,纵向按 上/下(`avatar.cutout_xy`),与圆角卡片同一套角落语义。
+     只有**下排**默认贴画面下缘 —— 片段是齐胸特写、底边整行都是躯干,让那道平切口落在画面外沿,
+     才不像"悬浮的半身像";上排与卡片一样留 `AVATAR_Y` 的头顶空间。
+     `TTV_AVATAR_CUTOUT_BOTTOM_MARGIN` 可把下排往上抬(代价就是那道切口会露出来)。
   2. **遮罩独立缓存**:`片段名.{模型标识}{遮罩版本}.mp4`,`TTV_MATTE_MODEL_TAG`/`TTV_MATTE_VERSION`
      变更即失效,而**片段缓存不受影响**;渲染前 `avatar.ensure_mattes()` 会把缺的补齐(老时间轴、
      刚打开抠像的任务都走这条),一批一个进程、模型只加载一次。
@@ -208,8 +233,10 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
   `TTV_AVATAR_CUTOUT_BOTTOM_MARGIN` / `TTV_MATTE_MODEL` / `TTV_MATTE_MODEL_TAG` / `TTV_MATTE_VERSION` /
   `TTV_MATTE_PYTHON` / `TTV_MATTE_REF` / `TTV_MATTE_CRF` / `TTV_MATTE_TIMEOUT` / `TTV_MATTE_URLS`。
 - 验证:`python deploy/verify-avatar.py`(真跑 assemble.build + 渲染 + 叠加 + 像素校验,
-  第 ⑥ 步另验抠像:人像框内应有一大块像素与纯 PPT 完全一致);
-  四角摆位/抠像坐标的纯函数与"锚点确实有人像"另有 `smoke_test` 与一次性像素回归覆盖。
+  第 ⑥ 步另验抠像:人像框内应有一大块像素与纯 PPT 完全一致;
+  第 ⑦ 步把同一帧分别叠到 tl/tr/bl/br,按四个框内的**平均像素差**验"选哪个角就落在哪个角" ——
+  期望框用 config 边距独立重算,不复用被测的 `cutout_xy`);
+  四角摆位/抠像坐标的纯函数与"锚点确实有人像"另有 `smoke_test` 覆盖。
 
 ## 八、数字人播报视频(独立产物)
 

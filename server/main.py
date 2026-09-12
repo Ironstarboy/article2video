@@ -306,7 +306,13 @@ def _synthesize_and_fit(job, *, reuse_vo: bool = False,
     return script, vo, eng_txt, reused
 
 
-def stage_build(job, force_voice: bool = False):
+def stage_build(job, force_voice: bool = False, preview: bool = True):
+    """构建(配音 → 组装工程 → 数字人片段)。
+
+    preview=False 是「一键出片」的构建段(见 stage_direct_render):构建完**不拉 Studio、
+    不停在 preview 状态**,由调用方紧接着发起渲染。这条路不给人改时间线,省下一次 Studio
+    冷启动与一个端口槽位;产物、时长与历史与分开构建完全一致。
+    """
     if not _job_alive(job):
         return
     job.set(status="building", progress="生成配音")
@@ -342,17 +348,21 @@ def stage_build(job, force_voice: bool = False):
         timeline_path.unlink(missing_ok=True)
     # 在标记 preview 之前同步拉起 Studio:状态一翻转,前端就能直接展示就绪的编辑器,
     # 用户看不到「启动中」等待页(Studio 冷启动时间被构建阶段的等待期吸收)
+    # 一键出片(preview=False)不拉:这条路构建完就直接渲染,没人会去看编辑器。
     studio_err = None
-    try:
-        start_studio(job)
-    except Exception as e:
-        studio_err = str(e)[:80]
+    if preview:
+        try:
+            start_studio(job)
+        except Exception as e:
+            studio_err = str(e)[:80]
+    # 直达出片时状态停在 building —— 前端据此不会去加载 Studio,由 stage_render 接手续上 rendering
+    status = "preview" if preview else "building"
     if studio_err:
         # 启动失败不阻塞预览:状态轮询自愈会重试拉起
-        job.set(status="preview", progress=f"总时长 {info['total']:.0f} 秒(Studio 启动失败,稍后自动重试)",
+        job.set(status=status, progress=f"总时长 {info['total']:.0f} 秒(Studio 启动失败,稍后自动重试)",
                 total_sec=info["total"], voice_engines=eng_txt, studio_error=studio_err)
     else:
-        job.set(status="preview", progress=f"总时长 {info['total']:.0f} 秒",
+        job.set(status=status, progress=f"总时长 {info['total']:.0f} 秒",
                 total_sec=info["total"], voice_engines=eng_txt)
     job.record_history(
         "build",
@@ -784,6 +794,32 @@ def stage_render(job, fmt: str = "mp4"):
                        avatar_cutout=bool(_avatar_geom(job).get("cutout")) if overlaid else False)
 
 
+def stage_direct_render(job, fmt: str = "mp4"):
+    """「一键出片」:按当前脚本与数字人设置构建,完成后立即渲染,中途不停在预览态。
+
+    与「构建预览 → 渲染成片」两次点击只差两件事:① 构建段不拉 Studio(见 stage_build 的
+    preview=False);② 构建完不等用户再点一次。产物、时长、历史与失败口径与分步走完全一致
+    (两个阶段原样复用),所以状态机不需要第二套状态:building → rendering → rendered / failed。
+
+    失败的账各记各的(build 的失败记 build、render 的记 render),与分步走时看到的完全一样;
+    dispatch 处传 step=None,避免 run_in_background 再按"渲染失败"记一遍。
+    """
+    try:
+        try:
+            stage_build(job, preview=False)
+        except Exception as e:  # noqa: BLE001 - 账记在 build 上,再交给 run_in_background 收尾
+            job.record_history("build", status="failed", detail=str(e)[:160])
+            raise
+        try:
+            stage_render(job, fmt)
+        except Exception as e:  # noqa: BLE001
+            job.record_history("render", status="failed", detail=str(e)[:160])
+            raise
+    finally:
+        # 标记只表示"正在直达出片",成功或失败都清掉:前端据此决定要不要画构建段
+        job.set(direct_render=False)
+
+
 # ───────────────────────── Studio 服务器(hyperframes preview) ─────────────────────────
 
 
@@ -1196,8 +1232,10 @@ def api_job(job_id: str, brief: int = 0, avatar_size: int | None = None):
         est_size = avatar.safe_size(avatar_size, est_size)
     d["avatar_broadcast_est_sec"] = avatar.estimate_broadcast_sec(
         _broadcast_basis_sec(job), size=est_size)
-    if job.status in ("preview", "rendering"):
-        # 自愈:Studio 进程若已死亡则自动重建(渲染期间编辑器也应保持可用)
+    # 自愈:Studio 进程若已死亡则自动重建(分步渲染期间编辑器也应保持可用)。
+    # 「一键出片」例外:这条路压根没有编辑器(preview=False 不拉 Studio),轮询不该把它拉起来 ——
+    # 否则渲染段又白占一个槽位,与"直达出片不拉 Studio"自相矛盾。
+    if job.status in ("preview", "rendering") and not job.state.get("direct_render"):
         port = _live_studio_port(job.id)
         if port is None:
             if job.id not in _studio_starting:
@@ -1234,19 +1272,43 @@ def api_build(job_id: str, force_voice: int = 0):
 
 @app.post("/api/jobs/{job_id}/render")
 async def api_render(job_id: str, request: Request):
+    """渲染成片。
+
+    请求体两种用法:
+      {"format": "mp4"}               —— 只渲染(要求已经构建好预览)
+      {"format": "mp4", "build": true} —— 「一键出片」:先按当前脚本与数字人设置构建
+      (配音 / 组装 / 数字人片段),完成后立即渲染 —— 不必先点「构建预览」再点「渲染成片」。
+    """
     job = get_job(job_id) or _http404()
-    if job.status not in ("preview", "rendered", "failed"):
-        raise HTTPException(409, f"当前状态 {job.status} 不能渲染")
-    fmt = "mp4"
+    body = {}
     try:
-        body = await request.json()
-        fmt = (body or {}).get("format", "mp4")
-    except Exception:
-        pass
+        body = await request.json() or {}
+    except Exception:  # noqa: BLE001 - 无请求体/非 JSON 都按默认处理
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    fmt = body.get("format", "mp4")
     if fmt not in RENDER_FORMATS:
         raise HTTPException(400, f"不支持的格式 {fmt},可选:{sorted(RENDER_FORMATS)}")
+    # 只认真正的 JSON 布尔:字符串 "false" 在这里是坏值,不能当"没传"(与 avatar/geom 同口径)
+    direct = body.get("build", False)
+    if not isinstance(direct, bool):
+        raise HTTPException(400, "build 需要 true 或 false")
+    if direct:
+        # 与 api_build 同一张允许表:分析完成 / 预览就绪 / 已出片 / 失败都能一键重跑
+        if job.status not in ("analyzed", "preview", "rendered", "failed"):
+            raise HTTPException(409, f"当前状态 {job.status} 不能出片")
+        if not job.paths()["script"].exists():
+            raise HTTPException(409, "脚本尚未生成,请先完成分析")
+        # 状态在 dispatch 之前翻转:构建要跑几分钟,否则连点两下会并发起两条出片流水线
+        job.set(status="building", progress="", error=None, direct_render=True)
+        # step=None:两个阶段的失败历史由 stage_direct_render 自己按阶段记
+        run_in_background(job, stage_direct_render, fmt, step=None)
+        return {"ok": True, "direct": True}
+    if job.status not in ("preview", "rendered", "failed"):
+        raise HTTPException(409, f"当前状态 {job.status} 不能渲染")
     run_in_background(job, stage_render, fmt, step="render")
-    return {"ok": True}
+    return {"ok": True, "direct": False}
 
 
 @app.get("/api/jobs/{job_id}/video")

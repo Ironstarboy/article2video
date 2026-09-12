@@ -378,7 +378,8 @@ class Job:
                 "duration_sec", "created_at", "updated_at", "progress", "error",
                 "filename", "has_video", "video_size", "artifacts", "history",
                 "avatar", "avatar_geom", "avatar_broadcast", "total_sec",
-                "render_format", "render_progress")
+                "render_format", "render_progress", "direct_render",
+                "script_updated_at")
         return {k: d[k] for k in keys if k in d}
 
     def to_dict(self, brief: bool = False):
@@ -477,6 +478,7 @@ def load_from_disk():
                 job.state["status"] = "failed"
                 job.state["error"] = "服务重启中断,请重新触发该步骤"
                 job.state["progress"] = ""
+                job.state["direct_render"] = False   # 「一键出片」的进行中标记不跨重启
             with LOCK:
                 JOBS[job.id] = job
             # 旧任务的两个产物迁移(写操作,只在这里做,不在 GET 路径里)

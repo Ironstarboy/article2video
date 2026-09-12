@@ -154,10 +154,10 @@ def corner_xy(corner: str = AVATAR_CORNER, size: int = AVATAR_SIZE,
 # ─────────────────────── 抠像(透明背景出镜) ───────────────────────
 #
 # 「只保留人像」= 不用圆角卡片遮罩,改用片段自己的 alpha(由 server/matte.py 逐帧算出)。
-# 两条硬约束决定了下面的口径:
-# 1. 片段是**齐胸特写**——底边整行都是躯干(alpha≈1),所以人像必须**贴画面下缘**,
-#    让那道平切口落在画面外沿;摆在画面中间的角落会像一块悬浮的半身像。
-# 2. 上下不再区分:tl/tr 在抠像模式下与 bl/br 等价,只有左右(角落选择的第一个字母)起作用。
+# 口径(见 cutout_xy):
+# 1. 四个角落都能摆:左右按角落的 左/右,纵向按 上/下,与圆角卡片一致;
+# 2. 只有**下排**默认贴画面下缘 —— 片段是齐胸特写、底边整行都是躯干(alpha≈1),
+#    让那道平切口落在画面外沿才不像"悬浮的半身像";上排留出头顶空间(同圆角卡片的 AVATAR_Y)。
 
 def normalize_cutout(value=None, default: bool = AVATAR_CUTOUT) -> bool:
     """把接口/前端传来的抠像开关收敛成布尔(纯函数,便于回归)。
@@ -181,16 +181,25 @@ def safe_cutout(value=None, default: bool = AVATAR_CUTOUT) -> bool:
 
 
 def cutout_xy(corner: str = AVATAR_CORNER, size: int = AVATAR_SIZE,
-              margin_x: int = AVATAR_X, bottom_margin: int = AVATAR_CUTOUT_BOTTOM_MARGIN,
+              margin_x: int = AVATAR_X, margin_y: int = AVATAR_Y,
+              bottom_margin: int = AVATAR_CUTOUT_BOTTOM_MARGIN,
               video_w: int = WIDTH, video_h: int = HEIGHT) -> tuple[int, int]:
-    """抠像模式下人像的 overlay 坐标(纯函数)。
+    """抠像模式下人像的 overlay 坐标(纯函数)—— **四个角落都能摆**。
 
-    输入是**片段本身**(size×size,没有卡片留白):左右按角落选的左/右摆,
-    纵向一律贴画面下缘(bottom_margin 默认 0 = 与下边缘齐平)。
+    输入是**片段本身**(size×size,没有卡片留白):左右按角落的 左/右,纵向按 上/下。
+    上下留白口径不同,而且是有意的:
+
+    - 上排(tl/tr):`margin_y`,和圆角卡片一样留出头顶空间;
+    - 下排(bl/br):**贴画面下缘**(`bottom_margin` 默认 0 = 与下边缘齐平)。片段本是齐胸特写、
+      底边整行都是躯干,让那道平切口落在画面外沿才不像"悬浮的半身像";想让它离下缘一点,
+      把 `TTV_AVATAR_CUTOUT_BOTTOM_MARGIN` 调大即可(代价就是那道切口会露出来)。
     """
     c = normalize_corner(corner)
     x = margin_x if c in ("tl", "bl") else max(0, int(video_w) - int(size) - margin_x)
-    y = max(0, int(video_h) - int(size) - int(bottom_margin))
+    y = (int(margin_y) if c in ("tl", "tr")
+         else max(0, int(video_h) - int(size) - int(bottom_margin)))
+    # 上排也可能因为尺寸过大而溢出画面,统一夹一次,别把画面顶出去
+    y = max(0, min(y, max(0, int(video_h) - int(size))))
     return x, y
 
 
