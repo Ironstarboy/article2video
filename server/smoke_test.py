@@ -989,6 +989,35 @@ ok("播报音轨与源配音逐字节对齐(无半字节错位)",
    _e[_head_b:_head_b + len(_tone)] == _tone,
    f"比对区间 [{_head_b}, {_head_b + len(_tone)})")
 
+# 同一处字节/采样换算还有另一半:`need = int(rate * 2 * dur)` 在**真实时长**下有一半
+# 概率落在奇数上。上面那条测试用的 2.5s / 1.5s 恰好都是偶数、且只铺了一帧,所以
+# 一直踩不到这个分支。wave 写出奇数长度时声明帧数会比数据区少一个字节 → 从这一帧
+# 起每一帧都整体错位一个字节,整条音轨中段开始变"雪花声"(实测线上任务 -9.4 dB)。
+# 这里让**第一帧**的 need 落在奇数上,断言紧随其后的第二帧人声仍然逐字节对齐。
+_odd_dur = 3.0000114                  # 真实时长的小数尾巴:88200 × 它 = 264601.005 → 奇数
+_bc_rate = 44100
+ok("测试前提:该时长下帧字节数为奇数(模拟 ffprobe 真实时长)",
+   int(_bc_rate * 2 * _odd_dur) % 2 == 1, f"need={int(_bc_rate * 2 * _odd_dur)}")
+_odd_out = Path(_tmp_text("bc_odd.wav", ""))
+avatar.build_broadcast_audio(
+    [{"index": 2, "clip": "/tmp/none_a.mp4", "start": 0.0, "duration": _odd_dur},
+     {"index": 3, "clip": "/tmp/none_b.mp4", "start": _odd_dur, "duration": 1.5}],
+    {2: {"path": str(_src_wav)}, 3: {"path": str(_src_wav)}}, _odd_out)
+with _wave.open(str(_odd_out), "rb") as _w:
+    _odd_frames = _w.getnframes()
+_odd_data = _odd_out.read_bytes()[44:]
+ok("播报音轨数据区长度 = 2×声明帧数(奇数帧长不留残字节)",
+   len(_odd_data) == _odd_frames * 2,
+   f"数据区 {len(_odd_data)} 字节 vs 声明 {_odd_frames * 2} 字节")
+# 第一帧按下限取整到整数采样(264600 字节)后,第二帧的人声必须从偶数字节偏移开始;
+# 若那一个残字节还在,比对区间会整体错开 1 字节 → 全不等。
+_odd_need1 = int(_bc_rate * _odd_dur) * 2
+_off2 = _odd_need1 + _head_b
+ok("奇数帧长之后的下一帧人声仍逐字节对齐(不错位一个字节)",
+   len(_odd_data) >= _off2 + len(_tone)
+   and _odd_data[_off2:_off2 + len(_tone)] == _tone,
+   f"第二帧人声应在 [{_off2}, {_off2 + len(_tone)}),第一帧长 {_odd_need1} 字节")
+
 # 配音验收必须同时看「时长」和「有没有声音」:eafca9e512a8 整组配音就是
 # 峰值 -91dB 的占位静音,时长却完全"合理",只查时长会全部放行。
 sil_wav = Path(_tmp_text("bc_silent.wav", ""))

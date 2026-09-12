@@ -817,7 +817,11 @@ def build_broadcast_audio(timeline: list, vo: dict, out: Path,
                     pcm = _read_pcm(Path(src).resolve(), rate)
                 except Exception:  # noqa: BLE001 - 单帧音频坏了不该毁掉整条音轨
                     pcm = b""
-            need = int(rate * bytes_per_sample * dur)
+            # 先算**采样数**再换算成字节,别写成 int(rate * 2 * dur):真实时长
+            # (ffprobe 的小数尾巴)下那个乘积约有一半概率是**奇数**,wave 写出奇数
+            # 长度后声明帧数比数据区少一个字节 → 从这一帧起每一帧都整体错位一个
+            # 字节,整条音轨中段开始变"雪花声"(实测线上任务 -9.4 dB / max 0.0 dB)。
+            need = int(rate * dur) * bytes_per_sample
             body = (b"\x00" * head) + pcm
             if len(body) > need:
                 body = body[:need]
