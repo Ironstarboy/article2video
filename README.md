@@ -13,7 +13,7 @@
 [![CUDA](https://img.shields.io/badge/CUDA-12.8-76B900?style=flat-square&logo=nvidia&logoColor=fff)](https://developer.nvidia.com/cuda-toolkit)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%2B%20NVIDIA%20GPU-333?style=flat-square&logo=linux&logoColor=fff)
 
-[功能特性](#功能特性) • [工作原理](#工作原理) • [快速开始](#快速开始) • [使用流程](#使用流程) • [配置](#配置) • [项目结构](#项目结构) • [已知限制](#已知限制) • [相关文档](#相关文档)
+[效果展示](#效果展示) • [功能特性](#功能特性) • [工作原理](#工作原理) • [快速开始](#快速开始) • [使用流程](#使用流程) • [配置](#配置) • [项目结构](#项目结构) • [已知限制](#已知限制) • [相关文档](#相关文档)
 
 </div>
 
@@ -23,6 +23,20 @@
 |---|---|
 | 本地默认 | `http://localhost:8015/`(接口文档 `/docs`) |
 | 生产部署 | `http://8.130.213.80:20013/ttv/`(nginx `/ttv/` 子路径) |
+
+## 效果展示
+
+两条真实成片的截图(1080p),同一套流水线换一张脸就是另一个数字人:
+
+<p align="center">
+  <img src="assets/screenshots/avatar-jinli.png" alt="数字人「金立」出镜的 PPT 成片截图" width="100%" />
+  <br /><em>内置形象「金立」出镜</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/avatar-wei-dongyi.png" alt="数字人「韦东奕」出镜的 PPT 成片截图" width="100%" />
+  <br /><em>上传形象「韦东奕」出镜 —— 在「数字人形象」页上传并设为默认,重新构建即换人</em>
+</p>
 
 ## 功能特性
 
@@ -269,7 +283,7 @@ node tests/avatar-page.test.js                # 前端页面逻辑回归(形象�
 ├── styles/                  三套经典风格设计脚本
 ├── proto/                   数字人 gRPC 契约
 ├── docs/adr/                架构决策记录
-├── assets/                  品牌 Logo、形象库(内置 jinli.png 入库;上传的形象与 library.json 不入库)、字体/BGM/GSAP(后三者不入库)
+├── assets/                  品牌 Logo、成片展示截图(screenshots/)、形象库(内置 jinli.png 入库;上传的形象与 library.json 不入库)、字体/BGM/GSAP(后三者不入库)
 ├── .run/                    运行时状态(全局偏好、网页设置、Studio 端口注册);不入库
 └── jobs/<job_id>/           每任务:原文 → script.json → project/ → renders/
 ```
