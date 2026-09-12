@@ -2119,3 +2119,75 @@ def analyze_lecture_article(article: str, target_duration: int, combo: dict,
                        "warnings": merge_warnings}
     return script
 
+
+# ═══════════════════════ 项目标题(自动总结) ═══════════════════════
+# 项目列表要一眼认出"这是哪条视频",而脚本自带的标题往往又长又书面化;
+# 分析完成后用一次**小** LLM 调用把它压成一个短项目标题。失败不影响分析结果。
+
+TITLE_SYSTEM = """你是政论视频项目的命名助手:根据给定的文章与脚本信息,为这条视频项目起一个项目标题,用在项目列表里让人一眼认出这是哪条视频。
+要求:
+1. 12-22 个字,概括文章主题或中心论点,不是原标题的照抄。
+2. 不要标点符号、书名号、引号、括号;不要出现「视频」「项目」「脚本」「讲解」「宣传」这些词。
+3. 只输出 JSON:{"title": "..."}。"""
+
+# 标题两侧要剪掉的标点/括号/空白(标题里不该出现,出现多半是模型加的装饰)
+_TITLE_TRIM = " \t\r\n《》〈〉「」『』“”\"'‘’[]【】()（）:：,，.。;；!！??"
+
+
+def clean_title(raw, max_len: int = 24) -> str:
+    """标题清洗:压成一行、剪掉两侧标点与括号、限长。
+
+    纯函数:自动总结与"从脚本标题兜底"都走它。脚本标题常是「以新质生产力\\n塑造
+    发展新优势」这种两行式,所以把多行**并成一行**(而不是只取第一行,那样会丢掉
+    后半句),再剪掉《》这类模型爱加的装饰。
+    """
+    t = str(raw or "").strip()
+    if not t:
+        return ""
+    t = " ".join(t.split())
+    t = t.strip(_TITLE_TRIM)
+    return t[:max_len]
+
+
+def _title_prompt(script: dict, article: str, kind: str = "promo") -> str:
+    """给命名助手的素材:脚本标题/主旨 + 文章开头(不喂全文,省 token 也够定题)。"""
+    s = script or {}
+    a = s.get("analysis") or {}
+    lp = s.get("lecture_plan") or {}
+    bits = [f"脚本标题:{s.get('title') or '(无)'}"]
+    if s.get("subtitle"):
+        bits.append(f"副标题:{s['subtitle']}")
+    if kind == "lecture":
+        bits.append(f"中心任务:{lp.get('central_task') or a.get('core_argument') or '(无)'}")
+        if lp.get("article_type"):
+            bits.append(f"文章类型:{lp['article_type']}")
+    else:
+        bits.append(f"核心论点:{a.get('core_argument') or '(无)'}")
+        if a.get("outline"):
+            bits.append("大纲:" + str(a["outline"])[:200])
+    frames = s.get("frames") or []
+    vo = " ".join((f.get("voiceover") or "") for f in frames[:2])[:200]
+    if vo:
+        bits.append(f"开头旁白:{vo}")
+    bits.append("文章开头:" + (article or "")[:600])
+    return "\n".join(bits)
+
+
+def summarize_title(script: dict, article: str, kind: str = "promo") -> str | None:
+    """让大模型把脚本压成一个短项目标题;调用失败或结果不可用时返回 None。
+
+    只影响项目列表里的显示名,所以**不抛异常**:调用方(stage_analyze)失败时
+    退回脚本标题,分析结果与流水线一律不受影响。
+    """
+    content = _llm_attempt(TITLE_SYSTEM, _title_prompt(script, article, kind),
+                           max_tokens=256, temperature=0.3)
+    if not content:
+        return None
+    try:
+        data = _parse_json(content)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    title = clean_title(data.get("title"))
+    return title or None

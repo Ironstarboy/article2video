@@ -1,4 +1,4 @@
-# 项目结构文档(Theory-to-Video v2.2)
+# 项目结构文档(Theory-to-Video v2.6)
 
 ## 一、总体架构
 
@@ -25,21 +25,22 @@ vtt/
 ├── frames-schema.md         DeepSeek 输出契约(hyperframes 脚本 JSON)
 ├── styles/                  三套经典风格详细样式脚本(设计文档)
 ├── server/                  后端(部署于 /mnt/workspace/ttv/server/)
-│   ├── main.py              FastAPI:任务 API(含 DELETE 删除)、Studio/项目代理、流水线阶段、check 质量门、Studio 槽位管理(串行化+自愈)、并发限制(LLM 信号量 6/渲染信号量 2/进行中任务 >4 返回 429)、预览音频看门狗注入
+│   ├── main.py              FastAPI:任务 API(项目列表 GET /api/jobs、重命名、DELETE)、自动总结项目标题、阶段历史、Studio/项目代理、流水线阶段、check 质量门、Studio 槽位管理(串行化+自愈)、并发限制(LLM 信号量 6/渲染信号量 2/进行中任务 >4 返回 429)、预览音频看门狗注入
 │   ├── config.py            路径/端口/模型端点配置(CHARS_PER_SEC=4.2 语速常量全局引用)
 │   ├── extract.py           txt/md/docx 提取(zip 炸弹防护;txt/md 字节预检 >1.5MB 拒绝)
-│   ├── analyze.py           DeepSeek 分析:宣传视频两阶段(阶段一「分析」诊断小契约 → 阶段二「脚本」按帧计划生成)+ 讲解视频两步分析(备课方案 → 分段并行生成逐帧脚本,ThreadPoolExecutor 3 workers)+ 构建期二次拓展(expand_script)
+│   ├── analyze.py           DeepSeek 分析:宣传视频两阶段(阶段一「分析」诊断小契约 → 阶段二「脚本」按帧计划生成)+ 讲解视频两步分析(备课方案 → 分段并行生成逐帧脚本,ThreadPoolExecutor 3 workers)+ 构建期二次拓展(expand_script)+ 项目标题自动总结(summarize_title,失败可回退)
 │   ├── tts.py               配音:CosyVoice3 多实例轮询并行合成(httpx 全局共享连接池,修复 FD 耗尽)+ 词级时间轴 + 真实时长向目标靠拢(apply_real_durations);失败重试×3 → 静音占位
 │   ├── tts_server.py        CosyVoice3 服务(8016/8018/8019 三实例:GPU1/GPU2/GPU3,三音色零样本克隆,speed 钳位下限 1.0;**时长验收重采**:实际/预期不落在窗口内就重采;**启动硬校验运行时钉版** `transformers==4.51.3`/`tokenizers==0.21.4`——版本不符会让语音内容乱码而时长/峰值正常,见 v2.2)
 │   ├── tts_qwen_server.py   Qwen3-TTS 服务(8017,GPU2,备用引擎,默认停;<8 字 400)
-│   ├── avatar.py            数字人:片段生成/时间轴/叠加 + 播报视频(音轨拼接、顺序合流、ETA 估算)+ gRPC 探活
+│   ├── avatar.py            数字人:片段生成/时间轴/叠加(圆角卡片或抠像)+ 播报视频(音轨拼接、顺序合流、ETA 估算)+ 抠像遮罩批量补齐 + gRPC 探活
+│   ├── matte.py             抠像 worker:MODNet ONNX 逐帧出 alpha → 灰度遮罩 mp4(独立解释器跑,单段/批量两种入口,模型只加载一次)
 │   ├── smoke_test.py        冒烟回归:纯函数路径(extract/styles/时长靠拢/校验门/讲解校验)
-│   ├── jobs.py              任务状态机(磁盘持久化,重启恢复;video_kind 持久化;重启时 uploaded 同样置 failed)
+│   ├── jobs.py              任务状态机(磁盘持久化,重启恢复;video_kind 持久化;重启时 uploaded 同样置 failed)+ 项目标题/阶段历史(record_history,上限 60 条)+ 启动补录(_backfill_meta:老任务从脚本与产物倒推)
 │   └── builder/
 │       ├── styles.py        风格系统:四维度注册表(字体×配色×背景×动效)+ 组合合成 + SVG 装饰
 │       ├── templates.py     13 种帧类型(10 种宣传 + 3 种讲解:textblock/annotation/method)× 维度属性渲染(HTML+GSAP tween 生成)
 │       └── assemble.py      script.json → HyperFrames 项目(index.html + assets + BGM,重建前清理陈旧产物)
-├── web/index.html           前端单文件 SPA(上传配置页 + 预览二级页,Studio 为唯一预览;woff2 字体子集 + unicode-range 回退系统字体;骨架屏/轮询退避/删除任务)
+├── web/index.html           前端单文件 SPA(项目历史入口页 + 创作页 + 预览页,Studio 为唯一预览;woff2 字体子集 + unicode-range 回退系统字体;骨架屏/轮询退避/删除任务/就地重命名/步骤直达)
 └── deploy/                  nginx 路由 / 启动脚本(已删除一次性 patch-*.py 补丁,git 历史留档)
 ```
 
@@ -58,10 +59,23 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
               「数字人播报视频」:配音 → 逐帧片段 → 顺序拼接(不经过 HyperFrames)
 ```
 
+关键设计(v2.6 项目历史):
+- **入口页 = 项目历史列表**(`GET /api/jobs`):按 `state.updated_at` 倒序,只带列表字段(不含 script);进行中的任务带 `progress`/`render_progress`,卡片上直接看"现在到哪一步";有任务进行中时前端 4 秒刷新,空闲 20 秒。路由用查询串区分:`?job=<id>` 详情页、`?new=1` 创作页、无参数 = 入口页
+- **项目标题三段来源**(`state.title` + `state.title_source`):`file`(新建时的文件名占位)→ `auto`(分析完成后 `analyze.summarize_title` 用一次小调用总结,失败回退脚本标题)→ `user`(`POST /api/jobs/{id}/rename`)。**`source=user` 是硬闸**:`_auto_title` 在设置前再查一次,用户改过就绝不覆盖。标题一律单行、≤60 字(`jobs.normalize_title`,空标题 400)
+- **阶段历史**(`Job.record_history`):`analyze/build/render/broadcast` 完成或失败各追加一条,每条带 `step/label/status/detail/at` 与产物线索(渲染记格式/时长/大小/是否叠数字人,播报记段数与尺寸),上限 60 条。后台阶段异常由 `run_in_background(..., step=…)` 在 failed 分支补记 —— 列表上能说清"哪一步挂了"
+- **直达结果**:卡片步骤胶囊 → `?step=analyze|build|render|broadcast` → 详情页在该步目标**可见之后**滚动并高亮(`applyStepFocus` 每轮轮询都试,直到成功);详情页「历史记录」面板逐条给产物下载入口
+- **老任务零迁移**:`load_from_disk` 里 `Job._backfill_meta()` 补标题(脚本标题 → 文件名)与历史(脚本/工程/产物时间戳倒推,标 `derived:true`),并把 `updated_at` 回填到最近一次历史/产物时间;缺 `updated_at` 等新键由 `setdefault` 补齐。`updated_at` 由 `set()` / `record_history()` / `_record_artifact()` 统一刷新,是列表排序的唯一依据
+- **不保留成片副本**:历史只记"出了什么、多大、什么时候",同一阶段重复执行各留一条;**当前产物以 `state.artifacts` 为准**,不按次归档视频(单条几百 MB,会撑爆磁盘)
+
 关键设计(v2.1 数字人播报视频):
 - **支线状态 `avatar_building`**:只被 `POST /avatar/broadcast` 使用;进入前记住原状态,成功/失败都回到原状态(失败不毁任务)
-- **配音复用**:`state.vo_sig = sha1(逐帧台词 + 音色 + 引擎)`;指纹未变且配音文件齐全时跳过合成 —— 重跑/构建后重跑都是秒级。
+- **配音复用**:`state.vo_sig = sha1(逐帧台词 + 音色 + 引擎 + 合成口径)`;指纹**完全相符**且配音文件齐全时跳过合成 —— 重跑/构建后重跑都是秒级。
+  最后一项(合成口径 = `PINNED_TTS_DEPS` + `VO_SYNTH_VERSION`)是 v2.8 补的:transformers 4.52+ 会打乱语音 LLM 输出(乱码,但时长/峰值全正常),只钉版运行时的话,
+  那些**用坏运行时烧出来的旧配音**会因"台词没变"继续被判为可复用 —— 用户重新构建、重新渲染,听到的还是乱码。口径进指纹后,这类修复会自动作废旧配音。
+  复用判断里**没有**"文本一致就复用"的兜底:宁可多烧一次 GPU,也不给坏产物留门。
   **构建与播报共用同一份配音**:`stage_build` 默认也复用(`?force_voice=1` 强制重合成),所以「先构建后播报」与「先播报后构建」拿到的是同一版声音,顺序不影响结果。
+- **配音可懂度抽检**(`server/voice_check.py`):每次**真正重新合成**后,用本地 whisper 抽检 2 帧(听写 vs 台词,繁简归一算 LCS)写进 `state.voice_check`;
+  `warn` 时预览页弹红条 + 一键「重新合成配音」。时长/静音验收拦不住"念的是乱码",这是唯一的内容级判据;抽检只提示不阻塞(whisper 缺失/超时一律跳过)。
 - **两条轨道共用片段缓存**:播报视频与成片用的是同一批 `.cache/avatar/*.mp4`(键 = 形象+音频+尺寸+帧时长+版本),所以画面与配音天然一致
 - **音轨跟画面走**:拼接前逐片段 ffprobe 真实时长,音轨按真实时长铺 —— 声明时长与编码时长的毫秒差逐帧累积会让 `-shortest` 从片尾裁掉台词
 
@@ -113,8 +127,10 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | /api/styles | 四维度选项 + 预设 |
+| GET | /api/jobs | 项目历史列表(按 updated_at 倒序,`{jobs,total}`,不含 script;进行中任务带 progress/render_progress) |
 | POST | /api/jobs | 上传(file/text + style/font/palette/bg/motion/duration/video_kind);进行中任务 >4 返回 429 |
-| GET | /api/jobs/{id} | 状态 + 分析结果;?brief=1 轻量轮询(不含 script) |
+| GET | /api/jobs/{id} | 状态 + 分析结果 + 项目标题(title/title_source)+ 阶段历史 history;?brief=1 轻量轮询(不含 script) |
+| POST | /api/jobs/{id}/rename | 重命名项目(单行 ≤60 字,空标题 400;改后 title_source=user,自动总结不再覆盖) |
 | POST | /api/jobs/{id}/analyze | 重新分析(analyzing/building/rendering 期间 409) |
 | POST | /api/jobs/{id}/build | 构建(配音+组装+自动 check);默认**复用已有配音**,`?force_voice=1` 强制重新合成 |
 | POST | /api/jobs/{id}/render | 渲染 MP4 |
@@ -136,7 +152,8 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
 
 用途:让数字人在成片**选定的角落**(四角可选,默认右上)朗读该帧台词。默认关闭,任务级开关
 `POST /api/jobs` 的 `avatar=true`(Web 端对应"数字人出镜"下拉:**不出镜 / 左上 / 右上(默认)/ 右下 / 左下**),
-也可用 `TTV_AVATAR=1` 全局默认开启。
+也可用 `TTV_AVATAR=1` 全局默认开启。出镜时还可以勾「只保留人像(背景透明)」把背景抠掉
+(`avatar_cutout=true` / `state.avatar_geom.cutout`),见下面的「抠像」小节。
 
 链路:
 
@@ -145,13 +162,14 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
    └─ server/avatar.py → CyberVerse AvatarService(gRPC,127.0.0.1:50051,FlashHead,原生 464×464)
         └─ RGB24 原始帧 → ffmpeg 编码成 <尺寸>×<尺寸> 片段(仅画面,丢弃服务端音轨)
              └─ 全局缓存 .cache/avatar/clip_<形象>_<音频>_<尺寸>_<帧时长>_<版本>.mp4
+                  └─(抠像时)server/matte.py → clip_*.modnet<版本>.mp4 灰度遮罩,MODNet ONNX 本地推理
 渲染成片后
    └─ avatar._overlay_timeline():出镜才读时间轴 → composite_onto_video(corner=…) 叠到该角落
 ```
 
-> **几何按任务存**:`state.avatar_geom = {corner, size}`(默认 `{"tr", 300}`),出镜开关是
-> `state.avatar`(bool)。创作页建任务时设置,预览页可随时改
-> (`POST /api/jobs/{id}/avatar/geom`,三个字段都可选、只传哪个改哪个),下一次构建/渲染生效。
+> **几何按任务存**:`state.avatar_geom = {corner, size, cutout}`(默认
+> `{"tr", 300, false}`),出镜开关是 `state.avatar`(bool)。创作页建任务时设置,预览页可随时改
+> (`POST /api/jobs/{id}/avatar/geom`,四个字段都可选、只传哪个改哪个),下一次构建/渲染生效。
 > 老任务没有 `avatar_geom` → 直接回默认值,不需要迁移。
 > 「数字人播报视频」的大小默认跟随这个 `size`,但可以单独指定(见第八节)。
 
@@ -168,6 +186,17 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
   每个形象只生成一段并全局缓存(`idle_*.mp4`)。
 - **圆角与投影在叠加时完成**,不烘焙进片段:H.264 不支持 alpha,烘焙会把透明区变成黑底;
   叠加时用同一张灰度遮罩(`mask_<尺寸>_<半径>_v<版本>.png`)+ boxblur 投影,一次滤镜图完成。
+- **抠像(可选)**:`cutout=true` 时不叠卡片,改用片段自己的 alpha —— 每段片段旁多一条
+  `clip_*.modnet<版本>.mp4` 灰度遮罩(`server/matte.py`,MODNet ONNX,独立解释器),叠加时
+  `[片段][遮罩]alphamerge` 得到透明背景的人像。三条硬口径:
+  1. **贴画面下缘**:片段是齐胸特写、底边整行都是躯干,摆在画面中间会像悬浮的半身像;
+     贴下缘后切口落在画面外沿。上下角在抠像模式下等价,只有左右由角落决定(`avatar.cutout_xy`)。
+  2. **遮罩独立缓存**:`片段名.{模型标识}{遮罩版本}.mp4`,`TTV_MATTE_MODEL_TAG`/`TTV_MATTE_VERSION`
+     变更即失效,而**片段缓存不受影响**;渲染前 `avatar.ensure_mattes()` 会把缺的补齐(老时间轴、
+     刚打开抠像的任务都走这条),一批一个进程、模型只加载一次。
+  3. **失败逐条回退**:解释器/权重缺失或单段失败只记日志,该段仍用圆角卡片;一条都没抠成时
+     `avatar_error` 会说明原因。**播报视频不抠像**(独立口播片,透明无意义)。
+  详见 `docs/adr/0004-抠像用独立灰度遮罩完成.md`。
 - **失败不阻塞出片**:数字人任一环节失败只写入 `job.state.avatar_error`,成片照常产出(仅无人像)。
 - **四角坐标**:`avatar.corner_xy(corner, size)` 按"带投影留白的卡片画布"离边 `AVATAR_X/AVATAR_Y`
   摆位(四角视觉边距一致、投影不被画面裁掉);显式传 `x/y` 时优先用它们(老调用方与
@@ -175,9 +204,12 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
 - 相关环境变量:`TTV_AVATAR` / `TTV_AVATAR_ADDR` / `TTV_AVATAR_IMAGE` / `TTV_AVATAR_SIZE` /
   `TTV_AVATAR_SIZE_CHOICES` / `TTV_AVATAR_SIZE_MIN` / `TTV_AVATAR_SIZE_MAX` / `TTV_AVATAR_NATIVE_SIZE` /
   `TTV_AVATAR_CORNER` / `TTV_AVATAR_X` / `TTV_AVATAR_Y` / `TTV_AVATAR_IDLE_SECONDS` /
-  `TTV_AVATAR_CLIP_VERSION`。
-- 验证:`python deploy/verify-avatar.py`(真跑 assemble.build + 渲染 + 叠加 + 像素校验);
-  四角摆位的纯函数与"锚点确实有人像"另有 `smoke_test` 与一次性像素回归覆盖。
+  `TTV_AVATAR_CLIP_VERSION`;抠像另有一组:`TTV_AVATAR_CUTOUT`(全局默认开关)/
+  `TTV_AVATAR_CUTOUT_BOTTOM_MARGIN` / `TTV_MATTE_MODEL` / `TTV_MATTE_MODEL_TAG` / `TTV_MATTE_VERSION` /
+  `TTV_MATTE_PYTHON` / `TTV_MATTE_REF` / `TTV_MATTE_CRF` / `TTV_MATTE_TIMEOUT` / `TTV_MATTE_URLS`。
+- 验证:`python deploy/verify-avatar.py`(真跑 assemble.build + 渲染 + 叠加 + 像素校验,
+  第 ⑥ 步另验抠像:人像框内应有一大块像素与纯 PPT 完全一致);
+  四角摆位/抠像坐标的纯函数与"锚点确实有人像"另有 `smoke_test` 与一次性像素回归覆盖。
 
 ## 八、数字人播报视频(独立产物)
 

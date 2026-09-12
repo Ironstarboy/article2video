@@ -18,6 +18,37 @@ log = logging.getLogger("ttv.jobs")
 LOCK = threading.Lock()
 JOBS: dict[str, "Job"] = {}
 
+# ── 项目历史 ──
+# 流水线每一步**完成后**都往 state.history 追加一条,项目列表与项目详情页据此
+# 展示「这一步的结果在不在、什么时候出的」并直达对应结果(见 api_jobs_list)。
+# 纯记录,不参与任何流水线判断;因此历史写失败也不该影响出片,调用方一律不关心返回。
+HISTORY_MAX = 60
+HISTORY_LABELS = {
+    "analyze": "分析脚本",
+    "build": "构建预览",
+    "render": "渲染成片",
+    "broadcast": "播报视频",
+    "revise": "AI 修订",
+}
+# 项目列表上的四步就是上面除 revise 外的四个键;revise 只在详情页的完整历史里出现。
+TITLE_MAX = 60
+
+
+def _one_line(raw) -> str:
+    """压成单行(标题来自脚本时可能带换行)。"""
+    return " ".join(str(raw or "").split())
+
+
+def normalize_title(raw) -> str:
+    """项目标题规范化:去首尾空白、压掉换行与连续空白、限长;空标题抛 ValueError。
+
+    单点实现(接口层与自动标题共用),标题只影响展示,任何坏值都不该落进 state。
+    """
+    title = _one_line(raw)
+    if not title:
+        raise ValueError("项目标题不能为空")
+    return title[:TITLE_MAX]
+
 
 class Job:
     def __init__(self, job_id: str, style: str, duration: int, filename: str,
@@ -35,6 +66,12 @@ class Job:
             "error": None,
             "progress": "",
             "created_at": time.time(),
+            "updated_at": time.time(),
+            # 项目标题:title_source 为 user 时(用户手动改过)自动总结绝不覆盖
+            "title": "",
+            "title_source": "",
+            # 每一步完成/失败的历史(见模块顶部说明)
+            "history": [],
         }
         # script.json 解析缓存:(mtime_ns, size) → 解析结果(轮询高频,避免每轮全量解析)
         self._script_cache = None
@@ -46,6 +83,24 @@ class Job:
     def set(self, **kw):
         with LOCK:
             self.state.update(kw)
+            self.state["updated_at"] = time.time()
+            self._save()
+
+    def record_history(self, step: str, status: str = "done", detail: str = "", **extra):
+        """追加一条阶段历史(分析/构建/渲染/播报完成或失败)。
+
+        多个步骤各记各的,同一阶段重复执行(重新构建、再次渲染)会各留一条 ——
+        这是"历史",不是"当前状态";当前状态仍以 status/artifacts 为准。
+        """
+        with LOCK:
+            hist = list(self.state.get("history") or [])
+            entry = {"step": step, "label": HISTORY_LABELS.get(step, step),
+                     "status": status, "detail": detail, "at": time.time()}
+            entry.update(extra)
+            hist.append(entry)
+            del hist[:-HISTORY_MAX]
+            self.state["history"] = hist
+            self.state["updated_at"] = time.time()
             self._save()
 
     def _save(self):
@@ -117,6 +172,7 @@ class Job:
             arts[key] = {"path": rel, "bytes": st.st_size, "at": st.st_mtime,
                          "fmt": path.suffix.lstrip(".")}
             self.state["artifacts"] = arts
+            self.state["updated_at"] = time.time()
             self._save()
 
     def _migrate_legacy_render(self) -> bool:
@@ -178,6 +234,99 @@ class Job:
         log.info("任务 %s 产物补录:%s", self.id, ", ".join(k for k, _ in found))
         return True
 
+    def _backfill_meta(self) -> bool:
+        """旧任务补上项目标题与阶段历史(只在 load_from_disk 调用,写盘一次)。
+
+        标题从脚本标题(大模型产出的那版)或原文件名派生;历史按磁盘上已有的
+        脚本/工程/产物时间戳倒推一条 —— 让 v2.5 之前建的 7 个任务一进列表就有
+        「哪一步出了什么」可点,而不是空白。
+        """
+        changed = False
+        # 标题一律单行(脚本标题常带换行;存进 state 的也压一遍)
+        cur = self.state.get("title")
+        if cur and _one_line(cur) != cur:
+            with LOCK:
+                self.state["title"] = _one_line(cur)[:TITLE_MAX]
+                changed = True
+        if not (self.state.get("title") or "").strip() \
+                and self.state.get("title_source") != "user":
+            s = self.script() or {}
+            title = _one_line(s.get("title"))
+            src = "auto"
+            if not title:
+                stem = Path(_one_line(self.state.get("filename"))).stem
+                title = stem if stem.lower() not in ("input", "article") else ""
+                src = "file"
+            if title:
+                with LOCK:
+                    self.state["title"] = title[:TITLE_MAX]
+                    self.state["title_source"] = src
+                    changed = True
+        if not self.state.get("history"):
+            hist = self._derive_history()
+            if hist:
+                with LOCK:
+                    self.state["history"] = hist
+                    changed = True
+        # updated_at 不早于任何一条历史/产物时间:老任务只有 created_at,
+        # 列表会按"建任务的时间"排序,把刚重新渲染过的老项目排到后面去。
+        latest = max(self.state.get("updated_at") or 0,
+                     self.state.get("created_at") or 0)
+        for h in self.history():
+            latest = max(latest, h.get("at") or 0)
+        for rec in (self.state.get("artifacts") or {}).values():
+            if isinstance(rec, dict):
+                latest = max(latest, rec.get("at") or 0)
+        if latest > (self.state.get("updated_at") or 0):
+            with LOCK:
+                self.state["updated_at"] = latest
+                changed = True
+        if changed:
+            with LOCK:
+                self._save()
+        return changed
+
+    def _derive_history(self) -> list:
+        """按磁盘现状倒推阶段历史(只读;给没有 history 的老任务用)。"""
+        hist = []
+
+        def add(step, at, detail, **extra):
+            e = {"step": step, "label": HISTORY_LABELS.get(step, step),
+                 "status": "done", "detail": detail, "at": at, "derived": True}
+            e.update(extra)
+            hist.append(e)
+
+        sp = self.paths()["script"]
+        if sp.exists():
+            n = len((self.script() or {}).get("frames") or [])
+            add("analyze", sp.stat().st_mtime, f"{n} 帧脚本" if n else "脚本已生成")
+        proj = self.paths()["project"] / "index.html"
+        if proj.exists():
+            total = self.state.get("total_sec")
+            add("build", proj.stat().st_mtime,
+                f"总时长 {float(total):.0f} 秒" if total else "预览工程已生成")
+        for key in ("final", "ppt"):
+            p = self._artifact_path(key)
+            if p is None:
+                continue
+            try:
+                add("render", p.stat().st_mtime,
+                    f"{key}.{p.suffix.lstrip('.')} · {p.stat().st_size / 1048576:.1f} MB",
+                    artifact=key, bytes=p.stat().st_size)
+            except OSError:
+                pass
+            break   # final 与 ppt 是同一部成片的两个版本,只记一条
+        p = self._artifact_path("avatar")
+        if p is not None:
+            try:
+                add("broadcast", p.stat().st_mtime,
+                    f"avatar.{p.suffix.lstrip('.')} · {p.stat().st_size / 1048576:.1f} MB",
+                    artifact="avatar", bytes=p.stat().st_size)
+            except OSError:
+                pass
+        hist.sort(key=lambda h: h["at"])
+        return hist
+
     def video_path(self) -> Path | None:
         """最终版路径(**纯只读**,GET 轮询会高频调用它)。
 
@@ -199,9 +348,44 @@ class Job:
                 return cand
         return None
 
+    def display_title(self) -> str:
+        """项目标题(展示用,纯只读):用户/自动标题 → 脚本标题 → 原文件名 → job_id。
+
+        老任务没有 state.title 时靠这条链兜底,不需要迁移;脚本标题常带换行,
+        统一压成一行(列表/详情页都不该出现多行标题)。
+        """
+        t = _one_line(self.state.get("title"))
+        if t:
+            return t
+        s = self.script() or {}
+        t = _one_line(s.get("title"))
+        if t:
+            return t
+        stem = Path(_one_line(self.state.get("filename"))).stem
+        if stem and stem.lower() not in ("input", "article"):
+            return stem
+        return self.id
+
+    def history(self) -> list:
+        """阶段历史副本(界面只读展示,不给出内部引用)。"""
+        with LOCK:
+            return [dict(h) for h in (self.state.get("history") or []) if isinstance(h, dict)]
+
+    def summary(self) -> dict:
+        """项目列表项:只带列表要用的字段(不含 script,列表可能一次拉几十条)。"""
+        d = self.to_dict(brief=True)
+        keys = ("job_id", "title", "title_source", "status", "video_kind",
+                "duration_sec", "created_at", "updated_at", "progress", "error",
+                "filename", "has_video", "video_size", "artifacts", "history",
+                "avatar", "avatar_geom", "avatar_broadcast", "total_sec",
+                "render_format", "render_progress")
+        return {k: d[k] for k in keys if k in d}
+
     def to_dict(self, brief: bool = False):
         with LOCK:
             d = dict(self.state)
+        d["title"] = self.display_title()
+        d["history"] = self.history()
         vp = self.video_path()
         d["has_video"] = vp is not None
         if vp is not None:
@@ -251,7 +435,8 @@ def remove_job(job: Job):
         JOBS.pop(job.id, None)
 
 
-def run_in_background(job: Job, fn, *args):
+def run_in_background(job: Job, fn, *args, step: str | None = None):
+    """后台跑一个阶段。step 只用于**失败时**补一条历史(界面能看到哪一步挂了)。"""
     def runner():
         try:
             fn(job, *args)
@@ -260,6 +445,8 @@ def run_in_background(job: Job, fn, *args):
             # 任务已删除(注册表移除)则不再写状态——避免 _save 重建目录复活
             if JOBS.get(job.id) is job:
                 job.set(status="failed", error=str(e), progress="")
+                if step:
+                    job.record_history(step, status="failed", detail=str(e)[:160])
     t = threading.Thread(target=runner, daemon=True)
     t.start()
     return t
@@ -277,6 +464,11 @@ def load_from_disk():
                       int(data.get("duration_sec", 120)), data.get("filename", ""),
                       data.get("video_kind", "promo"))
             job.state = data
+            # 老 state.json 没有这些键:补默认值,后面的排序/展示不用到处判空
+            for key, val in (("updated_at", data.get("created_at")),
+                             ("title", ""), ("title_source", ""),
+                             ("history", []), ("artifacts", {})):
+                job.state.setdefault(key, val)
             # 重启时无法恢复后台线程 → 置为 failed,允许重新触发
             # (uploaded 同样失效:其分析线程已随进程消失,永远到不了 analyzing)
             # avatar_building 是"仅重跑数字人片段"的进行中状态,同样无法恢复
@@ -292,6 +484,11 @@ def load_from_disk():
                 job._migrate_legacy_render()
             except Exception:  # noqa: BLE001 - 迁移失败不影响任务加载
                 log.exception("任务 %s 旧产物迁移异常", job.id)
+            # 老任务补项目标题与阶段历史(同样只在启动时写一次)
+            try:
+                job._backfill_meta()
+            except Exception:  # noqa: BLE001 - 补录失败不影响任务加载
+                log.exception("任务 %s 标题/历史补录异常", job.id)
         except Exception:
             continue
 

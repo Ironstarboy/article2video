@@ -520,6 +520,19 @@ _ps = analyze.build_script_prompt(
 ok("两阶段·脚本 prompt 含蓝图与示例", "论证蓝图" in _ps and "statement 示例" in _ps
    and "data_ledger" in _ps)
 
+# ── 项目标题清洗(自动总结与脚本标题兜底共用) ──
+ok("标题清洗:两行式脚本标题并成一行",
+   analyze.clean_title("以新质生产力\n塑造发展新优势") == "以新质生产力 塑造发展新优势")
+ok("标题清洗:剪掉书名号与标点", analyze.clean_title("《以创新驱动发展》。") == "以创新驱动发展")
+ok("标题清洗:限长", len(analyze.clean_title("长" * 80)) == 24)
+ok("标题清洗:空值返回空串", analyze.clean_title(None) == "" and analyze.clean_title("  ") == "")
+_prompt = analyze._title_prompt({"title": "T", "analysis": {"core_argument": "C"},
+                                 "frames": [{"voiceover": "V"}]}, "文章开头", "promo")
+ok("标题总结 prompt 带脚本信息与文章开头",
+   "T" in _prompt and "C" in _prompt and "V" in _prompt and "文章开头" in _prompt)
+ok("标题总结 system 要求 JSON 与字数",
+   "JSON" in analyze.TITLE_SYSTEM and "12-22" in analyze.TITLE_SYSTEM)
+
 
 # ───────────────────────── 备课方案:覆盖校验 / 分段过滤 / 同段校验 ─────────────────────────
 
@@ -668,6 +681,82 @@ try:
     ok("jobs 补录幂等",
        set((_jobs_mod.get_job(_bf.id).to_dict(brief=True).get("artifacts") or {}))
        == {"ppt", "final"})
+
+    # ── 项目标题 / 阶段历史(v2.6:入口页项目列表,点某一步直达结果) ──
+    ok("jobs 标题规范化:压空白与换行",
+       _jobs_mod.normalize_title("  甲  乙 \n 丙 ") == "甲 乙 丙")
+    ok("jobs 标题规范化:限长 60",
+       len(_jobs_mod.normalize_title("长" * 200)) == _jobs_mod.TITLE_MAX)
+    ok("jobs 标题规范化:空标题报错",
+       _raises(_via(_jobs_mod.normalize_title, "   "), ValueError))
+    ok("jobs 标题规范化:缺字段报错",
+       _raises(_via(_jobs_mod.normalize_title, None), ValueError))
+
+    _t = _jobs_mod.create_job("solemn-red", 120, "新质生产力研究.md")
+    ok("jobs 标题回退文件名", _t.display_title() == "新质生产力研究")
+    _t.set(title="以新质生产力\n塑造发展新优势", title_source="auto")
+    ok("jobs 标题单行化", _t.display_title() == "以新质生产力 塑造发展新优势")
+    _t.set(title="", title_source="")
+    _t.paths()["script"].write_text(
+        json.dumps({"title": "《脚本里的标题》", "frames": [1, 2, 3]}), encoding="utf-8")
+    ok("jobs 标题回退脚本标题", _t.display_title() == "《脚本里的标题》")
+
+    for _i in range(_jobs_mod.HISTORY_MAX + 5):
+        _t.record_history("render", detail=f"第 {_i} 次")
+    _hist = _t.history()
+    ok("jobs 历史有条数上限", len(_hist) == _jobs_mod.HISTORY_MAX, f"len={len(_hist)}")
+    ok("jobs 历史保留最新一条",
+       _hist[-1]["detail"] == f"第 {_jobs_mod.HISTORY_MAX + 4} 次")
+    ok("jobs 历史带中文标签与时间",
+       _hist[-1]["label"] == "渲染成片" and _hist[-1]["at"] > 0)
+    _t.record_history("build", status="failed", detail="配音失败")
+    ok("jobs 历史可记失败", _t.history()[-1]["status"] == "failed")
+    _sum = _t.summary()
+    ok("jobs summary 带标题与历史",
+       bool(_sum["title"]) and len(_sum["history"]) == _jobs_mod.HISTORY_MAX
+       and _sum["history"][-1]["step"] == "build")
+    ok("jobs summary 不含 script", "script" not in _sum)
+    ok("jobs summary 含定位/产物字段",
+       {"job_id", "status", "updated_at", "artifacts"} <= set(_sum))
+    ok("jobs set 刷新 updated_at", _t.state["updated_at"] >= _t.state["created_at"])
+
+    # 老任务补标题/历史:脚本、工程、产物都在磁盘上,state 里却没有记录
+    _old = _jobs_mod.create_job("solemn-red", 120, "旧文章.md")
+    _old.paths()["script"].write_text(
+        json.dumps({"title": "旧脚本标题", "frames": [1]}), encoding="utf-8")
+    _old_proj = _old.paths()["project"]
+    _old_proj.mkdir(parents=True, exist_ok=True)
+    (_old_proj / "index.html").write_text("<html></html>", encoding="utf-8")
+    _old_renders = _old.paths()["renders"]
+    _old_renders.mkdir(parents=True, exist_ok=True)
+    (_old_renders / "final.mp4").write_bytes(b"f" * 20480)
+    _old.state["title"] = ""
+    _old.state["title_source"] = ""
+    _old.state["history"] = []
+    _old.state["total_sec"] = 78.0
+    _old._record_artifact("final", _old_renders / "final.mp4")
+    _old._backfill_meta()
+    ok("jobs 旧任务补标题", _old.state.get("title") == "旧脚本标题")
+    ok("jobs 旧任务补历史(分析/构建/渲染)",
+       [h["step"] for h in _old.history()] == ["analyze", "build", "render"],
+       f"steps={[h['step'] for h in _old.history()]}")
+    ok("jobs 补的历史带 derived 标记", _old.history()[0].get("derived") is True)
+    ok("jobs 补录把 updated_at 提到最近一次活动",
+       _old.state["updated_at"] >= max(h["at"] for h in _old.history()),
+       f"updated_at={_old.state['updated_at']}")
+
+    # 后台阶段失败要落一条历史(界面上才说得出"哪一步挂了")
+    _fl = _jobs_mod.create_job("solemn-red", 120, "坏任务.md")
+
+    def _boom(job):
+        raise RuntimeError("模拟阶段失败")
+
+    _jobs_mod.run_in_background(_fl, _boom, step="render").join(5)
+    ok("jobs 后台失败写 failed 状态",
+       _fl.status == "failed" and "模拟阶段失败" in (_fl.state.get("error") or ""))
+    ok("jobs 后台失败写历史",
+       bool(_fl.history()) and _fl.history()[-1]["step"] == "render"
+       and _fl.history()[-1]["status"] == "failed")
 finally:
     _os.environ["TTV_ROOT"] = _orig_root or str(Path(__file__).resolve().parents[1])
     _il.reload(_config)
@@ -698,6 +787,85 @@ _fc = avatar.card_overlay_filter("1:v", "2:v", "OUT", 320, 20)
 ok("avatar 卡片滤镜标签成对且无占位符残留",
    "[OUT]" in _fc and "MASKV" not in _fc and "[1:v]" in _fc and "[2:v]" in _fc)
 ok("avatar 卡片滤镜含圆角遮罩与投影", "alphamerge" in _fc and "boxblur" in _fc)
+
+# ── 数字人抠像(只保留人像、背景透明) ──
+# 核心是三条口径:遮罩文件名要能被版本/模型失效;抠像坐标必须贴画面下缘;
+# 滤镜只做 alphamerge(不再有卡片留白/投影)。
+_co = avatar.cutout_overlay_filter("1:v", "9:v", "OUT", 320)
+ok("avatar 抠像滤镜含 alphamerge 且无卡片痕迹",
+   "[OUT]" in _co and "alphamerge" in _co and "[1:v]" in _co and "[9:v]" in _co
+   and "boxblur" not in _co and "pad=" not in _co)
+# alphamerge 要求两路尺寸一致:遮罩跟着片段缓存(片段多大就多大),必须一起缩放到目标尺寸
+ok("avatar 抠像滤镜把遮罩也缩放到目标尺寸",
+   "[9:v]scale=320:320" in _co and "[1:v]format=rgba,scale=320:320" in _co)
+ok("avatar 抠像滤镜与卡片滤镜不是同一条",
+   _co != avatar.card_overlay_filter("1:v", "9:v", "OUT", 320, 20))
+ok("avatar 抠像遮罩名带模型标识与版本",
+   avatar.matte_name("clip_x_300_5.000_2.mp4")
+   == f"clip_x_300_5.000_2.{config.MATTE_MODEL_TAG}{config.MATTE_VERSION}.mp4")
+ok("avatar 抠像遮罩与片段同目录同名派生",
+   avatar.matte_path(Path("/tmp/a/clip_x_300_5.000_2.mp4")).parent == Path("/tmp/a"))
+ok("avatar 抠像遮罩路径随版本变化",
+   avatar.matte_name("clip_x.mp4") != f"clip_x.{config.MATTE_MODEL_TAG}0.mp4")
+ok("avatar 抠像开关只认布尔(字符串不算)",
+   avatar.normalize_cutout(True) is True and avatar.normalize_cutout(None, True) is True
+   and _raises(_via(avatar.normalize_cutout, "true"), ValueError))
+ok("avatar 抠像开关宽松版对坏值回退",
+   avatar.safe_cutout("是") is False and avatar.safe_cutout("是", True) is True)
+# 贴下缘:y 恒等于 video_h - size(切口落在画面外沿),左右只由角落的第一个字母决定
+_cut_tr = avatar.cutout_xy("tr", 300, margin_x=40, video_w=1920, video_h=1080)
+_cut_bl = avatar.cutout_xy("bl", 300, margin_x=40, video_w=1920, video_h=1080)
+_cut_br = avatar.cutout_xy("br", 300, margin_x=40, video_w=1920, video_h=1080)
+ok("avatar 抠像位置贴画面下缘", _cut_tr[1] == 1080 - 300 == _cut_bl[1] == _cut_br[1])
+ok("avatar 抠像位置左右按角落决定",
+   _cut_tr[0] == 1920 - 300 - 40 and _cut_bl[0] == 40 and _cut_br[0] == 1920 - 300 - 40)
+ok("avatar 抠像上下角等价(tl≡bl、tr≡br)",
+   avatar.cutout_xy("tl", 300) == _cut_bl and avatar.cutout_xy("tr", 300) == _cut_br)
+ok("avatar 抠像位置受下缘留白影响",
+   avatar.cutout_xy("br", 300, bottom_margin=24)[1] == 1080 - 300 - 24)
+
+# ── 抠像 worker(server/matte.py):纯函数部分不依赖 numpy/onnxruntime ──
+import matte  # noqa: E402
+ok("抠像优先用 GPU、CPU 兜底",
+   matte.resolve_providers(["CPUExecutionProvider", "CUDAExecutionProvider"])
+   == ["CUDAExecutionProvider", "CPUExecutionProvider"])
+ok("抠像只有 CPU 时也能跑",
+   matte.resolve_providers(["CPUExecutionProvider"]) == ["CPUExecutionProvider"])
+ok("抠像拿不到 provider 列表时给 CPU 兜底",
+   matte.resolve_providers([]) == ["CPUExecutionProvider"]
+   and matte.resolve_providers(None) == ["CPUExecutionProvider"])
+ok("抠像模型输入按最短边等比缩放",
+   matte.model_size(300, 300, 512) == (512, 512)
+   and matte.model_size(640, 480, 512) == (683, 512))
+ok("抠像可用性判据返回(可否, 原因)",
+   isinstance(avatar.matte_available(), tuple)
+   and len(avatar.matte_available()) == 2)
+
+# ── 配音可懂度抽检(server/voice_check.py):纯函数,不加载 whisper ──
+import voice_check  # noqa: E402
+
+ok("配音抽检 LCS:完全一致为 1",
+   voice_check.lcs_ratio("问题是时代的声音", "问题是时代的声音") == 1.0)
+ok("配音抽检 LCS:完全不相干接近 0",
+   voice_check.lcs_ratio("问题是时代的声音", "完全不相干的内容") < 0.2)
+ok("配音抽检 LCS:半句相符落在中间",
+   0.3 < voice_check.lcs_ratio("问题是时代的声音,回答并指导解决问题是理论的根本任务",
+                               "问题是时代的声音") < 0.6)
+ok("配音抽检 LCS:空听写记 0(不是 1)",
+   voice_check.lcs_ratio("有台词", "") == 0.0)
+ok("配音抽检阈值留足 whisper 自身误差的余量",
+   0.0 < voice_check.WARN_LCS <= 0.5)
+_vc_dir = Path(_tmp_text("vc_dir", "x")).parent / "vc_audio"
+_vc_dir.mkdir(exist_ok=True)
+(_vc_dir / "vo_02.mp3").write_bytes(b"x")
+(_vc_dir / "vo_03.mp3").write_bytes(b"x")
+_vc_script = {"frames": [{"index": 2, "voiceover": "短句"},
+                         {"index": 3, "voiceover": "这是一句明显更长的台词,抽检优先挑它"},
+                         {"index": 9, "voiceover": "没有配音文件"}]}
+ok("配音抽检优先挑最长的、且有配音文件的帧",
+   [p[1] for p in voice_check.pick_frames(_vc_script, _vc_dir, 2)] == [3, 2])
+ok("配音抽检没有可检帧时返回空",
+   voice_check.pick_frames({"frames": [{"index": 1, "voiceover": ""}]}, _vc_dir, 2) == [])
 
 # ── 数字人大小(播报视频画面边长):接口层靠它把非法值拦成 400 ──
 ok("avatar 尺寸缺省回退默认", avatar.normalize_size(None) == config.AVATAR_SIZE
@@ -933,21 +1101,57 @@ try:
     ok("重新开启出镜后旧时间轴又能用",
        len(_main._overlay_timeline(_gj, _gproj)) == 1)
 
-    # 几何缺省与坏值:老任务没有 avatar_geom → 默认右上/AVATAR_SIZE;坏值不抛错
+    # 几何缺省与坏值:老任务没有 avatar_geom → 默认右上/AVATAR_SIZE/不抠像;坏值不抛错
     _gj.state.pop("avatar_geom", None)
-    ok("老任务几何回默认(右上 / 默认边长)",
-       _main._avatar_geom(_gj) == {"corner": config.AVATAR_CORNER, "size": config.AVATAR_SIZE},
+    ok("老任务几何回默认(右上 / 默认边长 / 不抠像)",
+       _main._avatar_geom(_gj) == {"corner": config.AVATAR_CORNER,
+                                   "size": config.AVATAR_SIZE, "cutout": False},
        str(_main._avatar_geom(_gj)))
-    _gj.state["avatar_geom"] = {"corner": "中间", "size": 321}
+    _gj.state["avatar_geom"] = {"corner": "中间", "size": 321, "cutout": "是"}
     ok("几何坏值不抛错、回默认",
-       _main._avatar_geom(_gj) == {"corner": config.AVATAR_CORNER, "size": config.AVATAR_SIZE})
+       _main._avatar_geom(_gj) == {"corner": config.AVATAR_CORNER,
+                                   "size": config.AVATAR_SIZE, "cutout": False})
     ok("几何解析缺省沿用现值",
-       _main._normalize_geom(None, None, {"corner": "bl", "size": 480})
-       == {"corner": "bl", "size": 480})
+       _main._normalize_geom(None, None, None,
+                             {"corner": "bl", "size": 480, "cutout": True})
+       == {"corner": "bl", "size": 480, "cutout": True})
     ok("几何解析非法位置抛错",
        _raises(lambda: _main._normalize_geom("中间", None), ValueError))
     ok("几何解析非法边长抛错",
        _raises(lambda: _main._normalize_geom(None, 321), ValueError))
+    ok("几何解析非法抠像值抛错(字符串不算布尔)",
+       _raises(lambda: _main._normalize_geom(None, None, "true"), ValueError))
+    # 抠像降级提示:只有"一条遮罩都没拿到"才写 avatar_error(个别缺失不打扰用户)
+    ok("抠像未开启时不报降级",
+       _main._cutout_missing({"cutout": False}, [{"matte": None}]) == "")
+    ok("抠像拿到遮罩时不报降级",
+       _main._cutout_missing({"cutout": True}, [{"matte": "a.mp4"}, {"matte": None}]) == "")
+    ok("抠像一条都没抠成时给出原因",
+       _main._cutout_missing({"cutout": True}, [{"matte": None}]).startswith("抠像不可用"))
+    ok("没有时间轴时不报降级",
+       _main._cutout_missing({"cutout": True}, []) == "")
+
+    # 配音复用指纹:必须含「合成口径」—— 运行时修好了,烧坏的旧配音不能还接着用
+    # (2026-09-12 乱码事故:transformers 4.52+ 打乱语音 LLM 输出,时长正常、读音全错)
+    _vc_frames = {"frames": [{"index": 1, "voiceover": "测试台词"}]}
+    _sig_a = _main._vo_signature(_vc_frames, "male", "cosyvoice3")
+    _orig_vo_v = config.VO_SYNTH_VERSION
+    try:
+        config.VO_SYNTH_VERSION = str(_orig_vo_v) + "-changed"
+        _sig_b = _main._vo_signature(_vc_frames, "male", "cosyvoice3")
+    finally:
+        config.VO_SYNTH_VERSION = _orig_vo_v
+    ok("配音指纹随合成口径变化(改口径即重烧旧配音)", _sig_a != _sig_b)
+    ok("配音指纹随台词变化",
+       _sig_a != _main._vo_signature(
+           {"frames": [{"index": 1, "voiceover": "改过的台词"}]}, "male", "cosyvoice3"))
+    ok("配音指纹随音色变化",
+       _sig_a != _main._vo_signature(_vc_frames, "female", "cosyvoice3"))
+    ok("配音指纹随引擎变化",
+       _sig_a != _main._vo_signature(_vc_frames, "male", "doubao"))
+    ok("配音口径含钉版依赖与合成版本",
+       "transformers==" in config.vo_runtime_fingerprint()
+       and f"vo{config.VO_SYNTH_VERSION}" in config.vo_runtime_fingerprint())
 finally:
     _os.environ["TTV_ROOT"] = _orig_root2 or str(Path(__file__).resolve().parents[1])
     _il.reload(_config)

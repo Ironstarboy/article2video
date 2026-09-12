@@ -56,6 +56,42 @@ for f in assets/bgm/*.mp3; do
 done
 ls -la assets/bgm/
 
+echo "== 数字人抠像(可选:只保留人像、背景透明) =="
+# 权重约 25MB(MODNet,Apache-2.0);hf-mirror 优先 —— huggingface 直连在国内常不通。
+# 失败只警告不中断:抠像是可选增强,没有它成片仍然用圆角卡片出。
+MATTE_DIR="models/matte"
+MATTE_ONNX="$MATTE_DIR/modnet.onnx"
+mkdir -p "$MATTE_DIR"
+if [ ! -s "$MATTE_ONNX" ]; then
+  for u in "${TTV_MATTE_URL:-https://hf-mirror.com/Xenova/modnet/resolve/main/onnx/model.onnx}" \
+           "https://huggingface.co/Xenova/modnet/resolve/main/onnx/model.onnx"; do
+    if curl -fL --retry 2 -o "$MATTE_ONNX" "$u"; then break; fi
+  done
+fi
+sz=$(stat -c%s "$MATTE_ONNX" 2>/dev/null || echo 0)
+if [ "$sz" -ge 20000000 ]; then
+  echo "抠像权重就绪:$MATTE_ONNX($sz 字节)"
+else
+  rm -f "$MATTE_ONNX"
+  echo "⚠️  抠像权重未就绪(下载失败):勾选「只保留人像」时会自动回退圆角卡片"
+fi
+
+# onnxruntime 装进抠像解释器(TTV_MATTE_PYTHON,默认 tts-venv;后端自己不引入 onnx)
+MATTE_PY="${TTV_MATTE_PYTHON:-$ROOT/tts-venv/bin/python}"
+if [ -x "$MATTE_PY" ]; then
+  if "$MATTE_PY" -c "import onnxruntime, numpy" 2>/dev/null; then
+    echo "抠像运行时已就绪:$("$MATTE_PY" -c 'import onnxruntime;print("onnxruntime", onnxruntime.__version__)')"
+  elif [ -x "$ROOT/.tools/bin/uv" ]; then
+    "$ROOT/.tools/bin/uv" pip install -q --python "$MATTE_PY" onnxruntime \
+      || echo "⚠️  onnxruntime 安装失败(可手动装到 $MATTE_PY)"
+  else
+    "$MATTE_PY" -m pip install -q onnxruntime \
+      || echo "⚠️  onnxruntime 安装失败(可手动装到 $MATTE_PY)"
+  fi
+else
+  echo "⚠️  抠像解释器不存在:$MATTE_PY(可用 TTV_MATTE_PYTHON 指向装有 onnxruntime 的解释器)"
+fi
+
 echo "== hyperframes CLI + Chrome(版本与 BUILD.md 一致:0.8.15) =="
 npm install -g hyperframes@0.8.15
 hyperframes browser ensure

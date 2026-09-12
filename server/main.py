@@ -23,12 +23,15 @@ from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, str(Path(__file__).parent))
 from config import (  # noqa: E402
-    AVATAR_CORNER, AVATAR_NATIVE_SIZE, AVATAR_SIZE, AVATAR_SIZE_MAX,
+    AVATAR_CORNER, AVATAR_CUTOUT, AVATAR_NATIVE_SIZE, AVATAR_SIZE, AVATAR_SIZE_MAX,
     AVATAR_SIZE_MIN, BACKEND_PORT, FPS, HYPERFRAMES_RUNTIME, NODE_BIN_DIR,
-    OVERLAY_RT_FACTOR, RENDER_RT_FACTOR, STUDIO_LOG_DIR, WEB_DIR,
-    avatar_corner_options, avatar_size_options,
+    OVERLAY_RT_FACTOR, RENDER_RT_FACTOR, STUDIO_LOG_DIR, TTS_VENV_DIR, VO_CHECK_FRAMES,
+    VO_CHECK_MODEL_DIR, VO_CHECK_TIMEOUT, WEB_DIR,
+    avatar_corner_options, avatar_size_options, vo_runtime_fingerprint,
 )
-from jobs import JOBS, LOCK, create_job, get_job, remove_job, run_in_background  # noqa: E402
+from jobs import (  # noqa: E402
+    JOBS, LOCK, create_job, get_job, normalize_title, remove_job, run_in_background,
+)
 import extract  # noqa: E402
 import analyze  # noqa: E402
 import tts  # noqa: E402
@@ -80,6 +83,32 @@ def _job_alive(job) -> bool:
     return JOBS.get(job.id) is job
 
 
+def _auto_title(job, script: dict, article: str):
+    """分析完成后自动总结项目标题(用户手动改过就绝不覆盖)。
+
+    标题只影响项目列表的显示名,所以整条链路**失败即静默回退**:
+    先问大模型要一个短标题,失败就用脚本自带标题,再失败就留空
+    (留空时 Job.display_title 会退回文件名/job_id,列表不会出现空白项)。
+    """
+    if job.state.get("title_source") == "user":
+        return
+    title = None
+    try:
+        title = analyze.summarize_title(script, article,
+                                        job.state.get("video_kind", "promo"))
+    except Exception:  # noqa: BLE001 - 命名失败不该影响"分析完成"这个事实
+        log.exception("job %s 自动总结项目标题失败", job.id)
+    title = title or analyze.clean_title(script.get("title"))
+    if not title or not _job_alive(job) or job.state.get("title_source") == "user":
+        return
+    try:
+        title = normalize_title(title)
+    except ValueError:
+        return
+    job.set(title=title, title_source="auto", title_at=time.time())
+    log.info("job %s 项目标题自动总结为:%s", job.id, title)
+
+
 def stage_analyze(job):
     if not _job_alive(job):
         return
@@ -101,6 +130,10 @@ def stage_analyze(job):
                                          progress_cb=lambda msg: job.set(progress=msg))
     p["script"].write_text(json.dumps(script, ensure_ascii=False, indent=1), encoding="utf-8")
     job.set(status="analyzed", progress="")
+    job.record_history("analyze",
+                       detail=f"{len(script.get('frames') or [])} 帧脚本 · 目标 "
+                              f"{int(job.state.get('duration_sec') or 0)} 秒")
+    _auto_title(job, script, text)
 
 
 def _vo_signature(script: dict, voice: str, provider: str) -> str:
@@ -138,19 +171,54 @@ def _frames_signature(script: dict) -> list:
             for f in script.get("frames") or []]
 
 
-def _built_source_matches(job, script: dict) -> bool:
-    """上次构建实际使用的脚本(project/script.json)与当前脚本逐帧文本是否一致。
+def _vo_signature(script: dict, voice: str, provider: str) -> str:
+    """配音复用指纹:逐帧台词 + 音色 + 引擎 + **合成口径**(运行时钉版/合成版本)。
 
-    用于「配音文件已存在、但 state 里没有 vo_sig」(v2.2 之前构建的任务)的复用判断:
-    文本一致 → 这些配音就是为这段文本合成的,不必再烧一遍 GPU,也不会把成片用的那版
-    配音换成重新合成的另一版。脚本改过则文本不一致,照常重新合成。
+    最后一项是 2026-09-12 乱码事故的教训:transformers 4.52+ 会把语音 LLM 的输出打乱
+    (听着是乱码,时长与峰值却全正常,验收拦不住)。运行时修好之后,已经烧坏的那批配音
+    因为指纹没变而被一直复用 —— 用户听到的仍然是乱码。口径进指纹,这类"修了运行时、
+    旧产物还在用"的坑才会自动作废重烧。
     """
+    raw = json.dumps([_frames_signature(script), voice, provider,
+                      vo_runtime_fingerprint()], ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _voice_check(job, script_path: Path, vo_dir: Path) -> None:
+    """刚烧出来的配音抽检一次可懂度(whisper 听写 vs 台词,见 server/voice_check.py)。
+
+    只在**真正重新合成**之后跑:时长与峰值正常、读音却是乱码的坏样本,只有"听起来是
+    什么字"能识破(2026-09-12 事故)。whisper 不可用/超时/异常一律只记日志,绝不阻塞;
+    结果写进 state.voice_check,前端据此提示"这批配音可能有问题,建议重新合成"。
+    """
+    if VO_CHECK_FRAMES <= 0:
+        return
+    py = Path(TTS_VENV_DIR) / "bin" / "python"
+    worker = Path(__file__).parent / "voice_check.py"
+    if not py.exists() or not worker.exists():
+        return
+    cmd = [str(py), str(worker), "--script", str(script_path), "--audio", str(vo_dir),
+           "--frames", str(VO_CHECK_FRAMES), "--model-dir", str(VO_CHECK_MODEL_DIR)]
     try:
-        prev = json.loads(
-            (job.paths()["project"] / "script.json").read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    return _frames_signature(prev) == _frames_signature(script)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=VO_CHECK_TIMEOUT)
+        out = (r.stdout or "").strip().splitlines()
+        res = json.loads(out[-1]) if out else {}
+    except Exception as e:  # noqa: BLE001 - 抽检是提示,永远不许影响构建
+        log.info("job %s 配音抽检跳过:%s", job.id, e)
+        return
+    if not res.get("checked"):
+        if res.get("error"):
+            log.info("job %s 配音抽检跳过:%s", job.id, res["error"])
+        return
+    res["at"] = time.time()
+    job.set(voice_check=res)
+    if res.get("warn"):
+        log.warning("job %s 配音抽检不合格:LCS %s(逐帧 %s)——建议重新合成配音",
+                    job.id, res.get("lcs"),
+                    [s.get("lcs") for s in res.get("samples") or []])
+    else:
+        log.info("job %s 配音抽检通过:LCS %s(%s 帧)",
+                 job.id, res.get("lcs"), res.get("checked"))
 
 
 def _synthesize_and_fit(job, *, reuse_vo: bool = False,
@@ -193,7 +261,9 @@ def _synthesize_and_fit(job, *, reuse_vo: bool = False,
     vo_dir = p["vo"]
     sig = _vo_signature(script, voice, provider)
     vo = None
-    if reuse_vo and (job.state.get("vo_sig") == sig or _built_source_matches(job, script)):
+    # 复用必须**指纹完全相符**:台词/音色/引擎任一变化,或**合成口径**变化(运行时钉版、
+    # 合成版本),都要重新烧。宁可多花一次 GPU,也不把上一版运行时烧坏的配音接进新成片。
+    if reuse_vo and job.state.get("vo_sig") == sig:
         vo = _reuse_vo(script, vo_dir)
     if vo is None:
         # 合成前清理旧配音(旧脚本帧号不同,残留文件会与新 index.html 错位)。
@@ -205,10 +275,10 @@ def _synthesize_and_fit(job, *, reuse_vo: bool = False,
         job.set(progress=f"配音合成中({eng_names.get(provider, provider)},自然语速,多 GPU 并行)")
         vo = tts.synthesize_frames(script["frames"], voice, vo_dir, speed=speed,
                                    provider=provider, progress_cb=on_tts_progress)
-        job.set(vo_sig=sig)
+        job.set(vo_sig=sig, vo_runtime=vo_runtime_fingerprint())
     elif on_tts_progress:
         # 复用:立刻把这一步报成"已完成",界面不会停在第一步
-        job.set(vo_sig=sig)
+        job.set(vo_sig=sig, vo_runtime=vo_runtime_fingerprint())
         on_tts_progress(len(vo), len(vo))
     engines = {}
     for v in vo.values():
@@ -224,6 +294,8 @@ def _synthesize_and_fit(job, *, reuse_vo: bool = False,
         job.set(progress=f"豆包引擎失败({doubao_err}),已回落 CosyVoice3;{next_step}中")
     else:
         job.set(progress=f"{next_step}(配音引擎:{eng_txt})")
+        # 刚烧出来的配音抽检一次可懂度:时长/静音验收拦不住"念的是乱码"这种坏样本
+        _voice_check(job, p["script"], vo_dir)
     # 目标时长为用户滑杆所选:真实配音时长与目标偏离时向目标靠拢。
     # 停顿节奏(用户反馈):旁白后留白宜短(讲解档 1.0s,读批注够用),
     # 单帧可扩展上限收紧(4s)——时长靠内容补足(段级旁白下限+构建期拓展),
@@ -254,10 +326,14 @@ def stage_build(job, force_voice: bool = False):
             job.set(progress="生成数字人片段(逐帧)")
             geom = _avatar_geom(job)
             timeline = avatar.build_frame_clips(
-                script, vo, info["starts"], size=geom["size"],
+                script, vo, info["starts"], size=geom["size"], cutout=geom["cutout"],
                 progress_cb=lambda msg: job.set(progress=msg))
             avatar.write_timeline(timeline, timeline_path)
-            job.set(avatar_clips=len(timeline), avatar_error=None)
+            # 抠像是要了却没成?如实写进 avatar_error:界面据此提示"已回退圆角卡片",
+            # 否则用户只会看到"没生效"却不知道为什么(与数字人服务不可用同一口径)
+            miss = _cutout_missing(geom, timeline)
+            job.set(avatar_clips=len(timeline),
+                    avatar_error=miss or None)
         except Exception as e:  # noqa: BLE001 - 数字人失败不影响正常出片
             log.warning("数字人片段生成失败: %s", e)
             timeline_path.unlink(missing_ok=True)
@@ -278,6 +354,11 @@ def stage_build(job, force_voice: bool = False):
     else:
         job.set(status="preview", progress=f"总时长 {info['total']:.0f} 秒",
                 total_sec=info["total"], voice_engines=eng_txt)
+    job.record_history(
+        "build",
+        detail=f"总时长 {info['total']:.0f} 秒 · 配音 {eng_txt}"
+               + ("(Studio 启动失败,稍后自动重试)" if studio_err else ""),
+        total_sec=round(float(info["total"]), 1))
     # 只有**真的重新合成了配音**时,之前的播报视频才可能不一致(复用则同一版声音,仍然有效)。
     # 不删产物(它仍可播放),只打 stale 标记提示可重新生成(片段有缓存,重跑很快)。
     bc = job.state.get("avatar_broadcast") or {}
@@ -291,25 +372,41 @@ AVATAR_BROADCAST_STEPS = ("合成配音", "生成数字人片段", "拼接播报
 
 
 def _avatar_geom(job) -> dict:
-    """任务级数字人几何:成片里那个人像的角落与边长(纯读,坏值自动回默认)。
+    """任务级数字人几何:成片里那个人像的角落、边长与是否抠像(纯读,坏值自动回默认)。
 
     state.avatar_geom 由创建时写入、之后可在预览页改(见 api_avatar_geom);
-    老任务没有这个键 → 用 config 默认(右上 / AVATAR_SIZE),不需要迁移。
+    老任务没有这些键 → 用 config 默认(右上 / AVATAR_SIZE / 不抠像),不需要迁移。
     """
     g = job.state.get("avatar_geom") or {}
     return {"corner": avatar.safe_corner(g.get("corner")),
-            "size": avatar.safe_size(g.get("size"))}
+            "size": avatar.safe_size(g.get("size")),
+            "cutout": avatar.safe_cutout(g.get("cutout"))}
 
 
-def _normalize_geom(corner=None, size=None, base: dict | None = None) -> dict:
-    """把接口传来的角落/边长收敛成 {corner, size};缺省沿用 base,非法抛 ValueError。
+def _normalize_geom(corner=None, size=None, cutout=None, base: dict | None = None) -> dict:
+    """把接口传来的角落/边长/抠像收敛成 {corner, size, cutout};缺省沿用 base,非法抛 ValueError。
 
     做成模块级函数而不是直接写在 api_create 里:那个函数的入参就叫 `avatar`
     (表单里的出镜开关),会把模块 `avatar` 遮住。
     """
-    base = base or {"corner": AVATAR_CORNER, "size": AVATAR_SIZE}
+    base = base or {"corner": AVATAR_CORNER, "size": AVATAR_SIZE, "cutout": AVATAR_CUTOUT}
     return {"corner": avatar.normalize_corner(corner, base["corner"]),
-            "size": avatar.normalize_size(size, base["size"])}
+            "size": avatar.normalize_size(size, base["size"]),
+            "cutout": avatar.normalize_cutout(cutout, base["cutout"])}
+
+
+def _cutout_missing(geom: dict, timeline: list) -> str:
+    """抠像开着却一条遮罩都没拿到时,给界面一句实话(没这情况就返回空串)。
+
+    只有**全部**片段都没抠成才算降级(整条成片回退圆角卡片);个别缺失只是那几段
+    用卡片,不影响整体观感,不占 avatar_error(它会被前端整条展示出来)。
+    """
+    if not geom.get("cutout") or not timeline:
+        return ""
+    if any(t.get("matte") for t in timeline):
+        return ""
+    ok, why = avatar.matte_available()
+    return ("抠像不可用,已回退圆角卡片:" + (why or "遮罩生成失败"))[:160]
 
 
 def _overlay_timeline(job, project_dir) -> list:
@@ -422,6 +519,9 @@ def stage_avatar_broadcast(job, prev_status: str = "analyzed", size: int | None 
                finished_at=time.time(), duration=round(real, 1),
                bytes=out.stat().st_size)
         job.set(status=prev_status or "analyzed", progress="", avatar_broadcast_size=size)
+        job.record_history("broadcast",
+                           detail=f"{len(timeline)} 段 · {size}×{size} · {real:.0f} 秒",
+                           artifact="avatar", size=size, duration=round(real, 1))
         log.info("job %s 数字人播报视频完成(%d×%d):%s", job.id, size, size, out)
     except Exception as e:  # noqa: BLE001 - 支线失败不影响任务主线
         log.exception("job %s 数字人播报视频失败", job.id)
@@ -429,6 +529,7 @@ def stage_avatar_broadcast(job, prev_status: str = "analyzed", size: int | None 
                finished_at=time.time())
         job.set(status=prev_status or "analyzed",
                 progress=f"数字人播报视频失败({str(e)[:60]})")
+        job.record_history("broadcast", status="failed", detail=str(e)[:160])
 
 
 def _hf_env():
@@ -608,8 +709,16 @@ def stage_render(job, fmt: str = "mp4"):
         # 数字人叠加:用 assemble 的同一时钟把各帧片段叠到任务选定的角落(默认右上)。
         # 有片段 → 叠到 final;无片段(含"不出镜")→ 纯 PPT 版本身就是最终版。
         timeline = _overlay_timeline(job, p["project"])
+        overlaid = False           # 真的叠上去了才算(叠加失败要如实写进历史)
         if timeline:
             geom = _avatar_geom(job)
+            # 抠像:遮罩可能还没生成(上次构建时没开抠像,或中途换了设置),渲染前补齐。
+            # 遮罩有缓存,补齐通常只发生在"刚打开抠像"的第一次。
+            if geom["cutout"]:
+                job.set(progress="准备抠像遮罩")
+                avatar.ensure_mattes(
+                    timeline,
+                    progress_cb=lambda msg: job.set(progress=msg))
             job.set(progress="叠加数字人片段", render_progress={
                 "step": 2, "step_name": "叠加数字人片段", "detail": "准备中",
                 "done": 0, "total": round(total_sec or 0), "percent": 85,
@@ -635,8 +744,11 @@ def stage_render(job, fmt: str = "mp4"):
             try:
                 avatar.composite_onto_video(ppt, timeline, final,
                                             size=geom["size"], corner=geom["corner"],
+                                            cutout=geom["cutout"],
                                             fps=FPS, progress_cb=on_overlay)
-                job.set(avatar_clips=len(timeline), avatar_error=None)
+                job.set(avatar_clips=len(timeline),
+                        avatar_error=_cutout_missing(geom, timeline) or None)
+                overlaid = True
             except Exception as e:  # noqa: BLE001 - 叠加失败保留纯 PPT 版成片
                 log.warning("数字人叠加失败: %s", e)
                 final.unlink(missing_ok=True)
@@ -656,6 +768,20 @@ def stage_render(job, fmt: str = "mp4"):
             render_progress={"step": 1, "step_name": "渲染 PPT 视频", "detail": "完成",
                              "done": 1, "total": 1, "percent": 100,
                              "elapsed_sec": 0, "eta_sec": 0})
+    # 历史记录:这一步出了什么、多大、带不带数字人(项目列表据此直达成片)
+    try:
+        size_mb = final.stat().st_size / 1048576 if final.exists() else 0.0
+    except OSError:
+        size_mb = 0.0
+    job.record_history("render",
+                       detail=f"{fmt.upper()} · {float(job.state.get('total_sec') or 0):.0f} 秒"
+                              + (f" · {size_mb:.1f} MB" if size_mb else "")
+                              + (f" · 已叠加数字人({len(timeline)} 段)"
+                                 + ("·抠像" if _avatar_geom(job).get("cutout") else "")
+                                 if overlaid else " · 纯 PPT"),
+                       artifact="final", fmt=fmt,
+                       avatar_clips=len(timeline) if overlaid else 0,
+                       avatar_cutout=bool(_avatar_geom(job).get("cutout")) if overlaid else False)
 
 
 # ───────────────────────── Studio 服务器(hyperframes preview) ─────────────────────────
@@ -872,7 +998,39 @@ def api_styles():
         },
         "avatar_corners": avatar_corner_options(),
         "avatar_corner_default": AVATAR_CORNER,
+        # 「抠像(只保留人像、背景透明)」的默认值:前端两个页面都用它兜底
+        "avatar_cutout_default": AVATAR_CUTOUT,
     }
+
+
+@app.get("/api/jobs")
+def api_jobs_list(limit: int = 200):
+    """项目历史列表(进入页):按最近更新倒序,只带列表字段(不含 script)。
+
+    进行中的任务把 progress/render_progress 一并带出,列表上就能看到"现在到哪一步";
+    每一步的结果看 history(完成/失败各一条),前端据此直达该步产物。
+    """
+    items = [j.summary() for j in list(JOBS.values())]
+    items.sort(key=lambda d: d.get("updated_at") or d.get("created_at") or 0, reverse=True)
+    limit = max(1, min(int(limit or 200), 500))
+    return {"jobs": items[:limit], "total": len(items)}
+
+
+@app.post("/api/jobs/{job_id}/rename")
+async def api_rename_job(job_id: str, request: Request):
+    """重命名项目。标题只影响展示;改成 user 之后,自动总结不再覆盖它。"""
+    job = get_job(job_id) or _http404()
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - 无请求体/非 JSON 都按"没传标题"处理
+        body = {}
+    raw = body.get("title") if isinstance(body, dict) else None
+    try:
+        title = normalize_title(raw)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    job.set(title=title, title_source="user", title_at=time.time())
+    return {"ok": True, "job_id": job.id, "title": title, "title_source": "user"}
 
 
 @app.post("/api/jobs")
@@ -882,14 +1040,15 @@ async def api_create(file: UploadFile = File(None), style: str = Form(None),
                      bg: str = Form(None), motion: str = Form(None),
                      voice_engine: str = Form("cosyvoice3"), voice: str = Form(None),
                      video_kind: str = Form("promo"), avatar: bool = Form(False),
-                     avatar_corner: str = Form(None), avatar_size: int = Form(None)):
+                     avatar_corner: str = Form(None), avatar_size: int = Form(None),
+                     avatar_cutout: bool = Form(False)):
     if voice_engine not in ("cosyvoice3", "qwen3tts", "doubao"):
         raise HTTPException(400, f"未知配音引擎:{voice_engine}")
     if video_kind not in ("promo", "lecture"):
         raise HTTPException(400, f"未知视频类型:{video_kind}")
-    # 数字人几何(位置 + 大小):创建时的选择;之后还能在预览页改(见 api_avatar_geom)
+    # 数字人几何(位置 + 大小 + 是否抠像):创建时的选择;之后还能在预览页改(见 api_avatar_geom)
     try:
-        geom = _normalize_geom(avatar_corner, avatar_size)
+        geom = _normalize_geom(avatar_corner, avatar_size, avatar_cutout)
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
     # 并发防护:进行中任务过多时拒绝新任务(公网无鉴权,防批量提交挤爆 LLM/GPU)
@@ -927,8 +1086,14 @@ async def api_create(file: UploadFile = File(None), style: str = Form(None),
         raise HTTPException(400, "请上传文件或粘贴不少于 50 字的文本")
     job.state["avatar"] = bool(avatar)
     job.state["avatar_geom"] = geom
+    # 项目标题:先落一个"文件名"级的占位,列表立刻有名字可认;
+    # 分析完成后 _auto_title 用大模型总结的短标题覆盖它(title_source=auto)。
+    stem = analyze.clean_title(Path(job.state.get("filename") or "").stem, max_len=40)
+    if stem and stem.lower() not in ("input", "article", "untitled"):
+        job.state["title"] = stem
+        job.state["title_source"] = "file"
     job._save()
-    run_in_background(job, stage_analyze)
+    run_in_background(job, stage_analyze, step="analyze")
     return job.to_dict()
 
 
@@ -940,7 +1105,7 @@ def api_reanalyze(job_id: str):
     if job.status in ("analyzing", "building", "avatar_building", "rendering"):
         raise HTTPException(409, f"当前状态 {job.status} 不能重新分析(等待完成)")
     job.set(status="analyzing", progress="重新分析中", error=None)
-    run_in_background(job, stage_analyze)
+    run_in_background(job, stage_analyze, step="analyze")
     return {"ok": True}
 
 
@@ -974,7 +1139,7 @@ async def api_revise(job_id: str, request: Request):
     if len(instruction) < 5:
         raise HTTPException(400, "请描述修改要求(不少于 5 字)")
     job.set(status="analyzing", progress="AI 按建议修改脚本中", error=None)
-    run_in_background(job, stage_revise, instruction)
+    run_in_background(job, stage_revise, instruction, step="revise")
     return {"ok": True}
 
 
@@ -988,11 +1153,13 @@ def stage_revise(job, instruction: str):
                                         job.state.get("video_kind", "promo"))
         job.paths()["script"].write_text(json.dumps(revised, ensure_ascii=False, indent=1), encoding="utf-8")
         job.set(status="analyzed", progress=f"已按建议修改:{instruction[:30]}", error=None)
+        job.record_history("revise", detail=f"已按建议修改:{instruction[:60]}")
     except Exception as e:
         # 修改失败不毁掉任务:保留原脚本,提示可重试或直接构建
         log.exception("job %s AI 修改失败", job.id)
         job.set(status="analyzed", progress=f"AI 修改失败({str(e)[:50]}),保留原脚本,可重试或直接构建",
                 error=None)
+        job.record_history("revise", status="failed", detail=str(e)[:120])
 
 
 def _broadcast_basis_sec(job) -> float:
@@ -1061,7 +1228,7 @@ def api_build(job_id: str, force_voice: int = 0):
     if not job.paths()["script"].exists():
         raise HTTPException(409, "脚本尚未生成,请先完成分析")
     job.set(status="building", progress="", error=None)
-    run_in_background(job, stage_build, bool(force_voice))
+    run_in_background(job, stage_build, bool(force_voice), step="build")
     return {"ok": True}
 
 
@@ -1078,7 +1245,7 @@ async def api_render(job_id: str, request: Request):
         pass
     if fmt not in RENDER_FORMATS:
         raise HTTPException(400, f"不支持的格式 {fmt},可选:{sorted(RENDER_FORMATS)}")
-    run_in_background(job, stage_render, fmt)
+    run_in_background(job, stage_render, fmt, step="render")
     return {"ok": True}
 
 
@@ -1094,12 +1261,13 @@ def api_video(job_id: str):
 
 @app.post("/api/jobs/{job_id}/avatar/geom")
 async def api_avatar_geom(job_id: str, request: Request):
-    """改「成片里数字人」的出镜开关、位置与大小。
+    """改「成片里数字人」的出镜开关、位置、大小与是否抠像。
 
-    请求体三个字段都可选,只传哪个就改哪个:
+    请求体四个字段都可选,只传哪个就改哪个:
       avatar: true/false —— 「不出镜」也是这里的一个选项(false)
       corner: tl/tr/br/bl 或 左上/右上/右下/左下
       size:   正方形边长(偶数, 160–1080)
+      cutout: true/false —— 只保留人像、背景透明(抠像不可用时自动回退圆角卡片)
     创建时的选择写在 state;这里让分析完成后的任务也能改 ——
     否则想关掉出镜、或换个角落,都得重新提交文章、重新分析。
     改动对**下一次构建/渲染**生效(关了出镜就不叠,旧片段仍留在缓存里)。
@@ -1124,7 +1292,7 @@ async def api_avatar_geom(job_id: str, request: Request):
         raise HTTPException(400, "avatar 需要 true 或 false")
     cur = _avatar_geom(job)
     try:
-        geom = _normalize_geom(body.get("corner"), body.get("size"), cur)
+        geom = _normalize_geom(body.get("corner"), body.get("size"), body.get("cutout"), cur)
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
     job.set(avatar=enabled, avatar_geom=geom)
@@ -1168,7 +1336,7 @@ async def api_avatar_broadcast(job_id: str, request: Request, size: int | None =
                               "detail": "准备中…", "done": 0, "total": None,
                               "eta_sec": None, "started_at": time.time(),
                               "updated_at": time.time(), "finished_at": None, "error": None})
-    run_in_background(job, stage_avatar_broadcast, prev, size)
+    run_in_background(job, stage_avatar_broadcast, prev, size, step="broadcast")
     return {"ok": True, "prev_status": prev, "size": size}
 
 

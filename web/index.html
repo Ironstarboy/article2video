@@ -195,6 +195,11 @@ table.frames input[type=number]{width:64px;}
 .bc-opts select:disabled,.bc-opts input[type=number]:disabled{opacity:.55;cursor:not-allowed;}
 .bc-opts-unit{font-size:12.5px;color:var(--faint);}
 .bc-opts-tip{font-size:12.5px;color:var(--faint);}
+/* 「只保留人像(背景透明)」:与出镜开关联动 —— 不出镜时整条不可点 */
+.bc-check{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer;user-select:none;}
+.bc-check input[type=checkbox]{width:15px;height:15px;margin:0;accent-color:var(--navy);cursor:pointer;}
+.bc-check.disabled{opacity:.55;cursor:not-allowed;}
+.bc-check.disabled input[type=checkbox]{cursor:not-allowed;}
 
 /* ── 视频区 ── */
 .video-row{margin-top:20px;}
@@ -215,6 +220,55 @@ table.frames input[type=number]{width:64px;}
 #dl a:hover{background:var(--red-deep);}
 #dl a:active{transform:translateY(1px);}
 #dl a small{font-weight:400;opacity:.8;}
+
+/* ── 入口页:项目历史 ── */
+.home-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px;}
+.home-actions button.primary{width:auto;padding:12px 26px;font-size:14.5px;letter-spacing:1px;}
+.home-note{font-size:12.5px;color:var(--faint);}
+.proj-list{display:flex;flex-direction:column;gap:14px;}
+.proj-list .empty{border:1.5px dashed var(--line-strong);border-radius:10px;padding:36px 20px;text-align:center;color:var(--muted);font-size:13.5px;background:#FCFBF9;margin:0;}
+.proj{border:1.5px solid var(--line);border-radius:10px;background:#FCFBF9;padding:16px 18px;display:flex;gap:16px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;transition:border-color .15s,box-shadow .15s;}
+.proj:hover{border-color:var(--line-strong);box-shadow:var(--shadow);}
+.proj.busy{border-left:3px solid var(--navy);}
+.proj.fail{border-left:3px solid var(--err);}
+.proj-main{flex:1;min-width:280px;}
+.proj-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.proj-title{margin:0;font-family:var(--serif);font-size:17px;color:var(--ink);letter-spacing:.5px;}
+.proj-meta{margin-top:6px;font-size:12.5px;color:var(--muted);display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+.proj-status{margin-top:8px;font-size:13px;color:var(--navy);display:flex;gap:8px;align-items:center;line-height:1.6;}
+.proj-status.err{color:var(--err);}
+.proj-steps{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
+.pstep{display:inline-flex;align-items:center;gap:7px;border:1.5px solid var(--line);border-radius:999px;padding:5px 13px;font-size:12.5px;color:var(--muted);background:#fff;cursor:pointer;font-family:inherit;}
+.pstep .n{width:17px;height:17px;border-radius:50%;border:1.5px solid var(--line-strong);display:flex;align-items:center;justify-content:center;font-size:11px;line-height:1;flex:none;}
+.pstep em{font-style:normal;color:var(--faint);font-size:11.5px;}
+.pstep.done{border-color:var(--ok);color:var(--ok);background:var(--ok-soft);}
+.pstep.done .n{border-color:var(--ok);background:var(--ok);color:#fff;}
+.pstep.fail{border-color:var(--err);color:var(--err);background:var(--err-soft);}
+.pstep.fail .n{border-color:var(--err);background:var(--err);color:#fff;}
+.pstep.idle{opacity:.78;}
+.pstep:hover{border-color:var(--navy);color:var(--navy);}
+.proj-act{display:flex;flex-direction:column;gap:8px;align-items:stretch;min-width:122px;}
+.proj-act a{text-align:center;text-decoration:none;}
+.mini-spin{width:12px;height:12px;flex:none;border:2px solid var(--line-strong);border-top-color:var(--navy);border-radius:50%;animation:rot 1s linear infinite;}
+.rename-wrap{display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;}
+.rename-input{flex:1;min-width:200px;border:1.5px solid var(--navy);border-radius:8px;padding:8px 12px;font-size:14px;font-family:inherit;background:#fff;color:var(--ink);}
+.rename-input:focus{outline:none;border-color:var(--red);}
+.proj-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 14px;}
+.proj-h-title{margin:0;font-family:var(--serif);font-size:22px;color:var(--navy);letter-spacing:1px;}
+.proj-h-sub{font-size:12.5px;color:var(--faint);}
+
+/* ── 预览页:历史记录 ── */
+#history-list{display:flex;flex-direction:column;gap:8px;}
+.hist{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;padding:9px 14px;font-size:13px;background:#FCFBF9;cursor:pointer;}
+.hist:hover{border-color:var(--navy);}
+.hist.fail{border-color:var(--err);background:var(--err-soft);}
+.hist .hstep{font-weight:600;color:var(--navy);min-width:72px;}
+.hist.fail .hstep{color:var(--err);}
+.hist .hdetail{color:var(--muted);flex:1;min-width:160px;}
+.hist .hat{color:var(--faint);font-size:12px;}
+.hist a{font-size:12.5px;color:var(--navy);}
+.hist-empty{color:var(--muted);font-size:13px;margin:0;}
+.focus-flash{box-shadow:0 0 0 2px rgba(166,27,41,.4);transition:box-shadow .3s;}
 
 /* ── 骨架屏 ── */
 .skl{background:linear-gradient(90deg,#EFEAE2 25%,#F8F5F0 50%,#EFEAE2 75%);background-size:200% 100%;border-radius:6px;animation:skl 1.4s ease infinite;}
@@ -259,8 +313,23 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
 </header>
 <main>
 
+<!-- ═══════════ 入口页:项目历史 ═══════════ -->
+<div id="view-home" class="hidden">
+  <div class="step">
+    <div class="step-head"><h2>我的项目</h2><span class="no">项目历史</span></div>
+    <p class="hint">每条视频的「分析脚本 → 构建预览 → 渲染成片 / 播报视频」结果都留在对应项目里;点某一步就能直达那一步的结果。渲染很花时间,关掉页面再回来也接着看。</p>
+    <div class="home-actions">
+      <button class="primary" id="btn-new">＋ 新建视频</button>
+      <button class="smallbtn" id="btn-refresh-projects">刷新</button>
+      <span class="home-note" id="home-note"></span>
+    </div>
+    <div id="proj-list" class="proj-list"></div>
+  </div>
+</div>
+
 <!-- ═══════════ 第一级页面:创作配置 ═══════════ -->
-<div id="view-upload">
+<div id="view-upload" class="hidden">
+  <a class="back" href="./">← 返回项目列表</a>
   <div class="step">
     <div class="step-head"><h2>文章内容</h2><span class="no">壹</span></div>
     <div class="modetabs" role="tablist">
@@ -322,16 +391,35 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
       <span>大小</span>
       <input type="number" id="up-avatar-size" step="2" inputmode="numeric" aria-label="数字人在成片里的边长"/>
       <span class="bc-opts-unit">px(正方形)</span>
+      <label class="bc-check" id="up-avatar-cutout-wrap" for="up-avatar-cutout">
+        <input type="checkbox" id="up-avatar-cutout"/>
+        只保留人像(背景透明)
+      </label>
     </div>
-    <p class="hint" style="margin:0 0 12px;">选「不出镜」就是纯 PPT 成片;选一个角落则逐帧生成数字人片段并叠加到该角落,构建与渲染时间会明显变长。位置与大小之后也能在预览页改。</p>
+    <p class="hint" style="margin:0 0 12px;">选「不出镜」就是纯 PPT 成片;选一个角落则逐帧生成数字人片段并叠加到该角落,构建与渲染时间会明显变长。勾上「只保留人像」会把数字人背景抠掉(贴画面下缘),幻灯片内容不再被那块不透明卡片盖住 —— 抠像不可用时自动回退成带边框的卡片。位置与大小之后也能在预览页改。</p>
     <button class="primary" id="submit" disabled>开始分析</button>
   </div>
 </div>
 
 <!-- ═══════════ 第二级页面:预览 ═══════════ -->
 <div id="view-preview" class="hidden">
-  <a class="back" href="./">← 返回创作页</a>
+  <a class="back" href="./">← 返回项目列表</a>
+  <div class="proj-head" id="proj-head">
+    <h2 class="proj-h-title" id="proj-title">项目</h2>
+    <button type="button" class="smallbtn" id="btn-rename">重命名</button>
+    <span class="proj-h-sub" id="proj-sub"></span>
+  </div>
   <div class="banner" id="banner"><span class="spin" id="banner-spin"></span><span id="banner-text">加载中…</span></div>
+  <!-- 配音可懂度抽检不合格时的提示(时长/峰值都正常、读出来却是乱码的那种坏样本) -->
+  <div class="banner err hidden" id="voice-warn">
+    <span id="voice-warn-text"></span>
+    <button type="button" class="smallbtn" id="btn-revoice" style="margin-left:auto;flex:none;">重新合成配音</button>
+  </div>
+  <div class="step panel" id="history-panel" style="padding:24px 26px;">
+    <h3>历史记录</h3>
+    <p class="hint" style="margin-bottom:12px;">每一步完成后都会记在这里(含时间与结果大小)。点一条可以跳到对应结果;渲染/播报的产物可直接下载。</p>
+    <div id="history-list"><p class="hist-empty">还没有完成任何步骤。</p></div>
+  </div>
   <div class="columns">
     <div>
       <div class="step panel" style="padding:24px 26px;">
@@ -410,6 +498,10 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
       <select id="geom-mode" aria-label="数字人是否出镜以及出镜位置"></select>
       <input type="number" id="geom-size" step="2" inputmode="numeric" aria-label="数字人在成片里的边长"/>
       <span class="bc-opts-unit">px(正方形)</span>
+      <label class="bc-check" id="geom-cutout-wrap" for="geom-cutout">
+        <input type="checkbox" id="geom-cutout"/>
+        只保留人像(背景透明)
+      </label>
       <span class="bc-opts-tip" id="geom-tip">改后需重新「构建预览」「渲染成片」才生效</span>
     </div>
     <div class="bc-steps hidden" id="render-steps"></div>
@@ -678,6 +770,8 @@ $("#submit").onclick = ()=>{
     if (upBad) { toast(upBad, true); return; }
   }
   fd.append("avatar_size", String(upSize));
+  // 抠像(只保留人像、背景透明):后端默认关,这里如实提交勾选状态
+  fd.append("avatar_cutout", $("#up-avatar-cutout").checked ? "true" : "false");
   const btn = $("#submit");
   btn.disabled = true; btn.textContent = "提交中…";
   fetch("./api/jobs", {method:"POST", body:fd})
@@ -689,6 +783,10 @@ $("#submit").onclick = ()=>{
 /* ── 预览页逻辑 ── */
 const q = new URLSearchParams(location.search);
 jobId = q.get("job");
+// 入口页/创作页/项目详情页由 URL 决定:?job= 详情页、?new=1 创作页、其余为项目历史列表
+const wantNew = q.get("new") === "1";
+// ?step= 直达:项目列表点某一步时带上,进入详情页后滚到那一步的结果并高亮
+const focusStep = q.get("step") || "";
 const STATUS_TEXT = {
   uploaded:"已上传,排队分析", analyzing:"分析中", analyzed:"分析完成,可构建预览",
   building:"构建中(配音与组装)", preview:"预览就绪", rendering:"渲染中",
@@ -699,6 +797,21 @@ function setBanner(text, kind, busy){
   b.className = "banner" + (kind ? " " + kind : "");
   $("#banner-spin").style.display = busy ? "" : "none";
   $("#banner-text").textContent = text;
+}
+/* 配音抽检(后端 whisper 听写 vs 台词):不合格就提示"这批配音可能是乱码"并给出重烧入口。
+   时长与峰值正常、读出来却是乱码的坏样本,只有这条提示能提前告诉用户。 */
+function renderVoiceWarn(j){
+  const box = $("#voice-warn");
+  if (!box) return;
+  const vc = j.voice_check || {};
+  const busy = ["analyzing", "building", "avatar_building", "rendering"].includes(j.status);
+  const on = !!vc.warn && !busy;
+  box.classList.toggle("hidden", !on);
+  if (!on) return;
+  const pct = Math.round((vc.lcs || 0) * 100);
+  $("#voice-warn-text").textContent =
+    "⚠️ 配音抽检没通过(读音正确率约 " + pct + "%):这批配音听起来可能是乱码,字幕与念出来的内容对不上。"
+    + "点右侧「重新合成配音」会用当前引擎重烧全部配音并重新构建,之后再重新「渲染成片」。";
 }
 function schedulePoll(){
   clearTimeout(pollTimer);
@@ -722,6 +835,7 @@ async function poll(){
   }
   pollMs = 2500;
   const status = j.status;
+  renderVoiceWarn(j);
   if (status === "failed") {
     // 不提前 return:已生成的脚本照常展示,按钮状态由 updateActions 统一处理
     setBanner("失败:" + (j.error || "未知错误"), "err", false);
@@ -761,15 +875,10 @@ async function fetchFullScript(){
     if (j.script) renderScript(j);
   } catch (e) { /* 下轮轮询重试 */ }
 }
-if (jobId) {
-  $("#view-upload").classList.add("hidden");
-  $("#view-preview").classList.remove("hidden");
-  poll();
-  schedulePoll();
-}
 document.addEventListener("visibilitychange", ()=>{
-  if (document.hidden) clearTimeout(pollTimer);
-  else { poll(); schedulePoll(); }
+  if (document.hidden) { clearTimeout(pollTimer); clearTimeout(projTimer); }
+  else if (jobId) { poll(); schedulePoll(); }
+  else if (!wantNew) { loadProjects(); }
 });
 
 /* ── 成片渲染进度(渲染 + 叠加两步,数据来自后端 job.render_progress) ── */
@@ -807,6 +916,8 @@ function updateActions(j){
   renderAvatarPanel(j);
   syncGeomRow(j);
   renderRenderProgress(j);
+  syncProjectTitle(j);
+  renderHistory(j);
   const hasScript = !!(j.script_updated_at);
   bb.disabled = !(["analyzed","preview","rendered","failed"].includes(j.status) && hasScript);
   bb.textContent = j.status==="preview" ? "重新构建" : "构建预览";
@@ -831,6 +942,7 @@ function updateActions(j){
       $("#studio-box").appendChild(v);
     }
   }
+  applyStepFocus(j);   // 元素可见性在这一轮才定下来,聚焦放在最后
 }
 const STYLE_NAMES = {"solemn-red":"庄重肃穆 · 中国红","academic-ink":"清雅学术 · 墨黛青","modern-blue":"现代锐意 · 科技蓝"};
 
@@ -844,16 +956,21 @@ let lastAvatarStamp = null;
 /* ── 数字人设置:大小(正方形边长,可手输)+ 成片里的四角位置 ──
    档位与默认值由后端 /api/styles 下发(大小默认 300、位置默认右上),下面的常量
    只是风格接口不可用时的兜底,取值与 config.py 保持一致。三处控件共用这份数据:
-     创作页   #up-avatar-mode / #up-avatar-size → 建任务时的出镜选项与大小(随表单提交)
-     预览页   #geom-mode / #geom-size          → 改已有任务的出镜开关/位置/大小(存后端,构建/渲染后生效)
+     创作页   #up-avatar-mode / #up-avatar-size / #up-avatar-cutout
+              → 建任务时的出镜选项、大小与是否抠像(随表单提交)
+     预览页   #geom-mode / #geom-size / #geom-cutout
+              → 改已有任务的出镜开关/位置/大小/抠像(存后端,构建/渲染后生效)
      播报面板 #bc-size                            → 这条播报视频的画面边长(留空则跟随任务) */
 const AVATAR_FALLBACK = {
   sizes: {default: 300, native: 464, min: 160, max: 1080, choices: [240, 300, 400, 464, 640]},
   corners: [{key:"tl",name:"左上"}, {key:"tr",name:"右上"}, {key:"br",name:"右下"}, {key:"bl",name:"左下"}],
   cornerDefault: "tr",
+  cutoutDefault: false,
 };
 let avatarSizeMeta = AVATAR_FALLBACK.sizes;
 let avatarCornerMeta = {options: AVATAR_FALLBACK.corners, default: AVATAR_FALLBACK.cornerDefault};
+let avatarCutoutDefault = AVATAR_FALLBACK.cutoutDefault;
+let upCutoutTouched = false;   // 用户动过创作页的抠像勾选后,元数据回来不再覆盖它
 const AVATAR_OFF = "off";   // 「不出镜」:和四个角落并列的一个选项,不是"没选"
 let avatarRenderedKey = "";
 let bcServerSize = null;   // 后端下发的播报尺寸(输入框留空时的兜底)
@@ -867,6 +984,7 @@ function applyAvatarMeta(data){
   if (data.avatar_corners && data.avatar_corners.length) {
     avatarCornerMeta = {options: data.avatar_corners, default: data.avatar_corner_default || "tr"};
   }
+  if (typeof data.avatar_cutout_default === "boolean") avatarCutoutDefault = data.avatar_cutout_default;
 }
 function avatarCornerName(key){
   const o = avatarCornerMeta.options.find(x => x.key === key);
@@ -922,6 +1040,9 @@ function renderAvatarControls(data){
     });
     sel.value = keep || AVATAR_OFF;
   });
+  // 抠像勾选:默认值来自后端;用户动过就以用户为准
+  const upCut = $("#up-avatar-cutout");
+  if (upCut && !upCutoutTouched) upCut.checked = avatarCutoutDefault;
   updateBcSizeTip();
   syncUpAvatarMode();
 }
@@ -945,43 +1066,55 @@ $("#bc-size").onchange = ()=>{
   poll();   // 预计耗时跟着新尺寸刷新(轻量轮询,接口按 avatar_size 现算)
 };
 
-/* 创作页:出镜模式 = 不出镜 / 四个角落;选「不出镜」时大小不可编辑(值仍保留) */
+/* 创作页:出镜模式 = 不出镜 / 四个角落;选「不出镜」时大小与抠像都不可编辑(值仍保留) */
 function syncUpAvatarMode(){
   const off = $("#up-avatar-mode").value === AVATAR_OFF;
   const size = $("#up-avatar-size");
   if (size) size.disabled = off;
+  const cut = $("#up-avatar-cutout"), wrap = $("#up-avatar-cutout-wrap");
+  if (cut) cut.disabled = off;
+  if (wrap) wrap.classList.toggle("disabled", off);
 }
 $("#up-avatar-mode").onchange = syncUpAvatarMode;
+$("#up-avatar-cutout").onchange = ()=>{ upCutoutTouched = true; };
 
-/* 预览页:改已有任务的出镜开关/位置/大小,存后端,构建/渲染后生效 */
+/* 预览页:改已有任务的出镜开关/位置/大小/抠像,存后端,构建/渲染后生效 */
 function syncGeomRow(j){
   const row = $("#geom-row");
   if (!row) return;
   const g = j.avatar_geom || {};
   geomServer = {on: !!j.avatar, corner: g.corner || avatarCornerMeta.default,
-                size: g.size || avatarSizeMeta.default};
-  const ms = $("#geom-mode"), ss = $("#geom-size");
+                size: g.size || avatarSizeMeta.default, cutout: !!g.cutout};
+  const ms = $("#geom-mode"), ss = $("#geom-size"), cs = $("#geom-cutout");
   // 正在输入 / 正在保存时绝不回写,否则轮询会把用户刚选的吃掉
   if (!geomSaving && document.activeElement !== ms) {
     ms.value = geomServer.on ? geomServer.corner : AVATAR_OFF;
   }
   if (!geomSaving && document.activeElement !== ss) ss.value = String(geomServer.size);
+  if (!geomSaving && document.activeElement !== cs) cs.checked = geomServer.cutout;
   ss.disabled = ms.value === AVATAR_OFF;
+  cs.disabled = ss.disabled;
+  const cw = $("#geom-cutout-wrap");
+  if (cw) cw.classList.toggle("disabled", ss.disabled);
 }
 function revertGeom(){
   if (!geomServer) return;
   $("#geom-mode").value = geomServer.on ? geomServer.corner : AVATAR_OFF;
   $("#geom-size").value = String(geomServer.size);
   $("#geom-size").disabled = !geomServer.on;
+  $("#geom-cutout").checked = geomServer.cutout;
+  $("#geom-cutout").disabled = !geomServer.on;
+  $("#geom-cutout-wrap").classList.toggle("disabled", !geomServer.on);
 }
 async function saveGeom(){
   const mode = $("#geom-mode").value;
   const off = mode === AVATAR_OFF;
   const size = parseInt($("#geom-size").value, 10);
+  const cutout = $("#geom-cutout").checked;
   // 选「不出镜」时不动大小(保持后端已有的值),所以也就不必校验它
   const bad = off ? "" : validateAvatarSize(size);
   if (bad) { toast(bad, true); revertGeom(); return; }
-  const payload = off ? {avatar: false} : {avatar: true, corner: mode, size: size};
+  const payload = off ? {avatar: false} : {avatar: true, corner: mode, size: size, cutout: cutout};
   geomSaving = true;
   try {
     const r = await fetch("./api/jobs/" + jobId + "/avatar/geom", {
@@ -990,11 +1123,14 @@ async function saveGeom(){
     });
     const j = await r.json();
     if (!j.ok) throw new Error(j.detail || "保存失败");
-    geomServer = {on: !!j.avatar, corner: j.avatar_geom.corner, size: j.avatar_geom.size};
+    geomServer = {on: !!j.avatar, corner: j.avatar_geom.corner, size: j.avatar_geom.size,
+                  cutout: !!j.avatar_geom.cutout};
     revertGeom();
     toast(j.avatar
       ? "数字人已改为" + avatarCornerName(j.avatar_geom.corner) + " · " +
-        j.avatar_geom.size + "×" + j.avatar_geom.size + ";重新构建并渲染后生效"
+        j.avatar_geom.size + "×" + j.avatar_geom.size +
+        (j.avatar_geom.cutout ? " · 只保留人像(背景透明)" : "") +
+        ";重新构建并渲染后生效"
       : "已改为不出镜;重新构建并渲染后,成片就是纯 PPT 版");
   } catch(e) {
     toast("保存失败:" + (e.message || e), true);
@@ -1003,6 +1139,7 @@ async function saveGeom(){
 }
 $("#geom-mode").onchange = saveGeom;
 $("#geom-size").onchange = saveGeom;
+$("#geom-cutout").onchange = saveGeom;
 renderAvatarControls(null);   // 先用兜底档位渲染,风格接口回来后再对齐
 
 function fmtClock(sec){
@@ -1383,6 +1520,18 @@ $("#btn-build").onclick = ()=>{
     poll();
   }).catch(e=>toast("构建失败:" + e.message, true));
 };
+/* 配音抽检不合格 → 一键重新合成配音(force_voice=1)并重新构建;这会作废旧配音与成片 */
+$("#btn-revoice").onclick = ()=>{
+  if (!confirm("重新合成全部配音并重新构建?这会作废当前配音与成片(旧片段缓存也会按新配音重算),之后需要重新「渲染成片」。")) return;
+  fetch("./api/jobs/"+jobId+"/build?force_voice=1", {method:"POST"}).then(r=>r.json()).then(j=>{
+    if (!j.ok) { toast(j.detail || "重新合成触发失败", true); return; }
+    $("#voice-warn").classList.add("hidden");
+    $("#btn-build").disabled = true;
+    $("#btn-render").disabled = true;
+    toast("已开始重新合成配音");
+    poll();
+  }).catch(e=>toast("重新合成失败:" + e.message, true));
+};
 $("#btn-render").onclick = ()=>{
   fetch("./api/jobs/"+jobId+"/render", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({format: $("#fmt").value})}).then(r=>r.json()).then(j=>{
@@ -1399,6 +1548,298 @@ $("#btn-delete").onclick = ()=>{
     location.href = "./";
   }).catch(e=>toast("删除失败:" + e.message, true));
 };
+
+/* ═══════════ 项目历史(入口页)═══════════
+   数据来自 GET /api/jobs:每条任务带 title / status / progress / history / artifacts。
+   列表上直接显示"现在到哪一步、每一步什么时候出的",点某一步跳详情页对应结果 ——
+   渲染很花时间,关掉页面回来不用重新找。 */
+const STEP_ORDER = ["analyze", "build", "render", "broadcast"];
+const STEP_NAMES = {analyze:"分析脚本", build:"构建预览", render:"渲染成片", broadcast:"播报视频"};
+const STEP_TARGET = {analyze:"#analysis-body", build:"#studio-box", render:"#dl", broadcast:"#avatar-panel"};
+const BUSY_STATUS = ["uploaded", "analyzing", "building", "rendering", "avatar_building"];
+let projTimer = null, projPollMs = 6000;
+let focusStepOnce = focusStep;   // 带 ?step= 进来时,等到目标可见再滚过去(只做一次)
+let lastHistorySig = null;
+
+function fmtTime(ts){
+  if (!ts) return "";
+  const d = new Date(ts * 1000), now = new Date();
+  const hm = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  if (d.toDateString() === now.toDateString()) return "今天 " + hm;
+  return (d.getMonth() + 1) + "-" + String(d.getDate()).padStart(2, "0") + " " + hm;
+}
+function fmtAgo(ts){
+  if (!ts) return "";
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (s < 60) return "刚刚";
+  if (s < 3600) return Math.floor(s / 60) + " 分钟前";
+  if (s < 86400) return Math.floor(s / 3600) + " 小时前";
+  return Math.floor(s / 86400) + " 天前";
+}
+function fmtDur(sec){
+  const n = Number(sec) || 0;
+  if (!n) return "";
+  const m = n / 60;
+  if (n < 60) return Math.round(n) + " 秒";
+  return (m % 1 ? m.toFixed(1) : String(m)) + " 分钟";
+}
+function latestByStep(hist){
+  const m = {};
+  (hist || []).forEach(h=>{ if (h && h.step) m[h.step] = h; });   // 同名步骤后面的覆盖前面的
+  return m;
+}
+async function postJSON(url, body){
+  const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"},
+                              body: JSON.stringify(body || {})});
+  let j = {};
+  try { j = await r.json(); } catch (e) { j = {}; }
+  if (!r.ok || j.ok === false) throw new Error(j.detail || ("HTTP " + r.status));
+  return j;
+}
+
+/* 就地重命名:把 host 的内容换成一个输入框 + 保存/取消,保存成功由调用方负责刷新显示 */
+function beginRename(host, current, save){
+  if (host.querySelector(".rename-input")) return;
+  const old = Array.from(host.childNodes);
+  const wrap = el("span", "rename-wrap");
+  const inp = document.createElement("input");
+  inp.type = "text"; inp.className = "rename-input"; inp.value = current || "";
+  inp.maxLength = 60; inp.placeholder = "项目标题(60 字以内)";
+  const ok = el("button", "smallbtn", "保存"); ok.type = "button";
+  const cancel = el("button", "smallbtn", "取消"); cancel.type = "button";
+  const restore = ()=>{ host.innerHTML = ""; old.forEach(n=>host.appendChild(n)); };
+  const commit = async ()=>{
+    const val = inp.value.trim();
+    if (!val) { toast("项目标题不能为空", true); inp.focus(); return; }
+    ok.disabled = cancel.disabled = true;
+    try { await save(val); restore(); }
+    catch (e) { toast("重命名失败:" + (e.message || e), true); ok.disabled = cancel.disabled = false; inp.focus(); }
+  };
+  ok.onclick = commit;
+  cancel.onclick = restore;
+  inp.onkeydown = (e)=>{
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.key === "Escape") { e.preventDefault(); restore(); }
+  };
+  host.innerHTML = "";
+  wrap.appendChild(inp); wrap.appendChild(ok); wrap.appendChild(cancel);
+  host.appendChild(wrap);
+  inp.focus(); inp.select();
+}
+
+function projectCard(it){
+  const busy = BUSY_STATUS.includes(it.status);
+  const card = el("article", "proj" + (busy ? " busy" : "") + (it.status === "failed" ? " fail" : ""));
+  card.setAttribute("data-id", it.job_id);
+  const main = el("div", "proj-main");
+
+  const trow = el("div", "proj-title-row");
+  const h = el("h3", "proj-title", it.title || it.job_id);
+  trow.appendChild(h);
+  const rn = el("button", "smallbtn", "重命名"); rn.type = "button";
+  rn.onclick = ()=>beginRename(trow, it.title || "", async (val)=>{
+    const r = await postJSON("./api/jobs/" + encodeURIComponent(it.job_id) + "/rename", {title: val});
+    h.textContent = r.title;
+    toast("已重命名为「" + r.title + "」");
+    loadProjects();
+  });
+  trow.appendChild(rn);
+  main.appendChild(trow);
+
+  const meta = el("div", "proj-meta");
+  meta.appendChild(el("span", null, (it.video_kind === "lecture" ? "讲解视频" : "宣传视频")
+                      + " · 目标 " + fmtDur(it.duration_sec)));
+  if (it.total_sec) meta.appendChild(el("span", null, "成片 " + fmtDur(it.total_sec)));
+  meta.appendChild(el("span", null, "更新于 " + fmtAgo(it.updated_at || it.created_at)));
+  meta.appendChild(el("span", null, "#" + it.job_id));
+  main.appendChild(meta);
+
+  const st = el("div", "proj-status" + (it.status === "failed" ? " err" : ""));
+  if (busy) st.appendChild(el("span", "mini-spin"));
+  st.appendChild(el("span", null, (STATUS_TEXT[it.status] || it.status)
+                    + (it.progress ? ":" + it.progress : "")
+                    + (it.status === "failed" && it.error ? " —— " + it.error : "")));
+  main.appendChild(st);
+
+  const done = latestByStep(it.history);
+  const steps = el("div", "proj-steps");
+  STEP_ORDER.forEach(step=>{
+    const rec = done[step];
+    const b = el("button", "pstep " + (rec ? (rec.status === "failed" ? "fail" : "done") : "idle"));
+    b.type = "button";
+    b.appendChild(el("span", "n", rec ? (rec.status === "failed" ? "✗" : "✓") : "·"));
+    b.appendChild(el("span", null, STEP_NAMES[step]));
+    b.appendChild(el("em", null, rec ? fmtTime(rec.at) : "未完成"));
+    b.title = rec ? (rec.detail || "已完成") : "这一步还没做,点开项目继续";
+    b.onclick = ()=>{ location.href = "./?job=" + encodeURIComponent(it.job_id) + (rec ? "&step=" + step : ""); };
+    steps.appendChild(b);
+  });
+  main.appendChild(steps);
+  card.appendChild(main);
+
+  const act = el("div", "proj-act");
+  const open = el("a", "smallbtn", "打开项目");
+  open.href = "./?job=" + encodeURIComponent(it.job_id);
+  act.appendChild(open);
+  if (it.has_video) {
+    const dl = el("a", "smallbtn", "下载成片");
+    dl.href = "./api/jobs/" + encodeURIComponent(it.job_id) + "/video";
+    act.appendChild(dl);
+  }
+  if ((it.artifacts || {}).avatar) {
+    const bc = el("a", "smallbtn", "播报视频");
+    bc.href = "./?job=" + encodeURIComponent(it.job_id) + "&step=broadcast";
+    act.appendChild(bc);
+  }
+  const del = el("button", "smallbtn", "删除"); del.type = "button";
+  del.onclick = async ()=>{
+    if (!confirm("确定删除项目「" + (it.title || it.job_id) + "」?项目文件与成片将一并清除,不可恢复。")) return;
+    try {
+      const r = await fetch("./api/jobs/" + encodeURIComponent(it.job_id), {method:"DELETE"});
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.detail || "删除失败");
+      toast("项目已删除");
+      loadProjects();
+    } catch (e) { toast("删除失败:" + (e.message || e), true); }
+  };
+  act.appendChild(del);
+  card.appendChild(act);
+  return card;
+}
+
+function renderProjects(items){
+  const box = $("#proj-list");
+  if (!box) return;
+  if (box.querySelector(".rename-input")) return;   // 正在重命名:不要把输入框冲掉
+  box.innerHTML = "";
+  if (!items.length) {
+    box.appendChild(el("p", "empty", "还没有项目。点「＋ 新建视频」上传一篇文章,分析完成后这里会出现它。"));
+    return;
+  }
+  items.forEach(it=>box.appendChild(projectCard(it)));
+}
+
+async function loadProjects(){
+  try {
+    const r = await fetch("./api/jobs");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    const items = d.jobs || [];
+    renderProjects(items);
+    const busy = items.some(x=>BUSY_STATUS.includes(x.status));
+    projPollMs = busy ? 4000 : 20000;
+    $("#home-note").textContent = items.length
+      ? ("共 " + items.length + " 个项目" + (busy ? " · 有任务进行中,进度自动刷新" : ""))
+      : "";
+  } catch (e) {
+    $("#home-note").textContent = "项目列表加载失败,点「刷新」重试";
+    projPollMs = 10000;
+  }
+  scheduleProjectPoll();
+}
+function scheduleProjectPoll(){
+  clearTimeout(projTimer);
+  projTimer = setTimeout(loadProjects, projPollMs);
+}
+$("#btn-new").onclick = ()=>{ location.href = "./?new=1"; };
+$("#btn-refresh-projects").onclick = ()=>loadProjects();
+
+/* ═══════════ 详情页:项目标题 / 历史记录 / 直达某一步 ═══════════ */
+function syncProjectTitle(j){
+  const h = $("#proj-title");
+  if (!h) return;
+  if (document.querySelector("#proj-head .rename-input")) return;   // 正在改名,别覆盖输入
+  h.textContent = j.title || j.job_id;
+  const sub = $("#proj-sub");
+  if (sub) {
+    sub.textContent = (j.title_source === "user" ? "手动命名" : "自动总结") + " · #" + j.job_id;
+  }
+}
+$("#btn-rename").onclick = ()=>{
+  beginRename($("#proj-head"), $("#proj-title").textContent || "", async (val)=>{
+    const r = await postJSON("./api/jobs/" + encodeURIComponent(jobId) + "/rename", {title: val});
+    $("#proj-title").textContent = r.title;
+    $("#proj-sub").textContent = "手动命名 · #" + jobId;
+    toast("已重命名为「" + r.title + "」");
+  });
+};
+
+function visibleEl(sel){
+  const e = document.querySelector(sel);
+  if (!e || e.closest(".hidden") || !e.getClientRects().length) return null;
+  return e;
+}
+/* 滚到某一步的结果并高亮;目标还没生成(不可见)时返回 false */
+function scrollToStep(step){
+  const sels = step === "render" ? ["#dl", "#studio-box"] : [STEP_TARGET[step]];
+  for (const sel of sels) {
+    if (!sel) continue;
+    const e = visibleEl(sel);
+    if (!e) continue;
+    const host = e.closest(".step") || e;
+    host.scrollIntoView({behavior:"smooth", block:"center"});
+    host.classList.add("focus-flash");
+    setTimeout(()=>host.classList.remove("focus-flash"), 2600);
+    return true;
+  }
+  return false;
+}
+function applyStepFocus(j){
+  if (!focusStepOnce) return;
+  // 分析结果面板在脚本还没拉回来时是骨架屏,别停在那儿
+  if (focusStepOnce === "analyze" && !j.script_updated_at) return;
+  if (scrollToStep(focusStepOnce)) focusStepOnce = "";   // 元素可见性每一轮都可能变化
+}
+
+function renderHistory(j){
+  const box = $("#history-list");
+  if (!box) return;
+  const hist = (j.history || []).slice().reverse();   // 最新在前
+  const hasBc = !!((j.artifacts || {}).avatar);
+  const sig = JSON.stringify([hist, j.has_video, hasBc]);
+  if (sig === lastHistorySig) return;   // 轮询高频,内容没变就不重建(否则会打断点击)
+  lastHistorySig = sig;
+  box.innerHTML = "";
+  if (!hist.length) {
+    box.appendChild(el("p", "hist-empty", "还没有完成任何步骤。"));
+    return;
+  }
+  hist.forEach(h=>{
+    const row = el("div", "hist" + (h.status === "failed" ? " fail" : ""));
+    row.appendChild(el("span", "hstep", h.label || STEP_NAMES[h.step] || h.step));
+    row.appendChild(el("span", "hdetail",
+                       h.detail || (h.status === "failed" ? "失败(可重试)" : "完成")));
+    row.appendChild(el("span", "hat", fmtTime(h.at)));
+    if (h.step === "render" && j.has_video) {
+      const a = el("a", null, "下载成片");
+      a.href = "./api/jobs/" + encodeURIComponent(j.job_id) + "/video";
+      a.onclick = e=>e.stopPropagation();
+      row.appendChild(a);
+    }
+    if (h.step === "broadcast" && hasBc) {
+      const a = el("a", null, "下载播报视频");
+      a.href = "./api/jobs/" + encodeURIComponent(j.job_id) + "/avatar/broadcast/video";
+      a.onclick = e=>e.stopPropagation();
+      row.appendChild(a);
+    }
+    row.onclick = ()=>{
+      if (!scrollToStep(h.step)) toast("这一步的结果还没生成(可先完成该步骤)");
+    };
+    box.appendChild(row);
+  });
+}
+
+/* ═══════════ 启动路由:入口页 / 创作页 / 项目详情页 ═══════════ */
+if (jobId) {
+  $("#view-preview").classList.remove("hidden");
+  poll();
+  schedulePoll();
+} else if (wantNew) {
+  $("#view-upload").classList.remove("hidden");
+} else {
+  $("#view-home").classList.remove("hidden");
+  loadProjects();
+}
 </script>
 </body>
 </html>

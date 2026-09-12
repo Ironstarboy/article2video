@@ -16,9 +16,11 @@
 import hashlib
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import wave
 from pathlib import Path
 
@@ -31,9 +33,11 @@ import avatar_pb2_grpc  # noqa: E402
 import common_pb2  # noqa: E402
 from config import (  # noqa: E402
     AVATAR_ADDR, AVATAR_CACHE_DIR, AVATAR_CLIP_VERSION, AVATAR_CONCAT_BASE_SIZE,
-    AVATAR_CONCAT_RT_FACTOR, AVATAR_CORNERS, AVATAR_CORNER, AVATAR_IDLE_SECONDS,
+    AVATAR_CONCAT_RT_FACTOR, AVATAR_CORNERS, AVATAR_CORNER, AVATAR_CUTOUT,
+    AVATAR_CUTOUT_BOTTOM_MARGIN, AVATAR_IDLE_SECONDS,
     AVATAR_IMAGE, AVATAR_RT_FACTOR, AVATAR_SIZE, AVATAR_SIZE_MAX, AVATAR_SIZE_MIN,
-    AVATAR_TTS_RT_FACTOR, AVATAR_X, AVATAR_Y, HEIGHT, WIDTH,
+    AVATAR_TTS_RT_FACTOR, AVATAR_X, AVATAR_Y, HEIGHT, MATTE_CRF, MATTE_MODEL,
+    MATTE_MODEL_TAG, MATTE_PYTHON, MATTE_REF, MATTE_TIMEOUT, MATTE_VERSION, WIDTH,
 )
 from tts import VO_OFFSET  # noqa: E402
 
@@ -145,6 +149,65 @@ def corner_xy(corner: str = AVATAR_CORNER, size: int = AVATAR_SIZE,
     x = margin_x if c in ("tl", "bl") else max(0, int(video_w) - canvas - margin_x)
     y = margin_y if c in ("tl", "tr") else max(0, int(video_h) - canvas - margin_y)
     return x, y
+
+
+# ─────────────────────── 抠像(透明背景出镜) ───────────────────────
+#
+# 「只保留人像」= 不用圆角卡片遮罩,改用片段自己的 alpha(由 server/matte.py 逐帧算出)。
+# 两条硬约束决定了下面的口径:
+# 1. 片段是**齐胸特写**——底边整行都是躯干(alpha≈1),所以人像必须**贴画面下缘**,
+#    让那道平切口落在画面外沿;摆在画面中间的角落会像一块悬浮的半身像。
+# 2. 上下不再区分:tl/tr 在抠像模式下与 bl/br 等价,只有左右(角落选择的第一个字母)起作用。
+
+def normalize_cutout(value=None, default: bool = AVATAR_CUTOUT) -> bool:
+    """把接口/前端传来的抠像开关收敛成布尔(纯函数,便于回归)。
+
+    只认真正的布尔:字符串 "false" 在 JSON 里是"没传",在这里也不能当假值用 ——
+    否则前端少传一个字段就会静默关掉抠像。
+    """
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"抠像开关需要 true 或 false:{value!r}")
+
+
+def safe_cutout(value=None, default: bool = AVATAR_CUTOUT) -> bool:
+    """读路径用的宽松版:历史 state 里的坏值退回 default,绝不抛错(轮询不能被它打断)。"""
+    try:
+        return normalize_cutout(value, default)
+    except ValueError:
+        return bool(default)
+
+
+def cutout_xy(corner: str = AVATAR_CORNER, size: int = AVATAR_SIZE,
+              margin_x: int = AVATAR_X, bottom_margin: int = AVATAR_CUTOUT_BOTTOM_MARGIN,
+              video_w: int = WIDTH, video_h: int = HEIGHT) -> tuple[int, int]:
+    """抠像模式下人像的 overlay 坐标(纯函数)。
+
+    输入是**片段本身**(size×size,没有卡片留白):左右按角落选的左/右摆,
+    纵向一律贴画面下缘(bottom_margin 默认 0 = 与下边缘齐平)。
+    """
+    c = normalize_corner(corner)
+    x = margin_x if c in ("tl", "bl") else max(0, int(video_w) - int(size) - margin_x)
+    y = max(0, int(video_h) - int(size) - int(bottom_margin))
+    return x, y
+
+
+def matte_name(clip_name: str) -> str:
+    """片段文件名 → 遮罩文件名(纯函数)。
+
+    遮罩与片段一一对应、同目录同名,只加「模型标识 + 遮罩版本」后缀:
+    换模型或改预处理时递增版本即可失效旧遮罩,而**片段缓存不受影响**(不必重跑数字人推理)。
+    """
+    stem = Path(clip_name).stem
+    return f"{stem}.{MATTE_MODEL_TAG}{MATTE_VERSION}.mp4"
+
+
+def matte_path(clip) -> Path:
+    """片段路径 → 遮罩路径(与片段同目录)。"""
+    clip = Path(clip)
+    return clip.with_name(matte_name(clip.name))
 
 
 def _log(msg: str) -> None:
@@ -312,6 +375,147 @@ def card_overlay_filter(label_in: str, mask_in: str, label_out: str, size: int,
     )
 
 
+def cutout_overlay_filter(label_in: str, matte_in: str, label_out: str, size: int,
+                          fps: int = 30) -> str:
+    """把 size×size 的数字人画面 + 灰度遮罩变成"只有人像"的流(背景全透明)。
+
+    label_in: 数字人画面输入标签;matte_in: 该片段的灰度遮罩输入标签;label_out: 输出标签。
+
+    与圆角卡片的分工:卡片是**几何形状**(圆角矩形),抠像是**画面内容**(人像 alpha)。
+    两者都靠 ffmpeg 的 alphamerge 取第二路输入的**亮度**当 alpha —— 所以遮罩必须是灰度
+    (见 _mask_path 的注释;这也正是 matte.py 输出 gray mp4 的原因)。
+
+    注意:遮罩是跟着**片段**缓存的(片段多大就多大),而叠加要的是任务选的 `size` ——
+    `alphamerge` 要求两路输入尺寸完全一致,所以遮罩这一路必须一起缩放,否则直接报
+    "Input frame sizes do not match"。
+    """
+    p = f"co{size}_"
+    return (
+        f"[{label_in}]format=rgba,scale={size}:{size}:flags=lanczos[{p}av];"
+        f"[{matte_in}]scale={size}:{size}:flags=bilinear[{p}m];"
+        f"[{p}av][{p}m]alphamerge[{label_out}]"
+    )
+
+
+# ─────────────────── 抠像遮罩:生成、缓存、批量 ───────────────────
+
+def matte_available() -> tuple:
+    """抠像能不能跑:返回 (可否, 原因)。判据是**解释器与模型文件**都在。
+
+    真正跑不动(onnxruntime 缺失等)会在 worker 里报错,由 ensure_mattes 回退;
+    这里只拦"一眼就知道不行"的情况,省得每次都拉起一个必然失败的进程。
+    """
+    py = Path(MATTE_PYTHON)
+    if not py.exists():
+        return False, f"抠像解释器不存在:{py}(见 TTV_MATTE_PYTHON)"
+    if not Path(MATTE_MODEL).exists():
+        return False, f"抠像模型不存在:{MATTE_MODEL}(跑 bash deploy/setup.sh 下载)"
+    return True, ""
+
+
+def _run_matte_worker(pairs: list, on_progress=None) -> dict:
+    """一次进程处理**一批**片段:模型只加载一次,顺带把逐段进度读回来。
+
+    pairs: [{"clip": Path, "out": Path}, ...]
+    返回 {"done": n, "failed": n};worker 的 stdout 是 JSON 行,stderr 是日志。
+    """
+    import json
+    import tempfile
+
+    manifest = Path(tempfile.mkstemp(prefix="ttv_matte_", suffix=".json")[1])
+    manifest.write_text(json.dumps(
+        [{"clip": str(Path(p["clip"])), "out": str(Path(p["out"]))} for p in pairs],
+        ensure_ascii=False), encoding="utf-8")
+    worker = Path(__file__).parent / "matte.py"
+    cmd = [str(MATTE_PYTHON), str(worker), "--manifest", str(manifest),
+           "--model", str(MATTE_MODEL), "--ref", str(MATTE_REF),
+           "--crf", str(MATTE_CRF), "--timeout", str(MATTE_TIMEOUT)]
+    total = len(pairs)
+    done, failed, err_lines = 0, 0, []
+    proc = None
+    # 看门狗:worker 自己会对每段超时(见 matte.py),这里再兜一层**进程级**硬上限 ——
+    # 抠像再慢也只是"这段没抠成",绝不允许它把构建/渲染线程永远挂住。
+    def _kill():
+        try:
+            if proc and proc.poll() is None:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                _log("抠像进程超时,已强杀(该批遮罩视为失败)")
+        except Exception:  # noqa: BLE001 - 看门狗自身不许抛错
+            pass
+
+    watchdog = threading.Timer(MATTE_TIMEOUT * total + 120.0, _kill)
+    watchdog.daemon = True
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
+        watchdog.start()
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("event") in ("clip_end", "clip_failed"):
+                done = int(ev.get("done") or done)
+                if ev.get("event") == "clip_failed":
+                    failed += 1
+                if on_progress:
+                    on_progress(done, total)
+        err_lines = (proc.stderr.read() or "").strip().splitlines()[-6:]
+        try:
+            proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            _kill()
+    finally:
+        watchdog.cancel()
+        manifest.unlink(missing_ok=True)
+    if done == 0 and failed == 0:
+        raise RuntimeError("抠像进程没有回报任何进度:" + " / ".join(err_lines))
+    if err_lines:
+        _log("抠像进程日志:" + " / ".join(err_lines))
+    return {"done": done, "failed": failed}
+
+
+def ensure_mattes(timeline: list, progress_cb=None, on_progress=None) -> list:
+    """把时间轴里缺遮罩的片段补齐(已有的直接复用),返回**补过遮罩字段**的时间轴。
+
+    - 逐条填 "matte";生成不出来的条目保留 matte=None → 叠加时自动回退圆角卡片;
+    - 一批一次进程(模型只加载一次);
+    - 失败只记日志并返回原时间轴,绝不抛错打断出片。
+    """
+    items = [t for t in timeline if t.get("clip") and Path(t["clip"]).exists()]
+    for t in timeline:
+        t.pop("matte", None)
+    if not items:
+        return timeline
+    ok, why = matte_available()
+    if not ok:
+        _log(f"抠像不可用({why}),这段成片仍用圆角卡片")
+        return timeline
+    pending = []
+    for t in items:
+        m = matte_path(t["clip"])
+        if m.exists() and _ffprobe_duration(m) > 0.1:
+            t["matte"] = str(m)
+        else:
+            pending.append({"clip": Path(t["clip"]), "out": m, "item": t})
+    if not pending:
+        return timeline
+    if progress_cb:
+        progress_cb(f"生成抠像遮罩 0/{len(pending)}")
+    try:
+        _run_matte_worker(pending, on_progress=on_progress)
+    except Exception as e:  # noqa: BLE001 - 抠像是增强项:失败退回圆角卡片
+        _log(f"抠像失败,回退圆角卡片:{e}")
+        return timeline
+    for p in pending:
+        if p["out"].exists() and _ffprobe_duration(p["out"]) > 0.1:
+            p["item"]["matte"] = str(p["out"])
+    return timeline
+
+
 def generate_talking(svc: AvatarService, pcm: bytes, out: Path, size: int,
                      fps_hint: int = 20) -> tuple[float, int]:
     """驱动数字人念这段 PCM,产出 size×size 的纯净片段。返回 (时长秒, 帧数)。"""
@@ -436,12 +640,14 @@ def ensure_blank_clip(svc: AvatarService, frame_duration: float,
 def composite_onto_video(base: Path, timeline: list, out: Path,
                          size: int = AVATAR_SIZE, x: int | None = None,
                          y: int | None = None, fps: int = 30, corner: str = AVATAR_CORNER,
-                         progress_cb=None) -> Path:
-    """把各帧数字人片段按**帧绝对起点**叠加到成片指定角落(圆角+投影在此完成)。
+                         cutout: bool = False, progress_cb=None) -> Path:
+    """把各帧数字人片段按**帧绝对起点**叠加到成片(圆角卡片,或抠像后的纯人像)。
 
-    timeline: [{"clip": Path, "start": float, "duration": float}, ...]
+    timeline: [{"clip": Path, "start": float, "duration": float, "matte": Path?}, ...]
     corner: 四角锚点(默认 config.AVATAR_CORNER,现为右上);x/y 显式给出时优先用它们
     (老调用方与 deploy/verify-avatar.py 的像素校验就是这么传的)。
+    cutout: true 时用条目里的 matte 遮罩做抠像叠加(贴画面下缘);该条没有可用遮罩
+    就**逐条回退**圆角卡片 —— 一段遮罩没生成出来,不该毁掉整条成片。
     关键:卡片流的 PTS 必须先平移到帧起点(setpts=PTS-STARTPTS+start/TB),
     否则叠加窗口内播放的是它自己时间轴的末尾;enabled 窗口负责窗口外不显示。
     progress_cb(done_sec, total_sec):ffmpeg 已编码到第几秒(界面「叠加数字人」进度用)。
@@ -450,25 +656,50 @@ def composite_onto_video(base: Path, timeline: list, out: Path,
     out.parent.mkdir(parents=True, exist_ok=True)
     if not items:
         return base
-    if x is None or y is None:
-        x, y = corner_xy(corner, size)
-    x, y = int(x), int(y)
 
-    mask = _mask_path(size)
+    # 每条各自定"用抠像还是用卡片":遮罩缺失的条目退回卡片,不与整批绑定
+    use_cut = [bool(cutout and t.get("matte") and Path(str(t["matte"])).exists())
+               for t in items]
+    if cutout and not any(use_cut):
+        _log("抠像遮罩全部缺失,本次叠加仍用圆角卡片")
+    if x is None or y is None:
+        card_x, card_y = corner_xy(corner, size)
+        cut_x, cut_y = cutout_xy(corner, size)
+    else:
+        card_x = cut_x = int(x)
+        card_y = cut_y = int(y)
+
     inputs: list[str] = ["-i", str(base)]
     for it in items:
         inputs += ["-i", str(it["clip"])]
-    mask_idx = len(items) + 1
-    inputs += ["-i", str(mask)]
+    next_idx = len(items) + 1
+    matte_idx: dict = {}
+    for n, t in enumerate(items, start=1):
+        if use_cut[n - 1]:
+            inputs += ["-i", str(t["matte"])]
+            matte_idx[n] = next_idx
+            next_idx += 1
+    mask_idx = None
+    if not all(use_cut):                      # 还有条目走卡片 → 才需要圆角遮罩输入
+        inputs += ["-i", str(_mask_path(size))]
+        mask_idx = next_idx
+        next_idx += 1
 
     parts, prev = [], "0:v"
     for n, it in enumerate(items, start=1):
         s = float(it["start"])
         e = s + float(it["duration"])
-        parts.append(card_overlay_filter(f"{n}:v", f"{mask_idx}:v", f"card{n}", size, fps))
+        if use_cut[n - 1]:
+            parts.append(cutout_overlay_filter(f"{n}:v", f"{matte_idx[n]}:v",
+                                               f"card{n}", size, fps))
+            ox, oy = cut_x, cut_y
+        else:
+            parts.append(card_overlay_filter(f"{n}:v", f"{mask_idx}:v", f"card{n}",
+                                             size, fps))
+            ox, oy = card_x, card_y
         parts.append(f"[card{n}]setpts=PTS-STARTPTS+{s:.3f}/TB[card{n}s]")
         parts.append(
-            f"[{prev}][card{n}s]overlay={x}:{y}:"
+            f"[{prev}][card{n}s]overlay={ox}:{oy}:"
             f"enable='between(t,{s:.3f},{e:.3f})':eof_action=pass[v{n}]")
         prev = f"v{n}"
 
@@ -490,7 +721,7 @@ def composite_onto_video(base: Path, timeline: list, out: Path,
 
 def build_frame_clips(script: dict, vo: dict, starts: dict,
                       size: int = AVATAR_SIZE, progress_cb=None,
-                      on_frame=None) -> list:
+                      on_frame=None, cutout: bool = False) -> list:
     """为脚本的每一帧生成数字人片段,返回可直接喂给合成的时间轴。
 
     - 有台词的帧:用该帧**最终播放的那个配音文件**驱动(保证只有一套时间轴)
@@ -498,6 +729,7 @@ def build_frame_clips(script: dict, vo: dict, starts: dict,
     - 帧时长取自 script(frames[].duration,已由真实音频回填),
       起点取自 assemble.build 的 starts —— 与字幕/音频同一时钟
     - on_frame(n, total, frame_index, duration):结构化进度(数字人播报视频的步骤展示用)
+    - cutout=true 时顺带补齐每段的抠像遮罩(timeline[].matte);失败留空、叠加时回退
     """
     svc = AvatarService(AVATAR_IMAGE)
     if not svc.available():
@@ -523,6 +755,10 @@ def build_frame_clips(script: dict, vo: dict, starts: dict,
                              "start": start, "duration": dur})
     finally:
         svc.close()
+    if cutout:
+        # 抠像遮罩在这里一次补齐(一批一个进程):片段有缓存,遮罩也有;
+        # 生成不出来就留空,叠加时逐条回退圆角卡片(见 composite_onto_video)
+        ensure_mattes(timeline, progress_cb=progress_cb)
     return timeline
 
 

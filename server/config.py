@@ -31,6 +31,31 @@ TTS_VENV_DIR = Path(os.environ.get("TTV_TTS_VENV", str(ROOT / "tts-venv")))
 # tts 服务启动时硬校验(不符即拒启),smoke_test 另做一次环境校验。
 PINNED_TTS_DEPS = {"transformers": "4.51.3", "tokenizers": "0.21.4"}
 
+# ── 配音合成口径(进配音复用指纹,决定"旧配音还能不能接着用") ──
+# 凡是会让同一段文字合成出**更正确**音频的变化(模型、运行时、解码参数、验收逻辑),
+# 都要递增这个版本:它进复用指纹,旧配音因此自动作废、下次构建重新合成。
+# 为什么非要有这个旋钮(2026-09-12 事故):transformers 4.52+ 会把语音 LLM 的输出打乱,
+# 听起来是乱码,而**时长与峰值全正常**(时长/静音验收都拦不住)。运行时修好之后,
+# 已经烧坏的那批配音因为指纹没变而被一直复用 —— 于是"运行时修好了,成片还是乱的",
+# 用户听到的仍然是乱码。只有换指纹才能把烧坏的那批配音真正作废。
+VO_SYNTH_VERSION = os.environ.get("TTV_VO_SYNTH_VERSION", "2")
+
+
+def vo_runtime_fingerprint() -> str:
+    """配音运行时口径 = 钉版依赖 + 合成版本;进 `_vo_signature`,变了就重新合成。"""
+    deps = ",".join(f"{k}=={v}" for k, v in sorted(PINNED_TTS_DEPS.items()))
+    return f"{deps};vo{VO_SYNTH_VERSION}"
+
+
+# ── 配音可懂度抽检(合成后 whisper 听写 1-2 帧 vs 台词) ──
+# 时长/静音验收发现不了"念的是乱码"(见 VO_SYNTH_VERSION 的注释),唯一能识破的是"听出
+# 来是什么字"。抽检只在**真正重新合成**后跑一次,约 30-60 秒,失败一律跳过、不阻塞构建。
+# TTV_VO_CHECK_FRAMES=0 可完全关掉;whisper 装在配音 venv 里(见 tts-venv)。
+VO_CHECK_FRAMES = int(os.environ.get("TTV_VO_CHECK_FRAMES", "2"))
+VO_CHECK_TIMEOUT = float(os.environ.get("TTV_VO_CHECK_TIMEOUT", "900"))
+VO_CHECK_MODEL_DIR = Path(os.environ.get(
+    "TTV_VO_CHECK_MODEL_DIR", str(MODELS_DIR / "whisper")))
+
 
 def pinned_dep_mismatch(versions: dict) -> list:
     """[versions] 为实际版本(缺失传 None);返回与钉版不符的描述(空列表=相符)。
@@ -167,6 +192,37 @@ def avatar_corner_options() -> list:
     比把默认项挪到第一项更好认。
     """
     return [{"key": k, "name": name} for k, name in AVATAR_CORNERS.items()]
+
+# ── 数字人抠像(「只保留人像、背景透明」) ──
+# 打开后不再叠圆角卡片,而是只把人像本体叠上去:幻灯片内容从人像四周透出来。
+# 做法:给每段片段额外生成一条**灰度遮罩**(server/matte.py,MODNet ONNX 本地推理),
+# 叠加时 `[片段][遮罩]alphamerge` 得到带 alpha 的人像(见 ADR-0004)。
+# 默认关闭;按任务走(state.avatar_geom.cutout),创作页与预览页都能开。
+AVATAR_CUTOUT = os.environ.get("TTV_AVATAR_CUTOUT", "0") == "1"
+# 抠像模式下人像**贴画面下缘**:片段本就是齐胸特写,底部整行都是躯干(alpha≈1),
+# 只有让那道平切口落在画面边缘,看上去才是"站在画面下沿"而不是"悬浮的半身像"。
+# 左右仍由角落选择决定(tl/bl → 左,tr/br → 右),上下不再区分。
+AVATAR_CUTOUT_BOTTOM_MARGIN = int(os.environ.get("TTV_AVATAR_CUTOUT_BOTTOM_MARGIN", "0"))
+# 遮罩版本:抠像模型/预处理/编码口径变化时递增,自动失效旧的遮罩缓存(片段缓存不受影响)
+MATTE_VERSION = os.environ.get("TTV_MATTE_VERSION", "1")
+# 模型标识(进遮罩文件名):换模型时与 MATTE_VERSION 一起决定缓存键
+MATTE_MODEL_TAG = os.environ.get("TTV_MATTE_MODEL_TAG", "modnet")
+MATTE_MODEL = Path(os.environ.get(
+    "TTV_MATTE_MODEL", str(MODELS_DIR / "matte" / "modnet.onnx")))
+# 权重下载源(顺次尝试;默认走 hf-mirror,国内直连 huggingface 常不通)
+MATTE_URLS = tuple(u.strip() for u in os.environ.get("TTV_MATTE_URLS", ",".join((
+    "https://hf-mirror.com/Xenova/modnet/resolve/main/onnx/model.onnx",
+    "https://huggingface.co/Xenova/modnet/resolve/main/onnx/model.onnx",
+))).split(",") if u.strip())
+# 跑抠像的解释器:后端**不**引入 onnxruntime,只按 subprocess 调这个解释器里的 matte.py
+# (默认 tts-venv —— 它已经有了 onnxruntime 与 numpy;没有就回退成不抠像)
+MATTE_PYTHON = os.environ.get("TTV_MATTE_PYTHON", str(TTS_VENV_DIR / "bin" / "python"))
+# 模型输入侧最短边(MODNet 官方口径 512;调小更快、边缘更糊)
+MATTE_REF = int(os.environ.get("TTV_MATTE_REF", "512"))
+# 遮罩编码质量:灰度 + 极低 CRF(遮罩是形状,不能像彩色画面那样压)
+MATTE_CRF = int(os.environ.get("TTV_MATTE_CRF", "12"))
+# 单段遮罩的墙钟上限(秒):卡死要能自己失败并回退,不能挂住整条流水线
+MATTE_TIMEOUT = float(os.environ.get("TTV_MATTE_TIMEOUT", "1800"))
 
 # 片段缓存(跨任务复用;与形象/音频/规格/版本共同决定键)
 AVATAR_CACHE_DIR = Path(os.environ.get("TTV_AVATAR_CACHE", str(ROOT / ".cache" / "avatar")))

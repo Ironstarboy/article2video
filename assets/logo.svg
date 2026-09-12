@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="理论文章转视频">
+  <rect width="64" height="64" rx="12" fill="#A61B29"/>
+  <rect x="4.75" y="4.75" width="54.5" height="54.5" rx="8.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.3" stroke-width="1.5"/>
+  <text x="32" y="45" text-anchor="middle" font-family="'Source Han Serif SC','Noto Serif CJK SC','Songti SC','STSong',serif" font-size="38" font-weight="700" fill="#FFFFFF">论</text>
+</svg>

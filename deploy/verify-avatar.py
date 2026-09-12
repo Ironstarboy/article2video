@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""端到端验证:assemble.build() → 数字人片段 → hyperframes 渲染 → ffmpeg 叠加。
+"""端到端验证:assemble.build() → 数字人片段 → hyperframes 渲染 → ffmpeg 叠加(含抠像)。
 
 与 smoke_test 的分工:
   - server/smoke_test.py 只测纯函数(不调 assemble.build,不需要 GPU/hyperframes)
@@ -9,7 +9,9 @@
 用法(在仓库根目录):
     .venv/bin/python deploy/verify-avatar.py [--keep]
 
-退出码 0 表示:项目构建成功、片段按帧起点叠加、成片里确实出现数字人。
+退出码 0 表示:项目构建成功、片段按帧起点叠加、成片里确实出现数字人;
+第 ⑥ 步再验一次抠像(人像框内应有一大块像素与纯 PPT 完全一致)。
+抠像权重/解释器缺失时第 ⑥ 步跳过,不影响退出码。
 """
 import argparse
 import os
@@ -91,6 +93,52 @@ def patch_dist(a, b) -> float:
                for p, q in zip(a, b)) / len(a) / 3
 
 
+def frame(path, t) -> bytes:
+    """取某一秒的原始 RGB24 像素(注意:不能按文本解码)。"""
+    return subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", str(t), "-i", str(path),
+         "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        capture_output=True).stdout
+
+
+def cutout_same_ratio(raw: bytes, composed: bytes, x: int, y: int) -> float:
+    """人像框内"与纯 PPT 逐像素一致"的比例 = 背景真的透出来的比例(采样步长 3px)。"""
+    same = total = 0
+    for yy in range(y, y + SIZE, 3):
+        for xx in range(x, x + SIZE, 3):
+            i = (yy * config.WIDTH + xx) * 3
+            total += 1
+            if max(abs(raw[i] - composed[i]), abs(raw[i + 1] - composed[i + 1]),
+                   abs(raw[i + 2] - composed[i + 2])) <= 8:
+                same += 1
+    return same / max(1, total)
+
+
+def check_cutout(raw_out: Path, timeline: list, project: Path):
+    """抠像校验:人像框内应有一大块像素与纯 PPT 完全一致(背景透明),卡片版这里是 0。
+
+    返回 True/False;抠像不可用(权重/解释器缺失)时返回 None(跳过,不算失败)。
+    """
+    ok, why = avatar.matte_available()
+    if not ok:
+        print(f"   跳过:{why}")
+        return None
+    tl = [dict(t) for t in timeline]
+    avatar.ensure_mattes(tl, progress_cb=lambda m: print(f"   {m}"))
+    got = sum(1 for t in tl if t.get("matte"))
+    if not got:
+        print("   跳过:一条遮罩都没生成出来")
+        return None
+    out = project / "renders" / "out_cutout.mp4"
+    avatar.composite_onto_video(raw_out, tl, out, corner="br", cutout=True, fps=FPS)
+    x, y = avatar.cutout_xy("br", SIZE)
+    t = tl[1]["start"] + 0.5
+    ratio = cutout_same_ratio(frame(raw_out, t), frame(out, t), x, y)
+    print(f"   遮罩 {got}/{len(tl)} 段 · 人像框内与纯 PPT 一致 {ratio * 100:.1f}%"
+          f"(卡片版为 0%)")
+    return ratio > 0.15
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true", help="保留工作目录")
@@ -140,12 +188,6 @@ def main() -> int:
     print(f"   {composed.stat().st_size / 1e6:.2f} MB")
 
     print("⑤ 校验:窗口内卡片区应显著变化,窗口外应基本不变 …")
-    def frame(path, t):
-        # 注意:这里要的是原始像素字节,不能按文本解码
-        return subprocess.run(
-            ["ffmpeg", "-v", "error", "-ss", str(t), "-i", str(path),
-             "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-            capture_output=True).stdout
     W = config.WIDTH
     e = timeline[1]                      # 中间那帧(有台词)
     inside = patch_dist(pixel_patch(frame(raw_out, e["start"] + 0.5), W, config.AVATAR_X + 130, config.AVATAR_Y + 130),
@@ -156,6 +198,12 @@ def main() -> int:
     print(f"   卡片区(窗口内)差异 {inside:5.1f}   幻灯片区(远离卡片)差异 {outside:5.1f}")
     ok = inside > 15 and outside < 12
     print("   通过 ✅" if ok else "   未通过 ❌")
+
+    print("⑥ 抠像(只保留人像、背景透明)…")
+    cut = check_cutout(raw_out, timeline, project)
+    if cut is not None:
+        print("   通过 ✅" if cut else "   未通过 ❌")
+    ok = ok and (cut is not False)
 
     if not a.keep:
         shutil.rmtree(WORK, ignore_errors=True)
