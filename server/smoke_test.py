@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import analyze
+import config
 import extract
 import tts
 from builder import styles, templates
@@ -24,6 +25,10 @@ def ok(name, cond, detail=""):
     print(("PASS" if cond else "FAIL") + f" [{name}]" + (f"  {detail}" if detail else ""))
     if not cond:
         FAIL.append(name)
+
+
+def skip(name, detail=""):
+    print(f"SKIP [{name}]" + (f"  {detail}" if detail else ""))
 
 
 def _raises(fn, exc):
@@ -797,6 +802,38 @@ ok("tts 正常时长判合格", tts.duration_plausible(_t42, _expect * 1.2))
 ok("tts 残句(0.3×)判不合格", not tts.duration_plausible(_t42, _expect * 0.3))
 ok("tts 复读(2.5×)判不合格", not tts.duration_plausible(_t42, _expect * 2.5))
 ok("tts 验收窗口可配", tts.ACCEPT_RATIO[0] < 1.0 < tts.ACCEPT_RATIO[1])
+
+# ── TTS 运行时钉版(e868f32bec3d 全片乱码的根因:transformers 4.57 让语音 LLM 输出乱码,
+#    而时长 0.84–0.88×、峰值 -2dB 全部"正常",时长/静音验收都拦不住)──
+ok("钉版校验:版本相符时不报", config.pinned_dep_mismatch(config.PINNED_TTS_DEPS) == [])
+ok("钉版校验:transformers 过高即报",
+   any("transformers" in m for m in config.pinned_dep_mismatch({"transformers": "4.57.3"})))
+ok("钉版校验:依赖缺失也算不符",
+   any("缺失" in m for m in config.pinned_dep_mismatch({})))
+_bad = config.pinned_dep_mismatch({"transformers": "4.57.3", "tokenizers": "0.22.2"})
+ok("钉版校验:两项都不符时都报出来", len(_bad) == 2, " ；".join(_bad))
+
+# 环境校验:tts-venv 里实际装的必须就是钉版(venv 不存在则跳过,不判失败)
+_tts_py = Path(config.TTS_VENV_DIR) / "bin" / "python"
+if not _tts_py.exists():
+    skip("TTS venv 运行时为钉版", f"{_tts_py} 不存在")
+else:
+    import subprocess as _sp
+    _r = _sp.run([str(_tts_py), "-c",
+                  "import json,transformers,tokenizers;"
+                  "print(json.dumps({'transformers':transformers.__version__,"
+                  "'tokenizers':tokenizers.__version__}))"],
+                 capture_output=True, text=True, timeout=120)
+    try:
+        _got = json.loads((_r.stdout or "").strip().splitlines()[-1])
+    except Exception:
+        _got = None
+    if _got is None:
+        skip("TTS venv 运行时为钉版", f"探测失败:{(_r.stderr or '').strip()[-120:]}")
+    else:
+        _mism = config.pinned_dep_mismatch(_got)
+        ok("TTS venv 运行时为钉版(否则合成必乱码)", _mism == [],
+           " ；".join(_mism) if _mism else str(_got))
 
 
 print()

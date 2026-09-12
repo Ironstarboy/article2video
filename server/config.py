@@ -25,6 +25,25 @@ QWEN_TTS_MODEL_DIR = Path(os.environ.get(
 COSYVOICE_SRC_DIR = Path(os.environ.get("TTV_COSYVOICE_SRC", str(ROOT / "cosyvoice-src")))
 TTS_VENV_DIR = Path(os.environ.get("TTV_TTS_VENV", str(ROOT / "tts-venv")))
 
+# CosyVoice3 锁定的运行时依赖(见 BUILD.md 第四节):语音 LLM 跑在 Qwen2 backbone 上,
+# **只有**官方锁定的 transformers 能解码正确;4.52+ 会让 speech token 乱掉,听感是
+# 「读音完全不正常、断断续续」,而时长与峰值全部正常 —— 时长/静音验收发现不了。
+# tts 服务启动时硬校验(不符即拒启),smoke_test 另做一次环境校验。
+PINNED_TTS_DEPS = {"transformers": "4.51.3", "tokenizers": "0.21.4"}
+
+
+def pinned_dep_mismatch(versions: dict) -> list:
+    """[versions] 为实际版本(缺失传 None);返回与钉版不符的描述(空列表=相符)。
+
+    纯函数,便于回归:这是唯一能在坏音上线前拦住它的检查。
+    """
+    bad = []
+    for name, want in PINNED_TTS_DEPS.items():
+        got = (versions or {}).get(name) or "缺失"
+        if got != want:
+            bad.append(f"{name}=={got}(应为 {want})")
+    return bad
+
 # 日志统一收在 ROOT/logs 下(不污染项目根目录;deploy/*.sh 的重定向路径与此一致)
 LOG_DIR = Path(os.environ.get("TTV_LOG_DIR", str(ROOT / "logs")))
 BACKEND_LOG = LOG_DIR / "backend.log"      # 后端 uvicorn(由 deploy/start.sh 重定向)

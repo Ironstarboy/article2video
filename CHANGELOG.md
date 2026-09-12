@@ -6,6 +6,18 @@
 
 ## v2.2(2026-09-12)
 
+**修复:配音「读音完全不正常、断断续续」根因 —— transformers 版本(当天补充定位)**
+- **现象**:整片人声是与台词无关的乱码语音,但**时长与峰值完全正常** —— 上一版加的两层验收(时长窗口 + 非静音)全部放行,坏音直接上线
+- **反馈环**:whisper(small)听写 + 与台词算 LCS,做成可懂度判据。参考音频 `asset-v2/male.wav` 能 100% 听对(证明 ASR 与被测音频都正常),而当时的配音 5/5 全是乱码(时长验收毫无区分度)
+- **差分实验**(同一模型,一次加载跑多条路径):
+  - `inference_vc`(speech tokenizer → flow → vocoder,**不经过 LLM**)输出完全正确(「希望你以后能够做得比我还好」)→ tokenizer / flow / vocoder 都是好的
+  - `inference_zero_shot` / `inference_cross_lingual` / `inference_instruct2` 全部乱码 → 坏的是**语音 LLM** 这一环
+  - 同时排除了:注意力实现(强制 eager 与 sdpa 输出逐字节相同)、权重精度(fp16 / fp32 都乱码)、GPU 数值(matmul/conv/softmax/SDPA 各后端与 CPU 一致)、官方示例调用本身(原样跑同样乱码)
+- **根因**:`transformers` 版本。把官方 `requirements.txt` 锁定的 **4.51.3**(+ `tokenizers==0.21.4`)装回 tts-venv,官方示例立刻出正确语音;换成工作区自己的 `male/female/male_narrator` 参考音频同样正常(4/4 音色 7.4–7.6s,听写全部正确)。4.52+ 的 Qwen2 实现会让 CosyVoice3 的 speech token 序列乱掉。**为什么会装上 4.57**:tts-venv 用 `--system-site-packages` 建、又故意没装官方 requirements(怕 torch 被降到 2.3.1),于是静默继承了系统里更新的 transformers
+- **修复**:`tts-venv` 钉 `transformers==4.51.3` / `tokenizers==0.21.4`(其余保持本机新 torch);`config.PINNED_TTS_DEPS` 单点声明 + `tts_server` 启动硬校验(不符即拒启,`TTV_TTS_ALLOW_UNPINNED=1` 可绕过)+ `/health` 回报实际版本;`smoke_test` 新增 5 项(钉版判定 4 项纯函数 + tts-venv 实际环境 1 项);BUILD.md 第四节补上安装与坑位说明
+- **效果**:同一台机器、同一模型,5 条真实台词样本听写 LCS **0.83–0.97**(修复前 0.00–0.06),时长 ratio 0.79–0.95,且不再出现 0.03×/2.36× 的极端样本(重采几乎不再触发);已按新运行时重合成成片配音与数字人播报视频
+- **教训**:这类「时长/音量都正常、内容全错」的失败,只有**内容级判据**(ASR/可懂度)或**版本钉死 + 启动校验**才拦得住;时长与静音验收只是兜底
+
 **修复:数字人播报视频人声全损(我自己的字节对齐 bug)**
 - `build_broadcast_audio()` 里帧首静音写的是 `head = int(rate * VO_OFFSET)`,那是**采样数**(11025)却被当成**字节数**用;16bit 单声道下每个采样 2 字节,奇数偏移 → **整条人声每个采样错位一个字节**,听感就是「支离破碎」的噪声,而静音段依旧正常(所以静音检测、时长检查全都发现不了)
 - 修复:字节/采样换算显式化(`bytes_per_sample = 2`),`head` 与 `need` 一律按字节计算
@@ -18,7 +30,7 @@
 - **修复(TTS 服务侧)**:合成后**按时长验收** —— 实际/预期(字数 ÷ `CHARS_PER_SEC`)落在 `[0.65, 1.8]` 才算通过,否则重采(默认最多 6 次,取最接近预期的一次);`TTV_TTS_ACCEPT_LO/HI`、`TTV_TTS_ATTEMPTS` 可覆盖;响应头带 `X-TTS-Ratio` / `X-TTS-Attempts` 便于观测
 - **修复(客户端)**:`tts.py` 再兜一层(验收不过就换实例再采样),并把 `ratio` 写进 vo 条目;`tts.ACCEPT_RATIO` 可调
 - **效果**(同一任务 11 个台词帧):修复前 5/11 在合理区间(含 0.07× / 0.15× / 0.25× 的残句),修复后 **11/11**;整片真实时长 152s → **224s**(把原先被截断的内容补了回来)。代价:坏样本要重采,TTS 阶段 ~137s → ~200s
-- **仍未根治**:根因在本机 CosyVoice3 运行时/权重(官方 fun-cosyvoice3-0.5b-2512 + RTX 5090 sm_120 + torch 2.8)。要彻底解决需重装 TTS 运行时或接一个稳定引擎(仓库预留了豆包云与 Qwen3-TTS,但当前既无密钥也无权重)
+- **仍未根治**:根因在本机 CosyVoice3 运行时/权重(官方 fun-cosyvoice3-0.5b-2512 + RTX 5090 sm_120 + torch 2.8)。要彻底解决需重装 TTS 运行时或接一个稳定引擎(仓库预留了豆包云与 Qwen3-TTS,但当前既无密钥也无权重)→ **当天已根治:见本节开头「配音乱码根因」(transformers 必须钉 4.51.3)**
 
 **修复:渲染期间「长时间没有反应、没有进度」**
 - `stage_render` 由 `subprocess.run` 一次性收走输出,改为**流式**读取并解析 hyperframes 的帧级进度(`Streaming frame n/N` / `Capturing frame n/N` / `Calibration: capturing test frame n/N`),界面显示「捕获帧 n/N · 已用 · 预计剩余」与进度条(两步:渲染 PPT 视频 → 叠加数字人片段);捕获阶段一旦有帧数,预计剩余改用**实测速率**反推

@@ -50,10 +50,13 @@ pip3 install fastapi uvicorn httpx python-multipart jieba fonttools
    cd cosyvoice-src && git submodule update --init   # third_party/Matcha-TTS(提供 matcha 模块)
    python3 -m venv --system-site-packages /mnt/workspace/ttv/tts-venv
    tts-venv/bin/pip install modelscope wetext sentencepiece hydra-core HyperPyYAML omegaconf librosa soundfile inflect pyworld conformer gdown wget lightning
+   # 只挑官方 requirements 里与「模型推理正确性」相关的两项钉版(其余保持本机新 torch):
+   tts-venv/bin/pip install "transformers==4.51.3" "tokenizers==0.21.4"
    # funasr 装不上 → 跳过(仅 instruct 模式需要);onnxruntime-gpu 无 PPU 轮子 → 用系统 CPU 版(仅 tokenizer/embedding 小头)
    ```
 4. **关键坑**:
    - **必须 `source /usr/local/PPU_SDK/envsetup.sh`**,否则 PPU 内核 JIT 报 `PPU_SDK/PPU_HOME not exist`
+   - **`transformers` 必须钉 4.51.3**(2026-09-12 定位,见 CHANGELOG v2.2「配音乱码根因」):语音 LLM 跑在 Qwen2 backbone 上,4.52+ 会让 speech token 序列乱掉 —— 听感「读音完全不正常、断断续续」,而**时长与峰值都正常**(ratio 0.84–0.88、峰值 -2dB),时长/静音验收全都发现不了。`tts-venv` 是 `--system-site-packages` 建的,不显式安装就会继承系统里更新的 transformers,所以这一条最容易被漏掉;`tts_server` 启动时会硬校验(不符即拒启,`TTV_TTS_ALLOW_UNPINNED=1` 可跳过),`python server/smoke_test.py` 也会校验 tts-venv 的实际版本
    - torchaudio 2.10 需要 torchcodec(无轮子)→ 服务内 monkeypatch 成 soundfile
    - v3 构造签名无 load_jit;prompt 文本必须含 `You are a helpful assistant.<|endofprompt|>` 前缀
    - **speed<1 非线性恶化(0.8 → 5 倍时长)**,服务端钳位下限 1.0(只用 1.0);文本 <15 字 vocoder 卷积报错(Qwen3-TTS 服务补 <8 字 400)

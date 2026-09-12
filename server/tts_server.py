@@ -11,6 +11,7 @@
   - 服务:工作区内 tts-venv,启动脚本 deploy/start-tts.sh
   - 端口:127.0.0.1:8016;GPU 由 start-tts.sh 的 TTV_TTS_GPUS 指定
 """
+import importlib
 import io
 import logging
 import os
@@ -23,6 +24,35 @@ import torchaudio
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
+
+from config import CHARS_PER_SEC, COSYVOICE_MODEL_DIR, PINNED_TTS_DEPS, pinned_dep_mismatch
+
+# ── 运行时钉版校验(不符即拒启) ──
+# CosyVoice3 的语音 LLM 跑在 Qwen2 backbone 上,**只在官方锁定的 transformers 上**解码正确:
+# 4.52+ 的 Qwen2 实现会让 speech token 序列乱掉,听感就是「读音完全不正常、断断续续」,
+# 而时长与峰值全部正常(2026-09-12 e868f32bec3d 实测 5/5 样本 ratio 0.84–0.88、峰值 -2dB),
+# 时长/静音验收一律放行。静默坏音比启动失败危险得多,所以这里直接拒绝启动。
+# 成因:tts-venv 用 `--system-site-packages` 建、没装官方 requirements(怕 torch 被降级),
+# 于是继承了系统里更新的 transformers。修法见 BUILD.md 第四节。
+def check_runtime(strict: bool = True) -> list:
+    """返回与钉版不符的依赖描述;[strict] 时直接抛错拒绝启动。"""
+    versions = {}
+    for name in PINNED_TTS_DEPS:
+        try:
+            versions[name] = getattr(importlib.import_module(name), "__version__", "未知")
+        except Exception:  # noqa: BLE001 - 缺失也要报出来
+            versions[name] = None
+    bad = pinned_dep_mismatch(versions)
+    if bad and strict and os.environ.get("TTV_TTS_ALLOW_UNPINNED", "0") != "1":
+        raise RuntimeError(
+            "TTS 运行时依赖与 CosyVoice3 锁定版本不符:" + "、".join(bad)
+            + " —— 它会让合成语音的内容乱码(时长/峰值却正常,验收发现不了)。修:"
+            + " ".join(f"{k}=={v}" for k, v in PINNED_TTS_DEPS.items())
+            + ";确知无碍可用 TTV_TTS_ALLOW_UNPINNED=1 跳过本校验。")
+    return bad
+
+
+check_runtime()
 
 # ── torchaudio 2.10 需要 torchcodec 后端,本机 PPU 平台无 wheel ──
 # 用 soundfile 替换 torchaudio.load/save(cosyvoice 的 load_wav 与我们的保存都走这里)
@@ -43,8 +73,6 @@ torchaudio.save = _sf_save
 
 from cosyvoice.cli.cosyvoice import AutoModel
 from cosyvoice.utils.file_utils import load_wav
-
-from config import CHARS_PER_SEC, COSYVOICE_MODEL_DIR
 
 MODEL_DIR = str(COSYVOICE_MODEL_DIR)
 REF_DIR = str(COSYVOICE_MODEL_DIR / "asset-v2")   # 零样本参考音频(edge-tts 新闻腔种子)
@@ -147,7 +175,10 @@ def _ref_of(voice: str):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "model_loaded": model is not None, "gpu": torch.cuda.is_available()}
+    return {"ok": True, "model_loaded": model is not None, "gpu": torch.cuda.is_available(),
+            "runtime": {k: getattr(importlib.import_module(k), "__version__", "未知")
+                        for k in PINNED_TTS_DEPS},
+            "pinned": dict(PINNED_TTS_DEPS)}
 
 
 @app.get("/voices")
