@@ -37,7 +37,8 @@ from config import (  # noqa: E402
     AVATAR_CUTOUT_BOTTOM_MARGIN, AVATAR_IDLE_SECONDS,
     AVATAR_IMAGE, AVATAR_RT_FACTOR, AVATAR_SIZE, AVATAR_SIZE_MAX, AVATAR_SIZE_MIN,
     AVATAR_TTS_RT_FACTOR, AVATAR_X, AVATAR_Y, HEIGHT, MATTE_CRF, MATTE_MODEL,
-    MATTE_MODEL_TAG, MATTE_PYTHON, MATTE_REF, MATTE_TIMEOUT, MATTE_VERSION, WIDTH,
+    MATTE_MODEL_TAG, MATTE_PYTHON, MATTE_REF, MATTE_TIMEOUT, MATTE_VERSION,
+    WIDTH, resolve_avatar_image,
 )
 from tts import VO_OFFSET  # noqa: E402
 
@@ -730,9 +731,12 @@ def composite_onto_video(base: Path, timeline: list, out: Path,
 
 def build_frame_clips(script: dict, vo: dict, starts: dict,
                       size: int = AVATAR_SIZE, progress_cb=None,
-                      on_frame=None, cutout: bool = False) -> list:
+                      on_frame=None, cutout: bool = False, image: Path | None = None) -> list:
     """为脚本的每一帧生成数字人片段,返回可直接喂给合成的时间轴。
 
+    - image:形象图片;省略时按 config.resolve_avatar_image() **当场解析**
+      (形象库的当前默认形象 / TTV_AVATAR_IMAGE 环境变量)。刻意不在 import 时固化,
+      这样库里换了默认形象,下一个构建就用新形象,不必重启服务。
     - 有台词的帧:用该帧**最终播放的那个配音文件**驱动(保证只有一套时间轴)
     - 无台词的帧(opening/closing):整段用待机画面
     - 帧时长取自 script(frames[].duration,已由真实音频回填),
@@ -740,7 +744,8 @@ def build_frame_clips(script: dict, vo: dict, starts: dict,
     - on_frame(n, total, frame_index, duration):结构化进度(数字人播报视频的步骤展示用)
     - cutout=true 时顺带补齐每段的抠像遮罩(timeline[].matte);失败留空、叠加时回退
     """
-    svc = AvatarService(AVATAR_IMAGE)
+    image = Path(image) if image else resolve_avatar_image()
+    svc = AvatarService(image)
     if not svc.available():
         raise RuntimeError(f"数字人服务不可达:{svc.addr}")
     svc.set_avatar()

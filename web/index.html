@@ -38,6 +38,9 @@ a{color:var(--navy)}
 .brand h1{margin:0;font-family:var(--serif);font-size:20px;font-weight:600;letter-spacing:2px;line-height:1.3;}
 .brand .tag{margin:0;font-size:12px;color:rgba(255,255,255,.68);letter-spacing:.5px;}
 .head-note{font-size:12.5px;color:rgba(255,255,255,.78);text-align:right;line-height:1.5;}
+/* 顶栏二级页入口(数字人形象):深色底上的浅描边按钮,与页头同一族 */
+.head-nav{padding:8px 16px;font-size:13px;border-radius:8px;border:1px solid rgba(255,255,255,.45);background:transparent;color:#fff;cursor:pointer;white-space:nowrap;transition:background .15s,border-color .15s;}
+.head-nav:hover{background:rgba(255,255,255,.14);border-color:#fff;}
 
 /* ── 主区 ── */
 main{max-width:1080px;margin:0 auto;padding:28px 24px 64px;}
@@ -201,6 +204,45 @@ table.frames input[type=number]{width:64px;}
 .bc-check.disabled{opacity:.55;cursor:not-allowed;}
 .bc-check.disabled input[type=checkbox]{cursor:not-allowed;}
 
+/* ── 数字人形象库(独立二级页) ── */
+.av-current{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid var(--line);border-left:3px solid var(--red);border-radius:10px;padding:12px 18px;margin-bottom:20px;background:var(--card);font-size:13.5px;color:var(--muted);}
+.av-current b{color:var(--ink);font-weight:600;}
+.av-current .th{width:46px;height:46px;border-radius:8px;object-fit:cover;background:var(--navy-soft);border:1px solid var(--line);flex:none;}
+.av-up{border:1.5px dashed var(--line-strong);border-radius:10px;padding:26px 20px;text-align:center;cursor:pointer;background:#FCFBF9;transition:border-color .2s,background .2s;margin-bottom:12px;}
+.av-up:hover{border-color:var(--navy);}
+.av-up.on{border-color:var(--red);background:var(--red-soft);}
+.av-up .big{font-size:14.5px;color:var(--ink);margin-bottom:6px;}
+.av-up .small{color:var(--faint);font-size:12.5px;}
+.av-up.busy{opacity:.6;cursor:progress;}
+.av-note{font-size:12.5px;color:var(--muted);margin:0 0 18px;line-height:1.7;}
+.av-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:16px;}
+.av-card{border:1.5px solid var(--line);border-radius:10px;background:var(--card);overflow:hidden;display:flex;flex-direction:column;transition:border-color .15s,box-shadow .15s;}
+.av-card.isdefault{border-color:var(--red);box-shadow:0 0 0 2px rgba(166,27,41,.10);}
+.av-card .thumb{position:relative;background:#0B1220;aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;overflow:hidden;}
+.av-card .thumb img{width:100%;height:100%;object-fit:cover;display:block;}
+.av-card .thumb .badge{position:absolute;left:8px;top:8px;background:var(--red);color:#fff;font-size:11px;border-radius:999px;padding:2px 10px;letter-spacing:.5px;}
+.av-card .thumb .builtin{position:absolute;right:8px;top:8px;background:rgba(30,58,95,.82);color:#fff;font-size:11px;border-radius:999px;padding:2px 10px;}
+.av-card .body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:8px;flex:1;}
+.av-card .nm{font-size:14px;color:var(--ink);font-weight:600;word-break:break-all;line-height:1.4;}
+.av-card.isdefault .nm{color:var(--red);}
+.av-card .meta{font-size:12px;color:var(--muted);line-height:1.7;}
+.av-card .ops{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto;}
+.av-card .ops button{padding:6px 12px;font-size:12.5px;border-radius:8px;border:1.5px solid var(--navy);background:var(--card);color:var(--navy);cursor:pointer;font-weight:600;}
+.av-card .ops button:hover{background:var(--navy-soft);}
+.av-card .ops button:disabled{opacity:.4;cursor:not-allowed;}
+.av-card .ops button.danger{border-color:var(--err);color:var(--err);}
+.av-card .ops button.danger:hover{background:var(--err-soft);}
+.av-card .ops button.cur{border-color:var(--line-strong);color:var(--faint);background:#FCFBF9;}
+.av-empty{border:1.5px dashed var(--line-strong);border-radius:10px;padding:36px 20px;text-align:center;color:var(--muted);font-size:13.5px;background:#FCFBF9;}
+.av-alert{border:1px solid var(--line);border-left:3px solid var(--err);border-radius:10px;padding:12px 18px;margin-bottom:16px;background:var(--err-soft);color:var(--err);font-size:13px;}
+/* 全局偏好开关(「新任务默认抠掉背景」):一行可点的开关,右侧是解释 */
+.av-pref{display:flex;align-items:flex-start;gap:10px;border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin-bottom:16px;background:var(--card);cursor:pointer;font-size:13.5px;color:var(--ink);}
+.av-pref input[type=checkbox]{width:16px;height:16px;margin:2px 0 0;accent-color:var(--red);cursor:pointer;flex:none;}
+.av-pref b{font-weight:600;}
+.av-pref .tip{display:block;font-size:12.5px;color:var(--muted);line-height:1.7;margin-top:2px;}
+.av-pref.busy{opacity:.6;cursor:progress;}
+.av-pref.disabled{opacity:.55;cursor:not-allowed;}
+
 /* ── 视频区 ── */
 .video-row{margin-top:20px;}
 .studio-wrap{position:relative;}
@@ -309,6 +351,7 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
       </div>
     </div>
     <div class="head-note">文章分析 · 逐帧脚本 · 自动配音 · 一键成片</div>
+    <button type="button" class="head-nav" id="nav-avatars" title="管理数字人形象(上传 / 设为默认 / 重命名 / 删除)">数字人形象</button>
   </div>
 </header>
 <main>
@@ -395,6 +438,7 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
         <input type="checkbox" id="up-avatar-cutout"/>
         只保留人像(背景透明)
       </label>
+      <span class="bc-opts-tip" id="up-avatar-who"></span>
     </div>
     <p class="hint" style="margin:0 0 12px;">选「不出镜」就是纯 PPT 成片;选一个角落则逐帧生成数字人片段并叠加到该角落,构建与渲染时间会明显变长。勾上「只保留人像」会把数字人背景抠掉(角落照样四选一;下排贴画面下缘、上排留头顶空间),幻灯片内容不再被那块不透明卡片盖住 —— 抠像不可用时自动回退成带边框的卡片。位置与大小之后也能在预览页改。</p>
     <button class="primary" id="submit" disabled>开始分析</button>
@@ -532,6 +576,38 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
       「一键出片」＝ 构建(配音/组装/数字人片段)+ 渲染一次跑完,中途不用再点;想先看 Studio 时间线就用「构建预览」。
     </p>
     <div id="dl"><a id="dl-link" target="_blank">下载成片 <small id="dl-size"></small></a></div>
+  </div>
+</div>
+
+<!-- ═══════════ 数字人形象库:独立二级页(顶栏入口) ═══════════ -->
+<div id="view-avatars" class="hidden">
+  <a class="back" id="av-back" href="./">← 返回项目列表</a>
+  <div class="step">
+    <div class="step-head"><h2>数字人形象</h2><span class="no">形象库</span></div>
+    <p class="hint">
+      这里是**全局**形象库:上传的数字人图片都留在这里,其中一张是「当前默认形象」。
+      之后新建/重新构建的任务,数字人片段都用当前默认形象生成(片段按形象内容各自缓存,
+      换形象不会重烧已出片的老任务,也不会串用别人的画面)。点一张卡片上的「设为默认」即可更换。
+    </p>
+    <div id="av-alert" class="av-alert hidden"></div>
+    <div class="av-current" id="av-current"></div>
+    <label class="av-pref" id="av-pref-cutout-wrap" for="av-pref-cutout">
+      <input type="checkbox" id="av-pref-cutout"/>
+      <span>
+        <b>新任务默认抠掉背景</b>
+        <span class="tip" id="av-pref-cutout-tip">只保留人像、背景透明,幻灯片内容从人像四周透出来。上传照片后建议开着;抠像不可用时自动回退成圆角卡片,不影响出片。</span>
+      </span>
+    </label>
+    <div class="av-up" id="av-drop" tabindex="0" role="button" aria-label="点击选择图片,或拖拽到此处上传">
+      <div class="big" id="av-up-text">点击选择图片,或拖拽到此处上传</div>
+      <div class="small" id="av-up-small">支持 png · jpg · jpeg · webp</div>
+    </div>
+    <input type="file" id="av-file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" class="hidden"/>
+    <p class="av-note">
+      建议用正面、光线均匀、五官清晰的半身照片(正方形或竖版);背景干净能让抠像(只保留人像)效果更好。
+      超过服务端原生输出边长(464)的图只会被缩放使用,清晰度不会再增加。
+    </p>
+    <div id="av-grid" class="av-grid"></div>
   </div>
 </div>
 
@@ -788,8 +864,9 @@ $("#submit").onclick = ()=>{
 /* ── 预览页逻辑 ── */
 const q = new URLSearchParams(location.search);
 jobId = q.get("job");
-// 入口页/创作页/项目详情页由 URL 决定:?job= 详情页、?new=1 创作页、其余为项目历史列表
+// 入口页/创作页/项目详情页由 URL 决定:?job= 详情页、?new=1 创作页、?avatars=1 形象页、其余为项目历史列表
 const wantNew = q.get("new") === "1";
+const wantAvatars = q.get("avatars") === "1";
 // ?step= 直达:项目列表点某一步时带上,进入详情页后滚到那一步的结果并高亮
 const focusStep = q.get("step") || "";
 const STATUS_TEXT = {
@@ -1012,6 +1089,7 @@ const AVATAR_FALLBACK = {
 let avatarSizeMeta = AVATAR_FALLBACK.sizes;
 let avatarCornerMeta = {options: AVATAR_FALLBACK.corners, default: AVATAR_FALLBACK.cornerDefault};
 let avatarCutoutDefault = AVATAR_FALLBACK.cutoutDefault;
+let avatarLibMeta = null;      // /api/styles 下发的形象库快照(创作页只读提示用)
 let upCutoutTouched = false;   // 用户动过创作页的抠像勾选后,元数据回来不再覆盖它
 const AVATAR_OFF = "off";   // 「不出镜」:和四个角落并列的一个选项,不是"没选"
 let avatarRenderedKey = "";
@@ -1026,7 +1104,36 @@ function applyAvatarMeta(data){
   if (data.avatar_corners && data.avatar_corners.length) {
     avatarCornerMeta = {options: data.avatar_corners, default: data.avatar_corner_default || "tr"};
   }
-  if (typeof data.avatar_cutout_default === "boolean") avatarCutoutDefault = data.avatar_cutout_default;
+  if (typeof data.avatar_cutout_default === "boolean") {
+    avatarCutoutDefault = data.avatar_cutout_default;      // 创作页勾选框的初始值
+    avPrefCutout = data.avatar_cutout_default;             // 形象页开关(同一个口径)
+  }
+  // 全局偏好块优先(它是权威来源);没有该块的老后端就沿用上面的 avatar_cutout_default
+  if (data.preferences && typeof data.preferences.avatar_cutout_new_jobs === "boolean") {
+    avPrefCutout = data.preferences.avatar_cutout_new_jobs;
+  }
+  renderAvatarPref();
+  renderUploadAvatarHint();
+  // 形象库:当前生效形象(名称 + 是否被 TTV_AVATAR_IMAGE 钉住)。创作页只做只读提示,
+  // 真正的"换形象"在独立形象页(全局设置,不是任务状态)。
+  if (data.avatar_library) { avatarLibMeta = data.avatar_library; renderUploadAvatarHint(); }
+}
+/* 创作页「数字人出镜」那一栏的只读提示:当前形象是谁 + 去哪换。
+   形象是全局设置,所以这里**不做下拉**——避免让人以为每个任务能各选一张。 */
+function renderUploadAvatarHint(){
+  const box = $("#up-avatar-who");
+  if (!box || !avatarLibMeta) return;
+  const cur = avatarLibMeta.current || {};
+  const inner = el("span");
+  inner.appendChild(document.createTextNode("当前形象:"));
+  inner.appendChild(el("b", null, cur.name || "(未命名)"));
+  if (cur.env_override) inner.appendChild(el("span", "bc-opts-tip", "(由环境变量 TTV_AVATAR_IMAGE 指定)"));
+  inner.appendChild(document.createTextNode(" · "));
+  const a = el("a", null, "管理形象 / 更换");
+  a.href = "./?avatars=1";
+  inner.appendChild(a);
+  box.innerHTML = "";
+  box.appendChild(inner);
 }
 function avatarCornerName(key){
   const o = avatarCornerMeta.options.find(x => x.key === key);
@@ -1044,8 +1151,11 @@ function validateAvatarSize(n){
 }
 function renderAvatarControls(data){
   applyAvatarMeta(data);
+  // 指纹里**必须**带上抠像默认值:否则偏好(全局设置)单独变化时指纹不变、函数提前返回,
+  // 创作页那个勾选框就永远停在旧值上 —— 实测踩过。
   const key = avatarSizeMeta.choices.join(",") + "|" + avatarSizeMeta.default
-    + "|" + avatarCornerMeta.options.map(o => o.key).join(",") + "|" + avatarCornerMeta.default;
+    + "|" + avatarCornerMeta.options.map(o => o.key).join(",") + "|" + avatarCornerMeta.default
+    + "|cutout:" + String(avatarCutoutDefault);
   if (key === avatarRenderedKey) return;
   avatarRenderedKey = key;
   // 大小:手输为主,档位只作 datalist 提示(留空不填默认,避免盖掉用户的选择)
@@ -1904,11 +2014,344 @@ function renderHistory(j){
   });
 }
 
-/* ═══════════ 启动路由:入口页 / 创作页 / 项目详情页 ═══════════ */
+/* ═══════════ 数字人形象库(独立二级页) ═══════════
+   形象是**全局**设置:库里的图片 + 当前默认形象都存在服务端(assets/avatars/library.json)。
+   本页只做四件事的界面:上传、看(缩略图/分辨率/体积/时间)、设为默认、重命名/删除。
+   删掉当前默认时由服务端把默认位落到剩余条目,前端不猜。 */
+let avItems = [], avBusy = false, avLoaded = false;
+let avErrMsg = "", avLoadErrMsg = "";
+let avPrefCutout = null;       // 全局偏好:新任务默认是否抠背景(null = 还没读到)
+let avPrefSaving = false;
+let avNameCount = {};          // 名称 → 出现次数(重名时由前端先拦一道)
+
+/* 提示条由两个来源合成:**操作失败**与**读取失败**分开存。
+   合成很重要:操作失败后我们会自动刷新一次列表,若刷新成功就把提示清掉,
+   用户根本看不到"删除失败"这句话 —— 实测踩到过。读取成功只清读取类错误。 */
+function avRenderErr(){
+  const msg = [avErrMsg, avLoadErrMsg].filter(Boolean).join(" · ");
+  const box = $("#av-alert");
+  if (!box) return;
+  box.textContent = msg;
+  box.classList.toggle("hidden", !msg);
+}
+function avErr(msg, kind){
+  if (kind === "load") { if (msg) avLoadErrMsg = msg; else avLoadErrMsg = ""; }
+  else { if (msg) avErrMsg = msg; else avErrMsg = ""; }
+  avRenderErr();
+}
+
+/* ── 全局偏好:新任务默认抠不抠背景 ──
+   为什么放在形象页:换形象和"要不要抠背景"是同一件事的两面(上传的通常是真实照片,
+   带背景会盖住幻灯片)。放在这里,上传完顺手就定了,不用再回创作页找那个勾选框。
+   这个值是**全局**的,新建任务时作为默认;单个任务仍可在创作页/预览页改。 */
+function renderAvatarPref(){
+  const box = $("#av-pref-cutout"), wrap = $("#av-pref-cutout-wrap");
+  if (!box) return;
+  if (avPrefCutout === null) {                 // 还没读到:置灰,避免误点成"改设置"
+    wrap.classList.add("disabled");
+    box.disabled = true;
+    return;
+  }
+  wrap.classList.remove("disabled");
+  box.checked = !!avPrefCutout;
+  box.disabled = avPrefSaving;
+  const tip = $("#av-pref-cutout-tip");
+  if (tip) {
+    tip.textContent = avPrefCutout
+      ? "已开启:新建任务的数字人默认只保留人像、背景透明(幻灯片内容从人像四周透出来)。单个任务仍可在创作页/预览页改。"
+      : "已关闭:新建任务的数字人默认是带背景的圆角卡片。上传真实照片时建议开启。";
+  }
+}
+
+async function loadPreferences(){
+  try {
+    const r = await fetch("./api/preferences", {cache: "no-store"});
+    if (!r.ok) throw new Error("服务端返回 " + r.status);
+    const d = await r.json();
+    if (typeof d.avatar_cutout_new_jobs === "boolean") {
+      avPrefCutout = d.avatar_cutout_new_jobs;
+    } else {
+      // 拿到了响应却没有这个键(老后端/接口变过):保持 null → 开关置灰,
+      // 绝不能默认显示成"关闭",那会让人以为设置没生效
+      avPrefCutout = null;
+    }
+    renderAvatarPref();
+  } catch (e) {
+    if (avPrefCutout === null) {
+      const tip = $("#av-pref-cutout-tip");
+      if (tip) tip.textContent = "读不到全局偏好(不影响形象库):" + (e && e.message ? e.message : e);
+      renderAvatarPref();
+    }
+  }
+}
+
+async function saveAvatarPrefCutout(on){
+  if (avPrefSaving) return;
+  avPrefSaving = true;
+  renderAvatarPref();
+  const wrap = $("#av-pref-cutout-wrap");
+  if (wrap) wrap.classList.add("busy");
+  try {
+    const r = await fetch("./api/preferences", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({avatar_cutout_new_jobs: on}),
+    });
+    const d = await r.json().catch(()=>({}));
+    if (!r.ok) throw new Error(d.detail || ("服务端返回 " + r.status));
+    avPrefCutout = !!d.avatar_cutout_new_jobs;
+    avErr("");
+    toast(avPrefCutout ? "以后新建的任务默认抠掉背景" : "以后新建的任务默认保留背景");
+  } catch (e) {
+    avErr("保存默认抠背景设置失败:" + (e && e.message ? e.message : e));
+  } finally {
+    avPrefSaving = false;
+    if (wrap) wrap.classList.remove("busy");
+    renderAvatarPref();
+  }
+}
+
+async function loadAvatarLibrary(force){
+  if (avBusy && !force) return;
+  const grid = $("#av-grid");
+  try {
+    const r = await fetch("./api/avatars", {cache: "no-store"});
+    if (!r.ok) throw new Error("服务端返回 " + r.status);
+    const data = await r.json();
+    avItems = data.items || [];
+    avLoaded = true;
+    avErr(data.error || "", "load");     // 读到了就清掉读取类错误
+    renderAvatarLibrary(data.current || {}, data.max_bytes || 0, data.accept || []);
+  } catch (e) {
+    avErr("读取形象库失败:" + (e && e.message ? e.message : e) + "(可点下方按钮重试)", "load");
+    if (grid && !avItems.length) {
+      grid.innerHTML = "";
+      const box = el("div", "av-empty");
+      box.appendChild(document.createTextNode("读不到形象库。"));
+      const b = el("button", "smallbtn", "重新加载");
+      b.style.marginLeft = "10px";
+      b.onclick = ()=>loadAvatarLibrary(true);
+      box.appendChild(b);
+      grid.appendChild(box);
+    }
+  }
+}
+
+function renderAvatarLibrary(cur, maxBytes, accept){
+  // 重名统计:形象名是用户辨认的唯一线索,重名时在手输环节就要拦一道(后端不做唯一约束)
+  avNameCount = {};
+  avItems.forEach(it=>{ const n = it.name || ""; avNameCount[n] = (avNameCount[n] || 0) + 1; });
+  // 当前生效形象(带缩略图;被 TTV_AVATAR_IMAGE 钉住时如实标注)
+  const now = $("#av-current");
+  if (now) {
+    now.innerHTML = "";
+    if (cur.id) {
+      const img = el("img", "th");
+      img.src = "./api/avatars/" + encodeURIComponent(cur.id) + "/file";
+      img.alt = cur.name || "";
+      now.appendChild(img);
+    }
+    const line = el("div");
+    line.appendChild(document.createTextNode("当前默认形象:"));
+    line.appendChild(el("b", null, cur.name || "(未命名)"));
+    if (cur.env_override) line.appendChild(el("span", "bc-opts-tip", " · 由环境变量 TTV_AVATAR_IMAGE 指定,库里改默认不影响它"));
+    else line.appendChild(el("span", "bc-opts-tip", " · 之后新建/重新构建的任务数字人片段都用它"));
+    now.appendChild(line);
+  }
+  const up = $("#av-up-small");
+  if (up) {
+    const exts = (accept && accept.length ? accept : [".png", ".jpg", ".jpeg", ".webp"]).join(" · ");
+    up.textContent = "支持 " + exts + (maxBytes ? " · 单张不超过 " + Math.round(maxBytes / 1024 / 1024) + "MB" : "");
+  }
+  const grid = $("#av-grid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  if (!avItems.length) {
+    const box = el("div", "av-empty", "形象库还是空的,先上传一张数字人图片。");
+    grid.appendChild(box);
+    return;
+  }
+  avItems.forEach(it=>{
+    const card = el("div", "av-card" + (it.id === cur.id && !cur.env_override ? " isdefault" : ""));
+    const th = el("div", "thumb");
+    const img = el("img");
+    img.src = "./api/avatars/" + encodeURIComponent(it.id) + "/file";
+    img.alt = it.name || "";
+    img.loading = "lazy";
+    th.appendChild(img);
+    if (it.id === cur.id && !cur.env_override) th.appendChild(el("span", "badge", "当前默认"));
+    else if (it.id === cur.id) th.appendChild(el("span", "badge", "当前生效(环境变量)"));
+    if (it.builtin) th.appendChild(el("span", "builtin", "内置"));
+    card.appendChild(th);
+
+    const body = el("div", "body");
+    const nm = el("div", "nm", it.name || it.id);
+    nm.title = it.name || it.id;          // 名字过长时靠悬停看全
+    body.appendChild(nm);
+    const meta = el("div", "meta");
+    const wh = it.width && it.height ? it.width + "×" + it.height : "尺寸未知";
+    meta.appendChild(document.createTextNode(wh + " 像素"));
+    meta.appendChild(el("br"));
+    meta.appendChild(document.createTextNode((fmtSize(it.bytes) || "体积未知") + " · " + (fmtTime(it.created_at) || "时间未知")));
+    body.appendChild(meta);
+
+    const ops = el("div", "ops");
+    const isCur = it.id === cur.id && !cur.env_override;
+    const bk = el("button", isCur ? "cur" : "", isCur ? "已是默认" : "设为默认");
+    bk.disabled = isCur || avBusy;
+    bk.onclick = ()=>avAction("default", it);
+    const br = el("button", null, "重命名");
+    br.disabled = avBusy;
+    br.onclick = ()=>avRename(it);
+    const bd = el("button", "danger", "删除");
+    bd.disabled = avBusy || !!it.builtin;
+    if (it.builtin) bd.title = "内置形象是最后的回退,不可删除";
+    bd.onclick = ()=>avDelete(it);
+    ops.appendChild(bk); ops.appendChild(br); ops.appendChild(bd);
+    body.appendChild(ops);
+    card.appendChild(body);
+    grid.appendChild(card);
+  });
+}
+
+async function avAction(kind, it){
+  if (avBusy) return;
+  avBusy = true;
+  try {
+    if (kind === "default") {
+      const r = await fetch("./api/avatars/" + encodeURIComponent(it.id) + "/default", {method: "POST"});
+      const d = await r.json().catch(()=>({}));
+      if (!r.ok) throw new Error(d.detail || ("服务端返回 " + r.status));
+      toast("已设为默认形象:" + (it.name || it.id) + ";之后重新构建的任务会用这张图");
+    }
+    avErr("");
+  } catch (e) {
+    avErr("操作失败:" + (e && e.message ? e.message : e));
+  } finally {
+    avBusy = false;
+    await loadAvatarLibrary(true);
+  }
+}
+
+async function avRename(it){
+  const name = prompt("给这个形象起个名字(用于界面上辨认):", it.name || "");
+  if (name === null) return;
+  const clean = name.trim();
+  if (!clean) { avErr("名字不能为空"); return; }
+  avErr("");
+  // 重名检查在前端先做(服务端允许重名,但界面上要靠名字认人;库里已有别的同名就提示)
+  const dup = avItems.filter(x => x.id !== it.id && (x.name || "") === clean);
+  if (dup.length) {
+    if (!confirm("库里已经有一个叫「" + clean + "」的形象了,确定还要用这个名字吗?")) return;
+  }
+  if (avBusy) return;
+  avBusy = true;
+  try {
+    const r = await fetch("./api/avatars/" + encodeURIComponent(it.id) + "/rename", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: clean}),
+    });
+    const d = await r.json().catch(()=>({}));
+    if (!r.ok) throw new Error(d.detail || ("服务端返回 " + r.status));
+    toast("已重命名为 " + (d.item && d.item.name ? d.item.name : clean));
+    avErr("");
+  } catch (e) {
+    avErr("重命名失败:" + (e && e.message ? e.message : e));
+  } finally {
+    avBusy = false;
+    await loadAvatarLibrary(true);
+  }
+}
+
+async function avDelete(it){
+  // 二次确认:文案里带形象名,避免误删另一张
+  if (!confirm("确定删除形象「" + (it.name || it.id) + "」?\n\n删掉后,已经生成的成片/片段不受影响;"
+               + "如果它正被用作默认形象,默认位会自动落到剩余的形象上。")) return;
+  if (avBusy) return;
+  avBusy = true;
+  try {
+    const r = await fetch("./api/avatars/" + encodeURIComponent(it.id), {method: "DELETE"});
+    const d = await r.json().catch(()=>({}));
+    if (!r.ok) throw new Error(d.detail || ("服务端返回 " + r.status));
+    toast("已删除形象 " + (it.name || it.id));
+    avErr("");
+  } catch (e) {
+    avErr("删除失败:" + (e && e.message ? e.message : e));
+  } finally {
+    avBusy = false;
+    await loadAvatarLibrary(true);
+  }
+}
+
+async function avUpload(file){
+  if (!file) return;
+  const up = $("#av-drop"), txt = $("#av-up-text");
+  const name = file.name || "";
+  const ext = ("." + name.split(".").pop()).toLowerCase();
+  if ([".png", ".jpg", ".jpeg", ".webp"].indexOf(ext) < 0) {
+    avErr("只支持 png / jpg / jpeg / webp 图片"); return;
+  }
+  if (file.size > 20 * 1024 * 1024) { avErr("图片超过 20MB,请先压缩"); return; }
+  avBusy = true;
+  up.classList.add("busy");
+  txt.textContent = "上传中…(" + (fmtSize(file.size) || "0 KB") + ")";
+  try {
+    const fd = new FormData();
+    fd.append("file", file, name);
+    fd.append("name", name.replace(/\.[^.]+$/, ""));
+    const r = await fetch("./api/avatars", {method: "POST", body: fd});
+    const d = await r.json().catch(()=>({}));
+    if (!r.ok) throw new Error(d.detail || ("服务端返回 " + r.status));
+    toast(d.duplicate ? "这张图已经在库里了(" + ((d.item && d.item.name) || "") + ")"
+                      : "已上传:" + ((d.item && d.item.name) || name));
+    avErr("");
+  } catch (e) {
+    avErr("上传失败:" + (e && e.message ? e.message : e));
+  } finally {
+    avBusy = false;
+    up.classList.remove("busy");
+    txt.textContent = "点击选择图片,或拖拽到此处上传";
+    const inp = $("#av-file");
+    if (inp) inp.value = "";
+    await loadAvatarLibrary(true);
+  }
+}
+
+function wireAvatarPage(){
+  const back = $("#av-back");
+  if (back) back.onclick = (e)=>{ e.preventDefault(); location.href = "./"; };
+  const pref = $("#av-pref-cutout");
+  if (pref) pref.onchange = ()=>saveAvatarPrefCutout(pref.checked);
+  const drop = $("#av-drop"), inp = $("#av-file");
+  if (!drop || !inp) return;
+  drop.onclick = ()=>{ if (!avBusy) inp.click(); };
+  drop.onkeydown = (e)=>{ if ((e.key === "Enter" || e.key === " ") && !avBusy) { e.preventDefault(); inp.click(); } };
+  inp.onchange = ()=>avUpload(inp.files && inp.files[0]);
+  ["dragenter", "dragover"].forEach(ev=>drop.addEventListener(ev, e=>{
+    e.preventDefault(); e.stopPropagation(); drop.classList.add("on");
+  }));
+  ["dragleave", "drop"].forEach(ev=>drop.addEventListener(ev, e=>{
+    e.preventDefault(); e.stopPropagation(); drop.classList.remove("on");
+  }));
+  drop.addEventListener("drop", e=>{
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) avUpload(f);
+  });
+}
+
+/* ═══════════ 启动路由:入口页 / 创作页 / 项目详情页 / 形象库 ═══════════ */
+/* 顶栏「数字人形象」入口:三个页面都能进(形象是全局设置,与具体任务无关) */
+const _navAv = $("#nav-avatars");
+if (_navAv) _navAv.onclick = ()=>{ location.href = "./?avatars=1"; };
+
 if (jobId) {
   $("#view-preview").classList.remove("hidden");
   poll();
   schedulePoll();
+} else if (wantAvatars) {
+  wireAvatarPage();
+  $("#view-avatars").classList.remove("hidden");
+  loadAvatarLibrary(true);
+  loadPreferences();
 } else if (wantNew) {
   $("#view-upload").classList.remove("hidden");
 } else {

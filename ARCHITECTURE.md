@@ -32,15 +32,20 @@ vtt/
 │   ├── tts.py               配音:CosyVoice3 多实例轮询并行合成(httpx 全局共享连接池,修复 FD 耗尽)+ 词级时间轴 + 真实时长向目标靠拢(apply_real_durations);失败重试×3 → 静音占位
 │   ├── tts_server.py        CosyVoice3 服务(8016/8018/8019 三实例:GPU1/GPU2/GPU3,三音色零样本克隆,speed 钳位下限 1.0;**时长验收重采**:实际/预期不落在窗口内就重采;**启动硬校验运行时钉版** `transformers==4.51.3`/`tokenizers==0.21.4`——版本不符会让语音内容乱码而时长/峰值正常,见 v2.2)
 │   ├── tts_qwen_server.py   Qwen3-TTS 服务(8017,GPU2,备用引擎,默认停;<8 字 400)
-│   ├── avatar.py            数字人:片段生成/时间轴/叠加(圆角卡片或抠像)+ 播报视频(音轨拼接、顺序合流、ETA 估算)+ 抠像遮罩批量补齐 + gRPC 探活
+│   ├── avatar.py            数字人:片段生成/时间轴/叠加(圆角卡片或抠像)+ 播报视频(音轨拼接、顺序合流、ETA 估算)+ 抠像遮罩批量补齐 + gRPC 探活;`build_frame_clips(image=…)` 支持显式指定形象图,省略时按 `config.resolve_avatar_image()` **调用期**解析
+│   ├── avatar_library.py    数字人形象库:图片清单(assets/avatars/library.json)读写 + 按文件头解析 PNG/JPEG/WebP(零第三方依赖,环境里没有 Pillow)+ 上传去重(内容 sha256 命名)+ 增删改查 + 四种自愈(清单损坏/条目丢文件/未登记图片/默认位悬空)
+│   ├── preferences.py       全局偏好(跨任务记住的设置,目前是「新任务默认抠不抠背景」):落盘 JSON + 原子写 + 读坏自愈回出厂默认;环境变量 TTV_* 仍是出厂默认口径
 │   ├── matte.py             抠像 worker:MODNet ONNX 逐帧出 alpha → 灰度遮罩 mp4(独立解释器跑,单段/批量两种入口,模型只加载一次)
-│   ├── smoke_test.py        冒烟回归:纯函数路径(extract/styles/时长靠拢/校验门/讲解校验)
+│   ├── smoke_test.py        冒烟回归:纯函数路径(extract/styles/时长靠拢/校验门/讲解校验/形象库图片头与接口契约)
 │   ├── jobs.py              任务状态机(磁盘持久化,重启恢复;video_kind 持久化;重启时 uploaded 同样置 failed)+ 项目标题/阶段历史(record_history,上限 60 条)+ 启动补录(_backfill_meta:老任务从脚本与产物倒推)
 │   └── builder/
 │       ├── styles.py        风格系统:四维度注册表(字体×配色×背景×动效)+ 组合合成 + SVG 装饰
 │       ├── templates.py     13 种帧类型(10 种宣传 + 3 种讲解:textblock/annotation/method)× 维度属性渲染(HTML+GSAP tween 生成)
 │       └── assemble.py      script.json → HyperFrames 项目(index.html + assets + BGM,重建前清理陈旧产物)
-├── web/index.html           前端单文件 SPA(项目历史入口页 + 创作页 + 预览页,Studio 为唯一预览;woff2 字体子集 + unicode-range 回退系统字体;骨架屏/轮询退避/删除任务/就地重命名/步骤直达)
+├── web/index.html           前端单文件 SPA(项目历史入口页 + 创作页 + 预览页 + 数字人形象页,Studio 为唯一预览;woff2 字体子集 + unicode-range 回退系统字体;骨架屏/轮询退避/删除任务/就地重命名/步骤直达)
+├── assets/avatars/          数字人形象库:图片本体(上传按内容 sha256 命名 `av_<hash16>.<ext>`)+ `library.json` 清单;内置 `jinli.png` 可设默认、不可删除(可用 TTV_AVATAR_LIBRARY 换整个库目录)
+├── tests/                   前端行为测试(需要 node,无 npm 依赖)
+│   └── avatar-page.test.js  最小 DOM stub 在 Node 里跑 web/index.html 的真实脚本:形象页渲染/上传/删除二次确认/错误提示不被刷新冲掉/空库与读取失败态。跑法 `node tests/avatar-page.test.js`(退出码非 0 即失败)
 └── deploy/                  nginx 路由 / 启动脚本(已删除一次性 patch-*.py 补丁,git 历史留档)
 ```
 
@@ -149,7 +154,15 @@ analyzed / preview / rendered / failed ──▶ building ──▶ rendering �
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | /api/styles | 四维度选项 + 预设 |
+| GET | /api/styles | 四维度选项 + 预设 + 数字人尺寸/四角/抠像默认值 + `avatar_library`(当前生效形象、是否被 `TTV_AVATAR_IMAGE` 覆盖、上传规格)+ `preferences` |
+| GET | /api/preferences | 全局偏好(当前值 + 出厂默认 + 文件路径) |
+| POST | /api/preferences | 改全局偏好(目前只有 `avatar_cutout_new_jobs`;只认真正的 JSON 布尔,字符串 400;空体不改动原值) |
+| GET | /api/avatars | 数字人形象库列表(条目含名称/分辨率/体积/时间/是否内置)+ 当前生效形象 + 上传上限与允许格式 |
+| POST | /api/avatars | 上传形象图(multipart `file` + 可选 `name`;扩展名/大小/文件头三重校验,坏图 400、超 20MB 413;同内容重复上传返回既有条目 `duplicate:true`) |
+| POST | /api/avatars/{item_id}/default | 把某个形象设为当前默认(之后新构建的数字人片段都用它) |
+| POST | /api/avatars/{item_id}/rename | 重命名形象(只改显示名,不动文件;名称做控制字符清洗与截断) |
+| DELETE | /api/avatars/{item_id} | 删除形象(内置形象 409;删掉当前默认时默认位自动落到剩余条目) |
+| GET | /api/avatars/{item_id}/file | 形象图片本体(缩略图与大图共用;内容按哈希命名,故给一年 immutable 缓存) |
 | GET | /api/jobs | 项目历史列表(按 updated_at 倒序,`{jobs,total}`,不含 script;进行中任务带 progress/render_progress) |
 | POST | /api/jobs | 上传(file/text + style/font/palette/bg/motion/duration/video_kind);进行中任务 >4 返回 429 |
 | GET | /api/jobs/{id} | 状态 + 分析结果 + 项目标题(title/title_source)+ 阶段历史 history;?brief=1 轻量轮询(不含 script) |
@@ -169,7 +182,7 @@ analyzed / preview / rendered / failed ──▶ building ──▶ rendering �
 - 新配色/背景:builder/styles.py 注册表加条目(前端自动出现)
 - 精确字幕对齐:tts.py 词级时间轴换 whisper 对齐
 - BGM:assets/bgm/ 放入同名 MP3 即生效
-- 数字人形象:builder/styles.py 的 AVATARS 注册表加条目(或用 TTV_AVATAR_IMAGE 指到任意图片)
+- 数字人形象:网页「数字人形象」页(顶栏入口,`?avatars=1`)上传/设默认/重命名/删除,库落在 `assets/avatars/`(图片 + `library.json`);运维也可用 `TTV_AVATAR_LIBRARY` 换库目录、`TTV_AVATAR_IMAGE` 把形象钉死在任意图片上(优先级最高,界面会标注)。生效形象在**每次构建时**解析,因此换默认形象后重新构建即生效、无需重启;`builder/styles.py` 的 `AVATARS` 注册表保留为旧接口的兼容层(`avatar_file()` 仍解析到内置 `jinli.png`)
 
 ## 七、数字人片段(可选功能)
 
@@ -184,16 +197,19 @@ analyzed / preview / rendered / failed ──▶ building ──▶ rendering �
 每帧台词音频(vo_NN.mp3,项目自身 TTS 产出)
    └─ server/avatar.py → CyberVerse AvatarService(gRPC,127.0.0.1:50051,FlashHead,原生 464×464)
         └─ RGB24 原始帧 → ffmpeg 编码成 <尺寸>×<尺寸> 片段(仅画面,丢弃服务端音轨)
-             └─ 全局缓存 .cache/avatar/clip_<形象>_<音频>_<尺寸>_<帧时长>_<版本>.mp4
+             └─ 全局缓存 .cache/avatar/clip_<形象内容哈希>_<音频>_<尺寸>_<帧时长>_<版本>.mp4
                   └─(抠像时)server/matte.py → clip_*.modnet<版本>.mp4 灰度遮罩,MODNet ONNX 本地推理
 渲染成片后
    └─ avatar._overlay_timeline():出镜才读时间轴 → composite_onto_video(corner=…) 叠到该角落
 ```
 
 > **几何按任务存**:`state.avatar_geom = {corner, size, cutout}`(默认
-> `{"tr", 300, false}`),出镜开关是 `state.avatar`(bool)。创作页建任务时设置,预览页可随时改
+> `{"tr", 300, <全局偏好>}`),出镜开关是 `state.avatar`(bool)。创作页建任务时设置,预览页可随时改
 > (`POST /api/jobs/{id}/avatar/geom`,四个字段都可选、只传哪个改哪个),下一次构建/渲染生效。
 > 老任务没有 `avatar_geom` → 直接回默认值,不需要迁移。
+> **抠像的默认不是静态值**:它取全局偏好(`preferences.avatar_cutout_new_jobs`,出厂默认 **true**,
+> 形象页可改、落盘 `.run/preferences.json`),只作用于**没存过几何**的任务;任务明确存过的
+> `cutout` 不受偏好影响 —— 改一个全局开关不该悄悄改掉用户已定好的任务。
 > 「数字人播报视频」的大小默认跟随这个 `size`,但可以单独指定(见第八节)。
 
 要点:
@@ -205,6 +221,10 @@ analyzed / preview / rendered / failed ──▶ building ──▶ rendering �
 
 - **时间轴唯一**:片段时长 = 帧总时长(`frames[].duration`,已由真实配音回填),
   起点 = `assemble.build()` 返回的 `starts` —— 与字幕、音频同一时钟;片段自带音轨丢弃。
+- **形象来自形象库(全局)**:片段用哪张脸由 `config.resolve_avatar_image()` 在**每次构建时**
+  解析:`TTV_AVATAR_IMAGE` 环境变量 > 库中默认形象(`assets/avatars/library.json`)> 内置
+  `jinli.png`。缓存键里放的是**形象文件的内容哈希**,所以换形象只会产生新键、不会复用别人的
+  画面,也不需要递增缓存版本号;库里换默认只影响后续构建,已出片的老任务不受影响。
 - **待机片段**:无台词帧(opening/closing)与帧尾留白都用"闭嘴静默"片段填充,
   每个形象只生成一段并全局缓存(`idle_*.mp4`)。
 - **圆角与投影在叠加时完成**,不烘焙进片段:H.264 不支持 alpha,烘焙会把透明区变成黑底;

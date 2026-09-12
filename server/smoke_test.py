@@ -13,8 +13,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import analyze
+import avatar_library
 import config
 import extract
+import preferences
 import tts
 from builder import styles, templates
 
@@ -770,7 +772,9 @@ finally:
 import avatar  # noqa: E402
 
 _audio = Path(_tmp_text("fake_vo.mp3", "x" * 64))
-_img = Path("assets/avatars/jinli.png")
+# 用仓库内真实形象图的**绝对路径**:此前写的是相对路径 "assets/avatars/jinli.png",
+# 只有恰好以仓库根为 cwd 运行时才存在(从 server/ 目录跑必然 FileNotFoundError)。
+_img = Path(config.AVATAR_BUILTIN_FILE)
 _k_a = avatar.frame_clip_path(_img, _audio, 5.0, 320)
 _k_b = avatar.frame_clip_path(_img, _audio, 5.0, 320)
 _k_c = avatar.frame_clip_path(_img, _audio, 6.0, 320)
@@ -813,7 +817,9 @@ ok("avatar 抠像开关只认布尔(字符串不算)",
    avatar.normalize_cutout(True) is True and avatar.normalize_cutout(None, True) is True
    and _raises(_via(avatar.normalize_cutout, "true"), ValueError))
 ok("avatar 抠像开关宽松版对坏值回退",
-   avatar.safe_cutout("是") is False and avatar.safe_cutout("是", True) is True)
+   avatar.safe_cutout("是") is config.AVATAR_CUTOUT
+   and avatar.safe_cutout("是", True) is True
+   and avatar.safe_cutout("是", False) is False)
 # 四个角落都能摆:左右按角落的 左/右,纵向按 上/下;只有下排贴画面下缘(切口落在画面外沿)
 _cut_tl = avatar.cutout_xy("tl", 300, margin_x=40, margin_y=36, video_w=1920, video_h=1080)
 _cut_tr = avatar.cutout_xy("tr", 300, margin_x=40, margin_y=36, video_w=1920, video_h=1080)
@@ -941,6 +947,333 @@ ok("avatar 缺失时间轴返回空列表", avatar.read_timeline(Path("/tmp/不�
 ok("avatar 注册表默认形象可解析",
    styles.avatar_file() == styles.AVATARS[styles.DEFAULT_AVATAR]["file"])
 ok("avatar 未知形象回退默认", styles.avatar_file("不存在的形象") == styles.avatar_file())
+
+
+# ═══════════════ 全局偏好(新任务默认抠不抠背景) ═══════════════
+#
+# 为什么要有它:抠像原来是**任务级**选项且默认关,换完数字人形象新建任务还得回创作页
+# 勾一次「只保留人像(背景透明)」,忘了就是"背景没抠掉"(用户真实反馈)。
+# 现在它是全局偏好:落盘、形象页可改、出厂默认 true(环境变量仍是出厂默认口径)。
+
+# 本段与下面的形象库段共用这几个 stdlib(都要临时目录 + 重载模块)
+import importlib as _il2  # noqa: E402
+import os as _os2  # noqa: E402
+import shutil as _shutil  # noqa: E402
+import tempfile as _tempfile  # noqa: E402
+import zlib as _zlib  # noqa: E402
+
+_pref_dir = Path(_tempfile.mkdtemp(prefix="ttv_smoke_pref_"))
+_pref_orig_env = _os2.environ.get("TTV_PREFERENCES")
+_pref_orig_mod = preferences
+try:
+    _os2.environ["TTV_PREFERENCES"] = str(_pref_dir / "preferences.json")
+    _il2.reload(config)
+    preferences = _il2.reload(_pref_orig_mod)
+
+    ok("偏好出厂默认为「新任务抠背景」", preferences.load()["avatar_cutout_new_jobs"] is True)
+    ok("偏好文件不存在时用出厂默认(不报错)",
+       not Path(config.PREFERENCES_FILE).exists() and preferences.avatar_cutout_new_jobs() is True)
+
+    preferences.set_avatar_cutout_new_jobs(False)
+    ok("偏好可写入并立刻读到", preferences.avatar_cutout_new_jobs() is False
+       and Path(config.PREFERENCES_FILE).exists())
+    ok("偏好落盘是纯 JSON", isinstance(
+        json.loads(Path(config.PREFERENCES_FILE).read_text(encoding="utf-8")), dict))
+    preferences.set_avatar_cutout_new_jobs(True)
+    ok("偏好可反复改回", preferences.avatar_cutout_new_jobs() is True)
+    ok("偏好只认真正的布尔",
+       _raises(_via(preferences.set_avatar_cutout_new_jobs, "true"), ValueError)
+       and _raises(_via(preferences.set_avatar_cutout_new_jobs, 1), ValueError))
+
+    Path(config.PREFERENCES_FILE).write_text("{ 不是 JSON", encoding="utf-8")
+    ok("偏好文件损坏时自愈回出厂默认",
+       preferences.avatar_cutout_new_jobs() is True)
+    Path(config.PREFERENCES_FILE).write_text('{"avatar_cutout_new_jobs": "yes"}', encoding="utf-8")
+    ok("偏好字段类型不对时自愈回出厂默认",
+       preferences.avatar_cutout_new_jobs() is True)
+    Path(config.PREFERENCES_FILE).write_text('{"avatar_cutout_new_jobs": false}', encoding="utf-8")
+    ok("偏好文件正常时以文件为准(压过出厂默认)",
+       preferences.avatar_cutout_new_jobs() is False)
+    Path(config.PREFERENCES_FILE).unlink()
+
+    ok("偏好载荷含出厂默认与文件路径",
+       {"avatar_cutout_new_jobs", "factory", "file"} <= set(preferences.payload()))
+
+    # 接口:GET 读、POST 写,字符串一律 400
+    _pf_main = __import__("main")
+    _pcli = __import__("fastapi.testclient", fromlist=["TestClient"]).TestClient(_pf_main.app)
+    ok("接口 GET /api/preferences 返回布尔",
+       _pcli.get("/api/preferences").json()["avatar_cutout_new_jobs"] is True)
+    ok("接口 POST 关掉后 GET 与 /api/styles 都变 false",
+       _pcli.post("/api/preferences", json={"avatar_cutout_new_jobs": False}).json()[
+           "avatar_cutout_new_jobs"] is False
+       and _pcli.get("/api/styles").json()["avatar_cutout_default"] is False)
+    ok("接口 POST 字符串 400 且不改动原值",
+       _pcli.post("/api/preferences", json={"avatar_cutout_new_jobs": "true"}).status_code == 400
+       and _pcli.get("/api/preferences").json()["avatar_cutout_new_jobs"] is False)
+    ok("接口 POST 空体不改动原值",
+       _pcli.post("/api/preferences", json={}).status_code == 200
+       and _pcli.get("/api/preferences").json()["avatar_cutout_new_jobs"] is False)
+    _pcli.post("/api/preferences", json={"avatar_cutout_new_jobs": True})
+    ok("/api/styles 也下发 preferences 块(前端开关与勾选框共用一份口径)",
+       _pcli.get("/api/styles").json()["preferences"]["avatar_cutout_new_jobs"] is True)
+finally:
+    preferences = _pref_orig_mod
+    if _pref_orig_env is None:
+        _os2.environ.pop("TTV_PREFERENCES", None)
+    else:
+        _os2.environ["TTV_PREFERENCES"] = _pref_orig_env
+    _il2.reload(config)
+    _shutil.rmtree(_pref_dir, ignore_errors=True)
+
+
+# ═══════════════ 数字人形象库(上传/查看/设默认/重命名/删除,零第三方依赖) ═══════════════
+#
+# 关键口径(每条都对应一个真实踩点):
+#   ① 运行环境没有 Pillow,图片宽高/完整性只能按**文件头**解析(解析不出即损坏图);
+#   ② 同一张图重复上传不能越传越多(按内容哈希命名去重);
+#   ③ 内置形象可设默认但不可删,删掉当前默认后默认位必须落到剩余条目;
+#   ④ 清单损坏/条目丢文件/目录里多出未登记图片,三种情况都要自愈,读路径不抛异常;
+#   ⑤ 生效形象每次调用重新解析:环境变量 > 库默认 > 内置形象。
+
+import glob as _glob  # noqa: E402
+import struct as _struct  # noqa: E402
+import zlib as _zlib  # noqa: E402
+
+
+def _png(w, h, rgb=(200, 30, 40)):
+    """现场造一张最小合法 PNG(PIL 不可用,测试样本自己拼)。"""
+    raw = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
+
+    def _chunk(tag, data):
+        body = tag + data
+        return (_struct.pack(">I", len(data)) + body
+                + _struct.pack(">I", _zlib.crc32(body) & 0xFFFFFFFF))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + _chunk(b"IHDR", _struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + _chunk(b"IDAT", _zlib.compress(raw)) + _chunk(b"IEND", b""))
+
+
+def _jpeg(w, h):
+    """最小 JPEG:SOI + SOF0(带真实宽高)+ EOI(只要求头解析器认得出)。"""
+    sof = (b"\xff\xc0" + _struct.pack(">H", 17) + b"\x08"
+           + _struct.pack(">HH", h, w) + b"\x03\x01\x11\x00\x02\x11\x01\x03\x11\x01")
+    return b"\xff\xd8" + sof + b"\xff\xd9"
+
+
+def _webp_vp8l(w, h):
+    """最小 VP8L(无损):0x2F 签名 + 14 位宽高各减一。"""
+    bits = (w - 1) | ((h - 1) << 14)
+    body = b"VP8L" + _struct.pack("<I", 5) + b"\x2f" + _struct.pack("<I", bits)
+    return b"RIFF" + _struct.pack("<I", 4 + len(body)) + b"WEBP" + body
+
+
+ok("形象库模块不引入 Pillow(运行环境没有它,只能按文件头解析)",
+   not any(m == "PIL" or m.startswith("PIL.") for m in sys.modules)
+   and "PIL" not in Path(avatar_library.__file__).read_text(encoding="utf-8"))
+ok("形象库图片头解析:PNG",
+   avatar_library.image_size(_png(321, 123), ".png") == (321, 123))
+ok("形象库图片头解析:JPEG", avatar_library.image_size(_jpeg(640, 480), ".jpg") == (640, 480))
+ok("形象库图片头解析:WebP", avatar_library.image_size(_webp_vp8l(256, 128), ".webp") == (256, 128))
+ok("形象库图片头解析:扩展名与内容不符时以内容为准",
+   avatar_library.image_size(_png(64, 32), ".jpg") == (64, 32))
+ok("形象库拒绝无法解析的字节流",
+   avatar_library.image_size(b"definitely not an image", ".png") == (0, 0)
+   and avatar_library.image_size(b"", ".png") == (0, 0))
+ok("形象库魔数识别与扩展名一致",
+   avatar_library.sniff_ext(_png(8, 8)) == ".png"
+   and avatar_library.sniff_ext(_jpeg(8, 8)) == ".jpg"
+   and avatar_library.sniff_ext(b"\x00" * 64) == "")
+
+# ── 库的增删改查:整块用临时目录 + 重新加载 config/avatar_library,绝不碰真实 assets/avatars/ ──
+_av_lib_dir = Path(_tempfile.mkdtemp(prefix="ttv_smoke_avlib_"))
+_av_orig_env = _os2.environ.get("TTV_AVATAR_LIBRARY")
+_av_orig_libmod, _av_orig_cfg = avatar_library, config
+# 库目录被覆盖成空目录时,内置形象仍要能从真实 assets/ 回退(这正是它不跟随库目录的原因)
+_av_builtin_src = _av_lib_dir / "jinli.png"
+_shutil.copyfile(avatar_library.builtin_path(), _av_builtin_src)
+_av_before = sorted(p.name for p in (Path(config.ASSETS_DIR) / "avatars").glob("*"))
+try:
+    _os2.environ["TTV_AVATAR_LIBRARY"] = str(_av_lib_dir)
+    _il2.reload(config)
+    avatar_library = _il2.reload(_av_orig_libmod)
+    # 本段既 reload 了 config,就必须把 jobs 与 main 一并对齐:main 是"首次导入"发生在
+    # 本段之后的模块,它 import 的是**当时**的 jobs/config 对象。少对齐一次,后面 jobs 段
+    # 新建的任务在 main 眼里就是"不存在"(_job_alive 判 false → stage_build 静默空转),
+    # 表现为一堆与本功能无关的测试莫名失败 —— 这是测试里"重置模块"打断对象同一性的真实踩点。
+    _jobs_mod = _il2.reload(_jobs_mod)
+    _il2.reload(__import__("main"))
+
+    _st0 = avatar_library.list_avatars()
+    ok("形象库空目录自动注入内置形象",
+       [i["id"] for i in _st0["items"]] == ["jinli"]
+       and _st0["items"][0]["builtin"] and _st0["default_id"] == "jinli")
+    ok("形象库内置形象来自真实 assets(不跟随库目录)",
+       Path(_st0["items"][0]["path"]) == _av_builtin_src
+       or Path(_st0["items"][0]["path"]) == avatar_library.builtin_path())
+
+    _it, _dup = avatar_library.add_avatar(_png(400, 500), "face.png", name="  新 脸  ")
+    ok("形象库上传成功并解析出真实宽高",
+       (_it["width"], _it["height"]) == (400, 500) and not _dup, f"{_it['width']}x{_it['height']}")
+    ok("形象库上传按内容哈希命名(天然去重)",
+       _it["id"] == "av_" + __import__("hashlib").sha256(_png(400, 500)).hexdigest()[:16]
+       and _it["file"] == _it["id"] + ".png")
+    ok("形象库上传名称做空白清洗", _it["name"] == "新 脸")
+    _it2, _dup2 = avatar_library.add_avatar(_png(400, 500), "copy.png")
+    ok("形象库重复上传不新增副本", _dup2 and _it2["id"] == _it["id"]
+       and len(avatar_library.list_avatars()["items"]) == 2)
+    _st = avatar_library.list_avatars()
+    ok("形象库条目落清单且默认位不变", _st["items"][1]["id"] == _it["id"]
+       and _st["default_id"] == "jinli")
+    ok("形象库条目字段齐备(供界面展示)",
+       all(k in _st["items"][1] for k in ("name", "width", "height", "bytes", "created_at")))
+    ok("形象库首次读取即落清单(自愈写入,不用等第一次上传)",
+       Path(config.AVATAR_LIBRARY_FILE).exists())
+    ok("形象库清单可被 JSON 解析(纯文本、可备份)", isinstance(
+        json.loads((Path(config.AVATAR_LIBRARY_FILE)).read_text(encoding="utf-8")), dict))
+    # 清单要能被「整目录拷走就搬家」:里面不能出现绝对路径(内置条目的 path 由 config 现算,
+    # 不落盘)。这条与下一条是同一个真实踩点的两半:剥掉 path 后若不与**磁盘形态**比对
+    # "该不该写回",清单会永远建不出来。
+    _disk = json.loads(Path(config.AVATAR_LIBRARY_FILE).read_text(encoding="utf-8"))
+    ok("形象库清单不含绝对路径(可整目录迁移)",
+       _disk["items"] and all("path" not in i for i in _disk["items"])
+       and not any(str(i.get("file", "")).startswith("/") for i in _disk["items"]))
+    ok("形象库内存条目仍带解析好的绝对路径(内置不跟随库目录)",
+       all(it["path"] for it in avatar_library.list_avatars()["items"] if it["builtin"]))
+    _mk = Path(config.AVATAR_LIBRARY_FILE).stat().st_mtime_ns
+    avatar_library.list_avatars()
+    ok("形象库状态无变化时不重写清单(读路径不产生写放大)",
+       Path(config.AVATAR_LIBRARY_FILE).stat().st_mtime_ns == _mk)
+
+    avatar_library.set_default(_it["id"])
+    ok("形象库可设默认并立刻生效",
+       avatar_library.current_info()["id"] == _it["id"]
+       and avatar_library.resolve_default_image() == _av_lib_dir / _it["file"])
+    ok("形象库生效形象与 config 解析一致",
+       config.resolve_avatar_image() == avatar_library.resolve_default_image())
+
+    avatar_library.rename_avatar(_it["id"], "换 名")
+    ok("形象库重命名即时生效", avatar_library.find(_it["id"])["name"] == "换 名")
+    ok("形象库重命名清洗控制字符",
+       avatar_library.rename_avatar(_it["id"], "ab\x07c\x00d")["name"] == "abcd")
+
+    ok("形象库拒绝非白名单扩展名",
+       _raises(lambda: avatar_library.add_avatar(_png(8, 8), "x.gif"), ValueError))
+    ok("形象库拒绝损坏图片(解析不出宽高)",
+       _raises(lambda: avatar_library.add_avatar(b"not an image", "x.png"), ValueError))
+    ok("形象库拒绝超限体积",
+       _raises(lambda: avatar_library.add_avatar(b"\x89PNG" + b"\x00" * (config.AVATAR_UPLOAD_MAX + 1),
+                                                 "big.png"), ValueError))
+    ok("形象库拒绝空内容",
+       _raises(lambda: avatar_library.add_avatar(b"", "x.png"), ValueError))
+    ok("形象库同图上传内置图不产生副本",
+       avatar_library.add_avatar(_av_builtin_src.read_bytes(), "jinli.png")[0]["id"] == "jinli")
+
+    # 环境变量是最外层覆盖:库里选了默认,环境变量仍然赢
+    _os2.environ["TTV_AVATAR_IMAGE"] = "/tmp/pinned-face.png"
+    ok("形象库生效形象被环境变量覆盖",
+       avatar_library.current_info()["env_override"] is True
+       and config.resolve_avatar_image() == Path("/tmp/pinned-face.png"))
+    del _os2.environ["TTV_AVATAR_IMAGE"]
+    ok("形象库去掉环境变量后回到库默认",
+       avatar_library.current_info()["env_override"] is False
+       and avatar_library.current_info()["id"] == _it["id"])
+
+    # 自愈:清单损坏 / 条目丢文件 / 目录里多出未登记图片
+    Path(config.AVATAR_LIBRARY_FILE).write_text("{ 这不是 JSON", encoding="utf-8")
+    _st = avatar_library.list_avatars()
+    ok("形象库清单损坏时自愈(不抛异常,磁盘图片仍在)",
+       _st["items"][0]["id"] == "jinli" and any(i["id"] == _it["id"] for i in _st["items"]))
+    Path(config.AVATAR_LIBRARY_FILE).unlink()
+    ok("形象库清单丢失时自愈", len(avatar_library.list_avatars()["items"]) >= 2)
+
+    _ghost = _av_lib_dir / "av_ghost0000000000.png"
+    _ghost.write_bytes(_png(20, 10))
+    _st = avatar_library.list_avatars()
+    ok("形象库目录里未登记的图片自动补登记",
+       any(i["file"] == _ghost.name for i in _st["items"]))
+    _ghost.unlink()
+    ok("形象库条目文件丢失时自动摘除",
+       not any(i["file"] == "av_ghost0000000000.png"
+               for i in avatar_library.list_avatars()["items"]))
+
+    _victim, _ = avatar_library.add_avatar(_png(11, 13), "victim.png", name="待删")
+    avatar_library.set_default(_victim["id"])
+    avatar_library.delete_avatar(_victim["id"])
+    ok("形象库删除当前默认后默认位回落到剩余条目",
+       avatar_library.current_info()["id"] != _victim["id"]
+       and avatar_library.find(_victim["id"]) is None)
+    ok("形象库删除条目时文件一并清理",
+       not (Path(config.AVATAR_LIBRARY_DIR) / _victim["file"]).exists())
+    ok("形象库内置形象不可删除(权限错)",
+       _raises(_via(avatar_library.delete_avatar, "jinli"), PermissionError))
+    ok("形象库删除不存在的条目报 KeyError",
+       _raises(_via(avatar_library.delete_avatar, "nope"), KeyError))
+    ok("形象库设置不存在的默认报 KeyError",
+       _raises(_via(avatar_library.set_default, "nope"), KeyError))
+
+    # ── 接口契约(TestClient,进程内,不需要 GPU/gRPC 服务) ──
+    # 这里只 import、**不 reload** main:main 在 jobs 段之后首次导入,已绑定本段的
+    # config/jobs;reload 会让它重新 import 一份**新的** jobs 模块,于是后面 jobs 段创建的
+    # 任务对象不再等于新注册表里的那个 —— _job_alive 判 false、stage_build 静默空转,
+    # 后续测试会莫名其妙地失败。这是真实踩点:测试里的"重置模块"会打断自己依赖的对象同一性。
+    _av_main = __import__("main")
+    _cli = __import__("fastapi.testclient", fromlist=["TestClient"]).TestClient(_av_main.app)
+    _r = _cli.get("/api/avatars")
+    ok("接口 形象列表返回 200 与字段齐备",
+       _r.status_code == 200
+       and {"items", "default_id", "current", "max_bytes", "accept"} <= set(_r.json()))
+    _r = _cli.post("/api/avatars", files={"file": ("api.png", _png(120, 90), "image/png")},
+                   data={"name": "接口脸"})
+    ok("接口 上传返回 200 与条目", _r.status_code == 200 and _r.json()["ok"]
+       and _r.json()["item"]["width"] == 120)
+    _api_id = _r.json()["item"]["id"]
+    ok("接口 重复上传标记 duplicate",
+       _cli.post("/api/avatars", files={"file": ("api.png", _png(120, 90), "image/png")}
+                 ).json()["duplicate"] is True)
+    ok("接口 上传坏图 400",
+       _cli.post("/api/avatars", files={"file": ("x.png", b"nope", "image/png")}).status_code == 400)
+    ok("接口 上传非法扩展名 400",
+       _cli.post("/api/avatars", files={"file": ("x.gif", _png(4, 4), "image/gif")}).status_code == 400)
+    _r = _cli.get(f"/api/avatars/{_api_id}/file")
+    ok("接口 取图 200 且 Content-Type/缓存头正确",
+       _r.status_code == 200 and _r.headers["content-type"].startswith("image/png")
+       and "immutable" in _r.headers.get("cache-control", ""))
+    ok("接口 设默认 200 且生效",
+       _cli.post(f"/api/avatars/{_api_id}/default").json()["current"]["id"] == _api_id)
+    ok("接口 重命名 200 且改名生效",
+       _cli.post(f"/api/avatars/{_api_id}/rename", json={"name": "改过"}
+                 ).json()["item"]["name"] == "改过")
+    ok("接口 未知形象一律 404",
+       _cli.get("/api/avatars/nope/file").status_code == 404
+       and _cli.post("/api/avatars/nope/default").status_code == 404
+       and _cli.delete("/api/avatars/nope").status_code == 404)
+    ok("接口 删除内置形象 409",
+       _cli.delete("/api/avatars/jinli").status_code == 409)
+    _r = _cli.delete(f"/api/avatars/{_api_id}")
+    ok("接口 删除 200 且默认位回退", _r.status_code == 200
+       and _r.json()["current"]["id"] != _api_id)
+    ok("接口 形象删除后取图 404", _cli.get(f"/api/avatars/{_api_id}/file").status_code == 404)
+    _lib = _cli.get("/api/styles").json()["avatar_library"]
+    ok("接口 /api/styles 下发形象库(current 与上传规格)",
+       {"items", "current", "max_bytes", "accept"} <= set(_lib)
+       and _lib["current"]["name"] == avatar_library.current_info()["name"])
+finally:
+    avatar_library = _av_orig_libmod
+    if _av_orig_env is None:
+        _os2.environ.pop("TTV_AVATAR_LIBRARY", None)
+    else:
+        _os2.environ["TTV_AVATAR_LIBRARY"] = _av_orig_env
+    _os2.environ.pop("TTV_AVATAR_IMAGE", None)
+    _il2.reload(config)
+    _shutil.rmtree(_av_lib_dir, ignore_errors=True)
+
+_av_after = sorted(p.name for p in (Path(config.ASSETS_DIR) / "avatars").glob("*"))
+ok("形象库测试不污染仓库真实 assets/avatars/", _av_before == _av_after)
+
+ok("形象库生效形象解析不在 import 时固化(改库即改结果)",
+   config.resolve_avatar_image() == avatar_library.resolve_default_image())
 
 
 # ═══════════════ 数字人播报视频:音轨拼接 / 步骤 ETA(纯函数,无 GPU/网络) ═══════════════
@@ -1121,7 +1454,11 @@ try:
     _os.environ["TTV_ROOT"] = _tmpf.mkdtemp(prefix="ttv_geom_")
     _il.reload(_config)
     _il.reload(_jobs_mod)
+    # main 必须与**刚 reload 的** config/jobs 对齐:它持有的是 `from jobs import JOBS, ...`
+    # 那份绑定。首次导入时(它在本段之前已被前面的用例导入)若不对齐,本段新建的任务在
+    # _job_alive 眼里就不存在,stage_build 会静默空转。
     import main as _main  # noqa: E402 - 必须在 TTV_ROOT 指向临时目录之后再导入
+    _il.reload(_main)
 
     _gj = _jobs_mod.create_job("solemn-red", 120, "geom.txt")
     _gproj = _gj.paths()["project"]
@@ -1139,16 +1476,31 @@ try:
     ok("重新开启出镜后旧时间轴又能用",
        len(_main._overlay_timeline(_gj, _gproj)) == 1)
 
-    # 几何缺省与坏值:老任务没有 avatar_geom → 默认右上/AVATAR_SIZE/不抠像;坏值不抛错
+    # 几何缺省与坏值:老任务没有 avatar_geom → 默认右上/AVATAR_SIZE/**抠像取全局偏好**;
+    # 坏值不抛错。抠像的默认不再是静态的 config.AVATAR_CUTOUT,而是 preferences 里的值。
     _gj.state.pop("avatar_geom", None)
-    ok("老任务几何回默认(右上 / 默认边长 / 不抠像)",
+    _gj.state.pop("avatar_cutout_explicit", None)
+    _pref_cut = _main.preferences.avatar_cutout_new_jobs()
+    ok("老任务几何回默认(右上 / 默认边长 / 抠像跟随全局偏好)",
        _main._avatar_geom(_gj) == {"corner": config.AVATAR_CORNER,
-                                   "size": config.AVATAR_SIZE, "cutout": False},
+                                   "size": config.AVATAR_SIZE, "cutout": _pref_cut},
        str(_main._avatar_geom(_gj)))
     _gj.state["avatar_geom"] = {"corner": "中间", "size": 321, "cutout": "是"}
     ok("几何坏值不抛错、回默认",
        _main._avatar_geom(_gj) == {"corner": config.AVATAR_CORNER,
-                                   "size": config.AVATAR_SIZE, "cutout": False})
+                                   "size": config.AVATAR_SIZE, "cutout": _pref_cut})
+    # 全局偏好只影响"没存过"的任务;任务明确存过的值不受影响(不能悄悄改用户的任务设置)
+    _orig_pref_setter = _main.preferences.set_avatar_cutout_new_jobs
+    try:
+        _main.preferences.set_avatar_cutout_new_jobs(not _pref_cut)
+        _gj.state["avatar_geom"] = {"corner": "bl", "size": 480, "cutout": _pref_cut}
+        ok("全局偏好改了也不动已存过几何的任务",
+           _main._avatar_geom(_gj)["cutout"] is _pref_cut)
+        _gj.state.pop("avatar_geom", None)
+        ok("全局偏好改了之后,没存过几何的任务跟着变",
+           _main._avatar_geom(_gj)["cutout"] is (not _pref_cut))
+    finally:
+        _orig_pref_setter(_pref_cut)
     ok("几何解析缺省沿用现值",
        _main._normalize_geom(None, None, None,
                              {"corner": "bl", "size": 480, "cutout": True})

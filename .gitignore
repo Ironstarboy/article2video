@@ -14,6 +14,11 @@ logs/
 assets/fonts/
 assets/bgm/
 assets/vendor/
+# 数字人形象库清单(运行时数据:库里有什么、哪个是默认;缺失时自动重建为「只有内置形象」)
+assets/avatars/library.json
+# 形象库里**用户上传**的形象图(运行时数据,不入库;内置的 jinli.png 仍跟踪)
+assets/avatars/av_*
+tests/__pycache__/
 # 密钥与本地环境
 .secrets/
 # TTS 环境(服务器本地构建)

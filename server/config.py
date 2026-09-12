@@ -69,6 +69,58 @@ def pinned_dep_mismatch(versions: dict) -> list:
             bad.append(f"{name}=={got}(应为 {want})")
     return bad
 
+# ── 数字人形象库 ──
+# 形象不再是「一个写死的文件」,而是**一个目录**里的一个库:
+#   图片本体 + 清单 library.json(纯 JSON,与图片同目录,一起备份/迁移)。
+# 库的增删改查、图片头解析、自愈都在 server/avatar_library.py(零第三方依赖)。
+def _avatar_library_dir() -> Path:
+    """形象库目录。TTV_AVATAR_LIBRARY 既可指向目录,也可指向目录下的 library.json。
+
+    只允许一个目录的含义:图片与清单必须同处一地 —— 否则「清单指向的图片」与
+    「回退用的内置形象」会落在两个目录,覆盖路径时内置形象就会解析到一个空目录
+    (第一版实现踩过,见 CHANGELOG)。
+    """
+    raw = os.environ.get("TTV_AVATAR_LIBRARY") or str(ASSETS_DIR / "avatars")
+    p = Path(raw)
+    if p.suffix == ".json" or p.is_file():
+        p = p.parent
+    return p
+
+
+AVATAR_LIBRARY_DIR = _avatar_library_dir()
+AVATAR_LIBRARY_FILE = AVATAR_LIBRARY_DIR / "library.json"
+# 内置(随仓库分发)的形象文件:它是「最后一个可回退的人」,所以路径**不跟随**库目录 ——
+# 库目录被覆盖成空目录(单测/多实例)时,仍然应该能回退到它。
+AVATAR_BUILTIN_FILE = Path(os.environ.get(
+    "TTV_AVATAR_BUILTIN", str(ASSETS_DIR / "avatars" / "jinli.png")))
+# 单张形象图上限:与文章上传保持一致(20MB)
+AVATAR_UPLOAD_MAX = int(os.environ.get("TTV_AVATAR_UPLOAD_MAX", str(20 * 1024 * 1024)))
+# 允许的图片扩展名 → MIME(前端 accept、上传校验、取图响应头共用一份)
+AVATAR_IMAGE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+
+def resolve_avatar_image() -> Path:
+    """当前生效的形象图片路径(每次调用都重新解析,不在 import 时固化)。
+
+    优先级:TTV_AVATAR_IMAGE 环境变量 > 形象库里的默认形象 > 内置 jinli.png。
+    库文件损坏/条目指向的文件丢失都由 avatar_library 自愈;整条链路失败时
+    回退到内置形象,绝不因为「形象库坏了」让构建起不来。
+    """
+    env = os.environ.get("TTV_AVATAR_IMAGE")
+    if env:
+        return Path(env)
+    try:
+        from avatar_library import resolve_default_image
+        return resolve_default_image()
+    except Exception:  # noqa: BLE001 - 形象库异常不该拖垮构建
+        return AVATAR_BUILTIN_FILE
+
+
 # 日志统一收在 ROOT/logs 下(不污染项目根目录;deploy/*.sh 的重定向路径与此一致)
 LOG_DIR = Path(os.environ.get("TTV_LOG_DIR", str(ROOT / "logs")))
 BACKEND_LOG = LOG_DIR / "backend.log"      # 后端 uvicorn(由 deploy/start.sh 重定向)
@@ -197,8 +249,14 @@ def avatar_corner_options() -> list:
 # 打开后不再叠圆角卡片,而是只把人像本体叠上去:幻灯片内容从人像四周透出来。
 # 做法:给每段片段额外生成一条**灰度遮罩**(server/matte.py,MODNet ONNX 本地推理),
 # 叠加时 `[片段][遮罩]alphamerge` 得到带 alpha 的人像(见 ADR-0004)。
-# 默认关闭;按任务走(state.avatar_geom.cutout),创作页与预览页都能开。
-AVATAR_CUTOUT = os.environ.get("TTV_AVATAR_CUTOUT", "0") == "1"
+# 默认 **true** —— 上传的形象多是真实照片,带背景的圆角卡片会盖住幻灯片,抠掉才符合预期;
+# 「新任务默认抠不抠」现在是**全局偏好**(server/preferences.py,形象页可改、持久化),
+# 这个环境变量是**出厂默认**:偏好文件里没写过时用它。
+# 抠像不可用(解释器/权重缺失)时逐条回退圆角卡片,所以默认开着是安全的。
+AVATAR_CUTOUT = os.environ.get("TTV_AVATAR_CUTOUT", "1") == "1"
+# 全局偏好文件(跨任务记住的设置;缺失/损坏时回退出厂默认)
+PREFERENCES_FILE = Path(os.environ.get(
+    "TTV_PREFERENCES", str(ROOT / ".run" / "preferences.json")))
 # 抠像模式下**下排角落**离画面下缘的留白(默认 0 = 齐平)。四个角落都能摆,上下口径不同:
 # 上排(tl/tr)用 AVATAR_Y 留出头顶空间;下排贴下缘是因为片段本就是齐胸特写、底部整行都是
 # 躯干(alpha≈1),让那道平切口落在画面外沿才不像"悬浮的半身像"(调大这个值切口就会露出来)。

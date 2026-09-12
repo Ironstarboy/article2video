@@ -23,11 +23,12 @@ from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, str(Path(__file__).parent))
 from config import (  # noqa: E402
-    AVATAR_CORNER, AVATAR_CUTOUT, AVATAR_NATIVE_SIZE, AVATAR_SIZE, AVATAR_SIZE_MAX,
-    AVATAR_SIZE_MIN, BACKEND_PORT, FPS, HYPERFRAMES_RUNTIME, NODE_BIN_DIR,
+    AVATAR_CORNER, AVATAR_IMAGE_TYPES, AVATAR_NATIVE_SIZE, AVATAR_SIZE,
+    AVATAR_SIZE_MAX, AVATAR_SIZE_MIN, AVATAR_UPLOAD_MAX, BACKEND_PORT, FPS,
+    HYPERFRAMES_RUNTIME, NODE_BIN_DIR,
     OVERLAY_RT_FACTOR, RENDER_RT_FACTOR, STUDIO_LOG_DIR, TTS_VENV_DIR, VO_CHECK_FRAMES,
     VO_CHECK_MODEL_DIR, VO_CHECK_TIMEOUT, WEB_DIR,
-    avatar_corner_options, avatar_size_options, vo_runtime_fingerprint,
+    avatar_corner_options, avatar_size_options, resolve_avatar_image, vo_runtime_fingerprint,
 )
 from jobs import (  # noqa: E402
     JOBS, LOCK, create_job, get_job, normalize_title, remove_job, run_in_background,
@@ -36,6 +37,8 @@ import extract  # noqa: E402
 import analyze  # noqa: E402
 import tts  # noqa: E402
 import avatar  # noqa: E402
+import avatar_library  # noqa: E402
+import preferences  # noqa: E402
 from builder import assemble, styles  # noqa: E402
 
 log = logging.getLogger("ttv.main")
@@ -107,6 +110,22 @@ def _auto_title(job, script: dict, article: str):
         return
     job.set(title=title, title_source="auto", title_at=time.time())
     log.info("job %s 项目标题自动总结为:%s", job.id, title)
+
+
+def _job_avatar_image(job) -> Path:
+    """本次构建要用的形象图,并把"用的是哪张"记进 job.state。
+
+    形象是**全局**设置(库里当前默认),所以这里每次构建都重新解析一次:
+    库里换了默认形象,下一个构建就用新形象,不必重启服务。记进 state 的是**审计信息**
+    (这次构建到底用了谁),不是配置 —— 界面据此区分「上次构建用的形象」与「现在库里的形象」。
+    """
+    p = resolve_avatar_image()
+    try:
+        job.set(avatar_image_name=avatar_library.current_info()["name"],
+                avatar_image_file=p.name)
+    except Exception as e:  # noqa: BLE001 - 记录审计信息失败不该挡住构建
+        log.warning("记录数字人形象信息失败: %s", e)
+    return p
 
 
 def stage_analyze(job):
@@ -333,6 +352,7 @@ def stage_build(job, force_voice: bool = False, preview: bool = True):
             geom = _avatar_geom(job)
             timeline = avatar.build_frame_clips(
                 script, vo, info["starts"], size=geom["size"], cutout=geom["cutout"],
+                image=_job_avatar_image(job),
                 progress_cb=lambda msg: job.set(progress=msg))
             avatar.write_timeline(timeline, timeline_path)
             # 抠像是要了却没成?如实写进 avatar_error:界面据此提示"已回退圆角卡片",
@@ -385,12 +405,16 @@ def _avatar_geom(job) -> dict:
     """任务级数字人几何:成片里那个人像的角落、边长与是否抠像(纯读,坏值自动回默认)。
 
     state.avatar_geom 由创建时写入、之后可在预览页改(见 api_avatar_geom);
-    老任务没有这些键 → 用 config 默认(右上 / AVATAR_SIZE / 不抠像),不需要迁移。
+    老任务没有这些键 → 用当前口径的默认:位置右上 / AVATAR_SIZE / **抠像取全局偏好**
+    (preferences.avatar_cutout_new_jobs),不需要迁移。
+    注意抠像的默认**不再**是 config.AVATAR_CUTOUT 那个静态值 —— 那个只是出厂默认,
+    用户在形象页改过之后以偏好文件为准。
     """
     g = job.state.get("avatar_geom") or {}
     return {"corner": avatar.safe_corner(g.get("corner")),
             "size": avatar.safe_size(g.get("size")),
-            "cutout": avatar.safe_cutout(g.get("cutout"))}
+            "cutout": avatar.safe_cutout(g.get("cutout"),
+                                        preferences.avatar_cutout_new_jobs())}
 
 
 def _normalize_geom(corner=None, size=None, cutout=None, base: dict | None = None) -> dict:
@@ -399,7 +423,8 @@ def _normalize_geom(corner=None, size=None, cutout=None, base: dict | None = Non
     做成模块级函数而不是直接写在 api_create 里:那个函数的入参就叫 `avatar`
     (表单里的出镜开关),会把模块 `avatar` 遮住。
     """
-    base = base or {"corner": AVATAR_CORNER, "size": AVATAR_SIZE, "cutout": AVATAR_CUTOUT}
+    base = base or {"corner": AVATAR_CORNER, "size": AVATAR_SIZE,
+                    "cutout": preferences.avatar_cutout_new_jobs()}
     return {"corner": avatar.normalize_corner(corner, base["corner"]),
             "size": avatar.normalize_size(size, base["size"]),
             "cutout": avatar.normalize_cutout(cutout, base["cutout"])}
@@ -496,6 +521,7 @@ def stage_avatar_broadcast(job, prev_status: str = "analyzed", size: int | None 
 
         timeline = avatar.build_frame_clips(
             script, vo, starts, size=size, on_frame=on_frame,
+            image=_job_avatar_image(job),
             progress_cb=lambda msg: job.set(progress=msg))
         if not timeline:
             raise RuntimeError("脚本里没有可生成数字人的帧")
@@ -997,6 +1023,25 @@ def _inflight_count() -> int:
                if j.status in ("analyzing", "building", "avatar_building", "rendering"))
 
 
+def _avatar_library_payload() -> dict:
+    """形象库的读侧载荷(列表接口与 /api/styles 共用)。
+
+    形象库整条链路失败(目录不可读、清单损坏到自愈都救不回来)时给一个**只含当前生效形象**
+    的最小载荷:形象管理页会显示"读不到库",但出片链路照旧 —— 形象库是增强项,
+    绝不能让一次读失败连累创作页与出片。
+    """
+    try:
+        return avatar_library.list_payload()
+    except Exception as e:  # noqa: BLE001
+        log.warning("形象库读取失败,按最小载荷返回:%s", e)
+        cur = resolve_avatar_image()
+        return {"items": [], "default_id": "", "max_bytes": AVATAR_UPLOAD_MAX,
+                "accept": sorted(AVATAR_IMAGE_TYPES),
+                "current": {"id": "", "name": cur.stem, "file": cur.name,
+                            "path": str(cur), "env_override": False},
+                "error": f"形象库读取失败:{e}"}
+
+
 # ───────────────────────── API ─────────────────────────
 
 
@@ -1034,9 +1079,138 @@ def api_styles():
         },
         "avatar_corners": avatar_corner_options(),
         "avatar_corner_default": AVATAR_CORNER,
-        # 「抠像(只保留人像、背景透明)」的默认值:前端两个页面都用它兜底
-        "avatar_cutout_default": AVATAR_CUTOUT,
+        # 「抠像(只保留人像、背景透明)」的默认值:前端两个页面都用它兜底。
+        # 取**全局偏好**(形象页可改、持久化),不是 config 里那个静态出厂默认。
+        "avatar_cutout_default": preferences.avatar_cutout_new_jobs(),
+        # 形象库:当前生效形象(名称 + 是否被 TTV_AVATAR_IMAGE 钉住)+ 上传规格。
+        # 创作页只用 current/accept/max_bytes 做提示,形象管理页另走 /api/avatars。
+        "avatar_library": _avatar_library_payload(),
+        "preferences": preferences.payload(),
     }
+
+
+# ── 全局偏好 ──
+# 跨任务记住的设置。目前只有「新任务默认是否抠背景」一项 —— 它原来是任务级选项且默认关,
+# 用户在形象页改一次就该一直生效,不该每次新建任务都去创作页勾。
+
+@app.get("/api/preferences")
+def api_preferences():
+    """当前全局偏好(含出厂默认,便于界面解释环境变量钉住时是什么)。"""
+    return preferences.payload()
+
+
+@app.post("/api/preferences")
+async def api_set_preferences(request: Request):
+    """改全局偏好。字段都可选,只认真正的 JSON 布尔(字符串 "true" 一律 400)。"""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - 无请求体/非 JSON 都按"没传"处理
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    raw = body.get("avatar_cutout_new_jobs")
+    if raw is None:
+        return {"ok": True, **preferences.payload()}
+    if not isinstance(raw, bool):
+        raise HTTPException(400, "avatar_cutout_new_jobs 需要 true 或 false")
+    try:
+        preferences.set_avatar_cutout_new_jobs(raw)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    return {"ok": True, **preferences.payload()}
+
+
+# ── 数字人形象库 ──
+# 形象是一份**全局**设置(不是任务状态):库里有什么、哪个是默认,都落在
+# assets/avatars/library.json;所有**后续**构建的数字人片段按当前默认形象生成。
+# 已在磁盘上的旧片段/旧成片不受影响 —— 片段缓存键本就含形象文件的内容哈希。
+
+
+def _avatar_item_or_404(item_id: str) -> dict:
+    try:
+        item = avatar_library.find(item_id)
+    except Exception as e:  # noqa: BLE001 - 库坏了按"取不到"处理,别 500
+        raise HTTPException(500, f"形象库读取失败:{e}") from None
+    if item is None:
+        raise HTTPException(404, "形象不存在")
+    return item
+
+
+@app.get("/api/avatars")
+def api_avatars():
+    """形象库列表:条目(名称/分辨率/体积/时间/是否内置)+ 当前生效形象。"""
+    return _avatar_library_payload()
+
+
+@app.post("/api/avatars")
+async def api_avatar_upload(file: UploadFile = File(...), name: str = Form("")):
+    """上传一张形象图。
+
+    校验三重(都在 avatar_library.add_avatar 里):扩展名白名单 → 体积上限 → 文件头能解析出
+    宽高。同一张图重复上传返回既有条目(duplicate=true),不报错也不新增副本。
+    """
+    filename = Path(file.filename or "").name          # 防路径穿越
+    ext = Path(filename).suffix.lower()
+    if ext not in AVATAR_IMAGE_TYPES:
+        raise HTTPException(400, "仅支持 " + " / ".join(sorted(AVATAR_IMAGE_TYPES)) + " 格式的图片")
+    data = await file.read()
+    if len(data) > AVATAR_UPLOAD_MAX:
+        raise HTTPException(413, f"图片超过 {AVATAR_UPLOAD_MAX // (1024 * 1024)}MB 上限")
+    try:
+        item, duplicate = avatar_library.add_avatar(data, filename, name)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    except OSError as e:
+        raise HTTPException(500, f"图片写入失败:{e}") from None
+    return {"ok": True, "item": item, "duplicate": duplicate,
+            "current": avatar_library.current_info()}
+
+
+@app.post("/api/avatars/{item_id}/default")
+def api_avatar_default(item_id: str):
+    """把某个形象设为当前默认(之后新构建的数字人片段都用它)。"""
+    _avatar_item_or_404(item_id)
+    avatar_library.set_default(item_id)
+    return {"ok": True, "default_id": item_id, "current": avatar_library.current_info(),
+            "items": avatar_library.list_avatars()["items"]}
+
+
+@app.post("/api/avatars/{item_id}/rename")
+async def api_avatar_rename(item_id: str, request: Request):
+    """重命名形象(只改显示名,不动文件)。"""
+    _avatar_item_or_404(item_id)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - 无请求体/非 JSON 都按"没传名字"处理
+        body = {}
+    raw = body.get("name") if isinstance(body, dict) else None
+    item = avatar_library.rename_avatar(item_id, raw or "")
+    return {"ok": True, "item": item}
+
+
+@app.delete("/api/avatars/{item_id}")
+def api_avatar_delete(item_id: str):
+    """删除形象。内置形象(jinli)不可删除;删掉当前默认时默认位自动落到剩余条目。"""
+    _avatar_item_or_404(item_id)
+    try:
+        avatar_library.delete_avatar(item_id)
+    except PermissionError as e:
+        raise HTTPException(409, str(e)) from None
+    except KeyError:
+        raise HTTPException(404, "形象不存在") from None
+    return {"ok": True, **avatar_library.list_payload()}
+
+
+@app.get("/api/avatars/{item_id}/file")
+def api_avatar_file(item_id: str):
+    """形象图片本体(缩略图与大图共用)。内容按哈希命名,故可长缓存。"""
+    item = _avatar_item_or_404(item_id)
+    p = avatar_library.item_path(item)
+    if not p.exists():
+        raise HTTPException(404, "形象图片文件已丢失")
+    media = AVATAR_IMAGE_TYPES.get(p.suffix.lower(), "application/octet-stream")
+    return FileResponse(p, media_type=media,
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 @app.get("/api/jobs")
@@ -1220,6 +1394,12 @@ def api_job(job_id: str, brief: int = 0, avatar_size: int | None = None):
     # 「数字人」几何:成片里那个人像的位置(四角)与大小;前端两处控件(创作页 / 预览页)都读它
     geom = _avatar_geom(job)
     d["avatar_geom"] = geom
+    # 该任务的数字人形象:state 里记的是**上次构建时**真正用的那份(审计用),
+    # avatar_current 是此刻库里生效的那份 —— 两者可能不同(构建之后换了默认形象),
+    # 界面据此说清"现在换形象,要重新构建才会用新的"。
+    d["avatar_image_name"] = job.state.get("avatar_image_name") or ""
+    d["avatar_image_file"] = job.state.get("avatar_image_file") or ""
+    d["avatar_current"] = _avatar_library_payload()["current"]
     # 「数字人播报视频」的尺寸口径:前端输入框的当前值 = 任务上次用的尺寸,
     # 没生成过则跟随任务的数字人大小(默认 config.AVATAR_SIZE)
     d["avatar_broadcast_size"] = avatar.safe_size(
