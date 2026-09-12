@@ -37,16 +37,44 @@ function El(tag) {
   });
   Object.defineProperty(this, "innerHTML", {
     get: () => this._html,
-    set: (v) => { this._html = String(v); if (v === "") this.children = []; },
+    set: (v) => {
+      this._html = String(v);
+      if (v === "") {
+        // 真实 DOM 语义:清空 innerHTML 会把子节点**摘下来**(从文档里消失)。
+        // 这一点必须模拟 —— 「改名前 wipe 掉容器,回调里再写 #proj-title」这种 bug
+        // 只有摘除后才能真正复现(否则 byId 永远找得到那个节点)。
+        this.children.forEach(c => { c.parentNode = null; });
+        this.children = [];
+      }
+    },
   });
   Object.defineProperty(this, "textContent", {
     get: () => { if (this._text) return this._text;
                  return this.children.map(c => c.textContent).join(""); },
-    set: (v) => { this._text = String(v); this.children = []; },
+    set: (v) => {
+      // 已从文档摘除的节点被写 textContent,在浏览器里是 "Cannot set properties of null"
+      // (因为 $() 返回 null);这里让【分离节点】直接抛错,把这个 bug 变成测试红灯。
+      if (this.detached) {
+        throw new TypeError("Cannot set properties of null (setting 'textContent')");
+      }
+      this._text = String(v); this.children = [];
+    },
   });
+  Object.defineProperty(this, "detached", {
+    get: () => this.parentNode === null && this._everAttached === true,
+    configurable: true,
+  });
+  // 真实 DOM 里 childNodes 是 NodeList;beginRename 会 Array.from 它
+  Object.defineProperty(this, "childNodes", { get: () => this.children.slice(),
+                                              configurable: true });
 }
-El.prototype.appendChild = function (c) { this.children.push(c); c.parentNode = this; return c; };
+El.prototype.appendChild = function (c) { this.children.push(c); c.parentNode = this; c._everAttached = true; return c; };
 El.prototype.addEventListener = function () {};
+El.prototype.focus = function () {};
+El.prototype.select = function () {};
+El.prototype.blur = function () {};
+El.prototype.removeAttribute = function (k) { delete this.attrs[k]; };
+El.prototype.getAttribute = function (k) { return this.attrs[k]; };
 El.prototype.setAttribute = function (k, v) { this.attrs[k] = v; };
 El.prototype.click = function () { if (this.onclick) this.onclick(); };
 function walk(node, out) {
@@ -61,12 +89,60 @@ El.prototype.find = function (cls) {
 El.prototype.findTag = function (tag) {
   return walk(this).filter(n => n.tagName === String(tag).toUpperCase());
 };
+// 支持 ".cls" / "tag.cls" / "#id" 三种最简选择器(脚本只用到这几种)
+El.prototype.querySelector = function (sel) {
+  const s = String(sel || "").trim();
+  let tag = null, cls = null, id = null;
+  if (s.startsWith("#")) { id = s.slice(1); }
+  else {
+    const m = s.match(/^([A-Za-z][\w-]*)?\.([\w-]+)$/);
+    if (m) { tag = m[1]; cls = m[2]; }
+    else { tag = s; }
+  }
+  const hit = walk(this).find(n => n !== this
+    && (!id || n.id === id)
+    && (!cls || (n._classes && n._classes.has(cls)))
+    && (!tag || n.tagName === tag.toUpperCase()));
+  return hit || null;
+};
 
-// ── id → 元素(脚本一启动就 querySelector 一堆 id,全部预建) ──
-const byId = {};
+// ── 文档树:让"节点是否还挂在文档里"这件事可判定 ──
+// 真实 DOM 里 document.querySelector("#x") 找不到**已从文档摘除**的节点。
+// 这里按 index.html 静态标记建一棵树(脚本 querySelector 到的 id 全部挂上;其中
+// #proj-head 按真实结构挂上 #proj-title / #proj-sub,详情页改名那条路径依赖它),
+// 再让 getById 只认「仍挂在树上」的节点 —— 于是"改名前清空容器、回调里再写子元素"
+// 这类 bug 会真的红灯(修 2026-09-13 那个 textContent of null 就是靠它守住的)。
+const DOC = new El("body");
+const _rawIndex = {};
+
+function makeEl(id, parent, tag) {
+  const e = new El(tag || "div");
+  e.id = id;
+  _rawIndex[id] = e;
+  (parent || DOC).appendChild(e);
+  return e;
+}
+
+// 详情页头部:改名的宿主容器 + 它里面两个静态元素
+const _projHead = makeEl("proj-head", DOC, "div");
+makeEl("proj-title", _projHead, "h2").className = "proj-h-title";
+makeEl("proj-sub", _projHead, "span").className = "proj-h-sub";
+
+// 其余 id 按静态标记补全(直接从 index.html 里扫,省得手抄漏)
+(() => {
+  const html = fs.readFileSync(path.join(ROOT, "web", "index.html"), "utf8");
+  const body = html.slice(0, html.indexOf("<script>"));
+  const ids = new Set();
+  for (const m of body.matchAll(/\$\("#([A-Za-z0-9_-]+)"\)/g)) ids.add(m[1]);
+  for (const m of body.matchAll(/id="([A-Za-z0-9_-]+)"/g)) ids.add(m[1]);
+  ids.forEach(id => { if (!_rawIndex[id]) makeEl(id, DOC); });
+})();
+
 function getById(id) {
-  if (!byId[id]) { byId[id] = new El("div"); byId[id].id = id; }
-  return byId[id];
+  const e = _rawIndex[id];
+  if (!e) return null;
+  // 只认仍挂在文档树上的节点(与浏览器一致)
+  return walk(DOC).includes(e) ? e : null;
 }
 global.document = {
   querySelector: (sel) => sel.startsWith("#") ? getById(sel.slice(1)) : new El("div"),
@@ -346,6 +422,56 @@ const api = global.__api;
   ok("偏好改成开启后,创作页勾选框与形象页开关都变(true)",
      getById("up-avatar-cutout").checked === true && getById("av-pref-cutout").checked === true,
      "up=" + getById("up-avatar-cutout").checked + " pref=" + getById("av-pref-cutout").checked);
+
+  // ⑬ 回归:预览页「重命名」
+  //     真实 bug(2026-09-13 用户报):beginRename 用 host.innerHTML = "" 把 #proj-title /
+  //     #proj-sub **从文档里摘掉**,成功回调又直接写它们的 textContent → 拿到 null,
+  //     报 "Cannot set properties of null (setting 'textContent')",改名看着"失败"。
+  //     这条用例靠 stub 的"摘除即查不到 + 写分离节点抛错"来复现,不修就是红灯。
+  {
+    const head = getById("proj-head");
+    const title = getById("proj-title");
+    const sub = getById("proj-sub");
+    ok("前置:详情页头部三个元素都在文档里",
+       !!head && !!title && !!sub && !!head.querySelector(".proj-h-title"));
+    title.textContent = "旧标题";
+    sub.textContent = "自动总结 · #job";
+
+    const rn = getById("btn-rename");
+    rn.onclick();                                   // 进入编辑态:host 内容被换成输入框
+    const inp = head.querySelector(".rename-input");
+    ok("点「重命名」后出现输入框,且静态子元素已离开文档",
+       !!inp && getById("proj-title") === null && getById("proj-sub") === null);
+
+    inp.value = "用户改的标题";
+    const oldFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (/\/rename$/.test(url)) return {ok: true, status: 200,
+        json: async () => ({ok: true, title: "用户改的标题"})};
+      return oldFetch(url, opts);
+    };
+    try {
+      head.querySelector(".smallbtn").onclick();     // 「保存」
+    } finally {
+      global.fetch = oldFetch;
+    }
+    // commit 是 async:让挂起的 promise 跑完
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+
+    ok("改名成功后:标题写回、输入框撤掉(不再抛 textContent of null)",
+       getById("proj-title") !== null && getById("proj-title").textContent === "用户改的标题",
+       "title=" + (getById("proj-title") ? getById("proj-title").textContent : "<null>"));
+    // 测试环境下没有真实 jobId(location.search 为空),所以只断言前缀
+    ok("改名成功后:副标题标明手动命名",
+       getById("proj-sub") !== null
+       && getById("proj-sub").textContent.indexOf("手动命名 · #") === 0,
+       "sub=" + (getById("proj-sub") ? getById("proj-sub").textContent : "<null>"));
+    ok("改名成功后:编辑态已退出且提示已给出",
+       !head.querySelector(".rename-input") && getById("toast").textContent.includes("用户改的标题"));
+    ok("改名成功后:容器里的静态元素回到文档",
+       !!head.querySelector(".proj-h-title"));
+  }
 
   console.log("\n" + PASS + " passed, " + FAIL + " failed");
   process.exit(FAIL ? 1 : 0);

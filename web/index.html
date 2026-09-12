@@ -1765,16 +1765,22 @@ async function postJSON(url, body){
 }
 
 /* 就地重命名:把 host 的内容换成一个输入框 + 保存/取消,保存成功由调用方负责刷新显示 */
+/* 改名就地编辑:把 host 的内容临时换成输入框,保存/取消后还原。
+   ⚠️ 关键口径:host.innerHTML = "" 会**销毁** host 里的子节点。所以 save() 里若要写
+   `#proj-title` / `#proj-sub` 这类**静态页面元素**,必须先 restoreRenameHost(host) 把它们
+   还原回 DOM 再写 —— 否则拿到的是 null,表现为
+   "Cannot set properties of null (setting 'textContent')"(真实 bug,见 btn-rename 的回调
+   与 tests/avatar-page.test.js 的回归)。原始节点记在 host.__renameOld 上,回调也能还原。 */
 function beginRename(host, current, save){
   if (host.querySelector(".rename-input")) return;
-  const old = Array.from(host.childNodes);
+  host.__renameOld = Array.from(host.childNodes);
   const wrap = el("span", "rename-wrap");
   const inp = document.createElement("input");
   inp.type = "text"; inp.className = "rename-input"; inp.value = current || "";
   inp.maxLength = 60; inp.placeholder = "项目标题(60 字以内)";
   const ok = el("button", "smallbtn", "保存"); ok.type = "button";
   const cancel = el("button", "smallbtn", "取消"); cancel.type = "button";
-  const restore = ()=>{ host.innerHTML = ""; old.forEach(n=>host.appendChild(n)); };
+  const restore = ()=>restoreRenameHost(host);
   const commit = async ()=>{
     const val = inp.value.trim();
     if (!val) { toast("项目标题不能为空", true); inp.focus(); return; }
@@ -1943,11 +1949,25 @@ function syncProjectTitle(j){
 $("#btn-rename").onclick = ()=>{
   beginRename($("#proj-head"), $("#proj-title").textContent || "", async (val)=>{
     const r = await postJSON("./api/jobs/" + encodeURIComponent(jobId) + "/rename", {title: val});
+    // 必须先还原 DOM 再写标题:此刻 #proj-title / #proj-sub 还被输入框替换着(等于不在文档里),
+    // 直接写会拿到 null → "Cannot set properties of null (setting 'textContent')"
+    restoreRenameHost($("#proj-head"));
     $("#proj-title").textContent = r.title;
     $("#proj-sub").textContent = "手动命名 · #" + jobId;
     toast("已重命名为「" + r.title + "」");
   });
 };
+
+/* 把被 beginRename 顶掉的静态元素还原回 host(幂等)。
+   做法就是从记录下的原始节点里找回来重新挂上 —— 比让每个回调自己记得还原更不容易漏。 */
+function restoreRenameHost(host){
+  if (!host || !host.querySelector(".rename-input")) return;   // 没在编辑态:无需还原
+  const saved = host.__renameOld;
+  if (!saved) return;
+  host.innerHTML = "";
+  saved.forEach(n=>host.appendChild(n));
+  host.__renameOld = null;
+}
 
 function visibleEl(sel){
   const e = document.querySelector(sel);
