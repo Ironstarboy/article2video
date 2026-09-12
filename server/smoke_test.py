@@ -725,6 +725,32 @@ with _wave.open(str(_wav_out), "rb") as _w:
 ok("播报音轨帧首为静音(与成片 VO_OFFSET 对齐)", _pcm[:1000] == b"\x00" * 1000)
 ok("播报音轨缺失配音也不报错(按静音补齐)", _bc_total > 0)
 
+# 播报音轨必须与源配音**逐字节对齐**:16bit 下"采样数当字节数"用会让整条人声
+# 每个采样错位一个字节(听起来全是噪声,但静音段仍然正常,极难发现)。
+# 用一段已知正弦做源,直接比对字节。
+_src_wav = Path(_tmp_text("bc_src.wav", ""))
+with _wave.open(str(_src_wav), "wb") as _w:
+    _w.setnchannels(1)
+    _w.setsampwidth(2)
+    _w.setframerate(44100)
+    import math as _math
+    _tone = b"".join(
+        int(12000 * _math.sin(2 * _math.pi * 440 * i / 44100)).to_bytes(2, "little", signed=True)
+        for i in range(44100))
+    _w.writeframes(_tone)
+_out_wav = Path(_tmp_text("bc_out.wav", ""))
+avatar.build_broadcast_audio(
+    [{"index": 2, "clip": "/tmp/none.mp4", "start": 0.0, "duration": 1.5}],
+    {2: {"path": str(_src_wav)}}, _out_wav)
+_e = _out_wav.read_bytes()[44:]
+_head_b = int(44100 * 0.25) * 2                      # 0.25s × 44100 × 2 字节
+ok("播报音轨帧首静音恰好 0.25s(按字节)",
+   len(_e) >= _head_b and _e[:_head_b] == b"\x00" * _head_b,
+   f"前 {_head_b} 字节应为全零")
+ok("播报音轨与源配音逐字节对齐(无半字节错位)",
+   _e[_head_b:_head_b + len(_tone)] == _tone,
+   f"比对区间 [{_head_b}, {_head_b + len(_tone)})")
+
 ok("播报耗时估算随片长增长",
    avatar.estimate_broadcast_sec(600) > avatar.estimate_broadcast_sec(300) > 0)
 ok("播报耗时估算=配音+人像+拼接",
@@ -748,6 +774,15 @@ _wt = tts.word_times("发展新质生产力", 4.0)
 ok("词级时间轴起点含 VO_OFFSET", abs(_wt[0][1] - tts.VO_OFFSET) < 1e-6)
 # 词级时间轴从 VO_OFFSET 起铺满配音时长(与成片 audio 的 data-start 同一口径)
 ok("词级时间轴跨度等于配音时长", abs((_wt[-1][2] - _wt[0][1]) - 4.0) < 1e-6)
+
+# ── 配音时长验收(本地 CosyVoice3 解码不稳定:残句 0.01× / 复读 3.4×)──
+_t42 = "发展新质生产力需要因地制宜实事求是"
+_expect = len(_t42) / 4.2
+ok("tts 时长比值 = 实际 / 预期", abs(tts.duration_ratio(_t42, _expect) - 1.0) < 1e-6)
+ok("tts 正常时长判合格", tts.duration_plausible(_t42, _expect * 1.2))
+ok("tts 残句(0.3×)判不合格", not tts.duration_plausible(_t42, _expect * 0.3))
+ok("tts 复读(2.5×)判不合格", not tts.duration_plausible(_t42, _expect * 2.5))
+ok("tts 验收窗口可配", tts.ACCEPT_RATIO[0] < 1.0 < tts.ACCEPT_RATIO[1])
 
 
 print()

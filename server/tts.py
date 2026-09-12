@@ -13,10 +13,27 @@ from pathlib import Path
 
 import httpx
 
-from config import LOCAL_TTS_URL
+from config import CHARS_PER_SEC, LOCAL_TTS_URL
 
 # 旁白起始偏移:帧开始后 0.25s 起念
 VO_OFFSET = 0.25
+
+# 时长验收窗口(实际/预期)。本地 CosyVoice3 在本机解码不稳定:同一句会随机给出
+# 0.01× (残句) 到 3.4× (复读) 的音频,TTS 服务侧已按时长重采;这里再兜一层:
+# 服务仍未给出合理时长时换实例再要一次。见 CHANGELOG v2.2「配音时长验收」。
+ACCEPT_RATIO = (0.65, 1.8)
+TTS_LAST_RATIO: float | None = None
+
+
+def duration_ratio(text: str, dur: float) -> float:
+    """实际时长 / 预期时长(预期 = 字数 ÷ CHARS_PER_SEC)。"""
+    n = len((text or "").replace(" ", ""))
+    return dur / max(1.0, n / CHARS_PER_SEC)
+
+
+def duration_plausible(text: str, dur: float) -> bool:
+    r = duration_ratio(text, dur)
+    return ACCEPT_RATIO[0] <= r <= ACCEPT_RATIO[1]
 
 # CosyVoice3 多实例池(默认三实例;单实例部署时只写 8016 一个即可)
 TTS_POOL = [u.strip() for u in os.environ.get(
@@ -110,17 +127,23 @@ DOUBAO_VOICES = [
 def _synth_local_url(text: str, voice: str, out: Path, speed: float, url: str,
                      attempts: int = 3) -> bool:
     """单实例 TTS 服务(CosyVoice3 8016/8018/8019 / Qwen3-TTS 8017)。成功返回 True。"""
+    global TTS_LAST_RATIO
     import time as _t
     for attempt in range(attempts):
         try:
             r = httpx.post(f"{url}/tts", json={"text": text, "voice": voice, "speed": speed},
-                           timeout=httpx.Timeout(300.0, connect=3.0))
+                           timeout=httpx.Timeout(600.0, connect=3.0))
             if r.status_code == 200:
                 wav = out.with_suffix(".wav")
                 wav.write_bytes(r.content)
                 subprocess.run(["ffmpeg", "-y", "-i", str(wav), "-ar", "44100", "-ac", "1",
                                 "-b:a", "128k", str(out)], capture_output=True, timeout=120)
                 wav.unlink(missing_ok=True)
+                hdr = r.headers.get("x-tts-ratio")
+                try:
+                    TTS_LAST_RATIO = float(hdr) if hdr is not None else None
+                except ValueError:
+                    TTS_LAST_RATIO = None
                 return out.exists() and audio_duration(out) > 0.2
         except Exception:
             pass
@@ -239,11 +262,22 @@ def _synth_frame(idx: int, text: str, voice: str, audio_dir: Path, speed: float,
     if engine is None:
         if _synth_pool(text, voice, out, speed):
             engine = "cosyvoice3"
+    dur = audio_duration(out)
+    # 时长验收:服务端已重采,这里再兜一层(换实例重新采样)。本地 CosyVoice3 的采样
+    # 不稳定,同一句多要一次往往就能拿到正常时长;不通过就留痕,便于排查。
+    if engine and engine != "silence" and not duration_plausible(text, dur):
+        for _try in range(2):
+            if _synth_pool(text, voice, out, speed):
+                d2 = audio_duration(out)
+                if duration_plausible(text, d2):
+                    dur = d2
+                    break
+                dur = d2
     if engine is None:
         engine = _silence_placeholder(text, out)
-    dur = audio_duration(out)
+        dur = audio_duration(out)
     return idx, {"path": str(out), "duration": dur, "words": word_times(text, dur),
-                 "engine": engine}
+                 "engine": engine, "ratio": round(duration_ratio(text, dur), 3)}
 
 
 def synthesize_frames(frames: list[dict], voice: str, audio_dir: Path, speed: float = 1.0,

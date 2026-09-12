@@ -30,7 +30,7 @@ vtt/
 │   ├── extract.py           txt/md/docx 提取(zip 炸弹防护;txt/md 字节预检 >1.5MB 拒绝)
 │   ├── analyze.py           DeepSeek 分析:宣传视频两阶段(阶段一「分析」诊断小契约 → 阶段二「脚本」按帧计划生成)+ 讲解视频两步分析(备课方案 → 分段并行生成逐帧脚本,ThreadPoolExecutor 3 workers)+ 构建期二次拓展(expand_script)
 │   ├── tts.py               配音:CosyVoice3 多实例轮询并行合成(httpx 全局共享连接池,修复 FD 耗尽)+ 词级时间轴 + 真实时长向目标靠拢(apply_real_durations);失败重试×3 → 静音占位
-│   ├── tts_server.py        CosyVoice3 服务(8016/8018/8019 三实例:GPU1/GPU2/GPU3,三音色零样本克隆,speed 钳位下限 1.0)
+│   ├── tts_server.py        CosyVoice3 服务(8016/8018/8019 三实例:GPU1/GPU2/GPU3,三音色零样本克隆,speed 钳位下限 1.0;**时长验收重采**:实际/预期不落在窗口内就重采,见 v2.2)
 │   ├── tts_qwen_server.py   Qwen3-TTS 服务(8017,GPU2,备用引擎,默认停;<8 字 400)
 │   ├── avatar.py            数字人:片段生成/时间轴/叠加 + 播报视频(音轨拼接、顺序合流、ETA 估算)+ gRPC 探活
 │   ├── smoke_test.py        冒烟回归:纯函数路径(extract/styles/时长靠拢/校验门/讲解校验)

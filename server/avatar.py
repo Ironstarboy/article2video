@@ -446,7 +446,10 @@ def build_broadcast_audio(timeline: list, vo: dict, out: Path,
     返回音轨时长(秒)。
     """
     out.parent.mkdir(parents=True, exist_ok=True)
-    head = int(rate * VO_OFFSET)
+    # 注意单位:16bit 单声道下,1 个采样 = 2 字节。帧首静音若按"采样数"当字节数用
+    # (int(rate*0.25) 是奇数),整条人声会**每个采样错位一个字节** → 听起来全是噪声。
+    bytes_per_sample = 2
+    head = int(rate * VO_OFFSET) * bytes_per_sample
     total = 0.0
     with wave.open(str(out), "wb") as w:
         w.setnchannels(1)
@@ -463,7 +466,7 @@ def build_broadcast_audio(timeline: list, vo: dict, out: Path,
                     pcm = _read_pcm(Path(src).resolve(), rate)
                 except Exception:  # noqa: BLE001 - 单帧音频坏了不该毁掉整条音轨
                     pcm = b""
-            need = int(rate * 2 * dur)
+            need = int(rate * bytes_per_sample * dur)
             body = (b"\x00" * head) + pcm
             if len(body) > need:
                 body = body[:need]
