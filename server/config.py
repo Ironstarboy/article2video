@@ -122,25 +122,72 @@ def _default_avatar_image() -> Path:
 
 
 AVATAR_IMAGE = Path(os.environ.get("TTV_AVATAR_IMAGE", str(_default_avatar_image())))
-# 成片里数字人的边长(生成端可能更高,烘焙时缩放)
-AVATAR_SIZE = int(os.environ.get("TTV_AVATAR_SIZE", "320"))
+# 数字人卡片的边长(正方形,故一个数即尺寸)。生成端可能更高,烘焙时缩放。
+# 这一个值同时是:成片里叠加的那个人像的默认大小、以及「数字人播报视频」的默认边长。
+AVATAR_SIZE = int(os.environ.get("TTV_AVATAR_SIZE", "300"))
+# 可选边长(前端快捷档位;逗号分隔可覆盖)。默认值由 avatar_size_options() 并进去。
+AVATAR_SIZE_CHOICES = tuple(
+    int(x) for x in os.environ.get(
+        "TTV_AVATAR_SIZE_CHOICES", "240,300,400,464,640").split(",") if x.strip())
+# 允许的边长区间:偶数才能过 H.264 yuv420p;低于 160 看不清人脸,高于 1080 无意义。
+AVATAR_SIZE_MIN = int(os.environ.get("TTV_AVATAR_SIZE_MIN", "160"))
+AVATAR_SIZE_MAX = int(os.environ.get("TTV_AVATAR_SIZE_MAX", "1080"))
+# 服务端原生输出边长(FlashHead 464×464):超过它只是放大,不会再增加细节,
+# 前端据此对超限档位标注「放大」。
+AVATAR_NATIVE_SIZE = int(os.environ.get("TTV_AVATAR_NATIVE_SIZE", "464"))
+# 成片里数字人的四角锚点:tl 左上 / tr 右上 / br 右下 / bl 左下。默认右上。
+AVATAR_CORNERS = {"tl": "左上", "tr": "右上", "br": "右下", "bl": "左下"}
+AVATAR_CORNER = os.environ.get("TTV_AVATAR_CORNER", "tr")
+if AVATAR_CORNER not in AVATAR_CORNERS:      # 配置写坏就回默认,别让服务起不来
+    AVATAR_CORNER = "tr"
+
+
+def avatar_size_options() -> list:
+    """前端下拉用的边长清单:默认值必在首位之后去重升序,非法项直接剔除。
+
+    纯函数,便于回归:环境变量写错(奇数/超界)时界面不能出现一个点了必报 400 的档位。
+    """
+    seen = []
+    for s in (AVATAR_SIZE, *AVATAR_SIZE_CHOICES):
+        try:
+            s = int(s)
+        except (TypeError, ValueError):
+            continue
+        if s % 2 or not (AVATAR_SIZE_MIN <= s <= AVATAR_SIZE_MAX):
+            continue
+        if s not in seen:
+            seen.append(s)
+    return sorted(seen) or [AVATAR_SIZE]   # 配置写坏了也保证界面有档位可选
+
+
+def avatar_corner_options() -> list:
+    """前端位置选择器的四角清单(网格顺序:左上/右上/右下/左下)。
+
+    默认角由 AVATAR_CORNER 单独给出 —— 清单顺序保持稳定,界面用「(默认)」标注,
+    比把默认项挪到第一项更好认。
+    """
+    return [{"key": k, "name": name} for k, name in AVATAR_CORNERS.items()]
+
 # 片段缓存(跨任务复用;与形象/音频/规格/版本共同决定键)
 AVATAR_CACHE_DIR = Path(os.environ.get("TTV_AVATAR_CACHE", str(ROOT / ".cache" / "avatar")))
 # 待机片段时长:每个形象只生成一段,用于填充帧内无台词的时间
 AVATAR_IDLE_SECONDS = float(os.environ.get("TTV_AVATAR_IDLE_SECONDS", "6.0"))
 # 片段规格版本:烘焙/编码参数变化时递增,自动失效旧缓存
 AVATAR_CLIP_VERSION = os.environ.get("TTV_AVATAR_CLIP_VERSION", "2")
-# 数字人在成片里的左上角位置(像素)
+# 数字人卡片距画面边缘的留白(像素):四个角落锚点都由它推出坐标(见 avatar.corner_xy)
 AVATAR_X = int(os.environ.get("TTV_AVATAR_X", "40"))
 AVATAR_Y = int(os.environ.get("TTV_AVATAR_Y", "36"))
 # 速度系数(用于「生成步骤 + 预计时间」,只影响展示,不影响产物):
 # AVATAR_RT_FACTOR = 人像出片速度(秒视频 / 秒墙钟)。5090 + FlashHead 实测 ≈0.85
 #   (23.9s 音频 → 28.6s 墙钟);AVATAR_CONCAT_RT_FACTOR = 拼接编码速度(秒视频/秒墙钟),
-# 实测 320×320 约 56×,取 15× 留足音轨解码/探长的余量(宁高估不低估);
+# 实测 **320×320** 约 56×,取 15× 留足音轨解码/探长的余量(宁高估不低估);
 # AVATAR_TTS_RT_FACTOR = 配音合成速度(秒音频/秒墙钟),单实例实测 ≈2.5×。
 # 事前预计把配音也算进去(首次生成必须合成配音;配音已缓存时会略微高估)。
 AVATAR_RT_FACTOR = float(os.environ.get("TTV_AVATAR_RT_FACTOR", "0.85"))
 AVATAR_CONCAT_RT_FACTOR = float(os.environ.get("TTV_AVATAR_CONCAT_RT_FACTOR", "15.0"))
+# 上面那个拼接系数是在哪个边长实测的:换尺寸时按面积比外推(见 avatar.concat_rt_factor),
+# 所以默认边长改成 300 后,系数不会跟着被"解释成 300 的实测值"。
+AVATAR_CONCAT_BASE_SIZE = int(os.environ.get("TTV_AVATAR_CONCAT_BASE_SIZE", "320"))
 AVATAR_TTS_RT_FACTOR = float(os.environ.get("TTV_AVATAR_TTS_RT_FACTOR", "2.5"))
 # 渲染与叠加的速度系数(秒视频/秒墙钟),用于「渲染中」的预计剩余(只影响展示)。
 # 实测 1080p + --workers 1 流式捕获:81s 片 ≈85s(0.95)、152s 片 ≈200s(0.76),

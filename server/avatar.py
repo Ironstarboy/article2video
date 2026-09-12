@@ -30,9 +30,10 @@ import avatar_pb2  # noqa: E402
 import avatar_pb2_grpc  # noqa: E402
 import common_pb2  # noqa: E402
 from config import (  # noqa: E402
-    AVATAR_ADDR, AVATAR_CACHE_DIR, AVATAR_CLIP_VERSION, AVATAR_CONCAT_RT_FACTOR,
-    AVATAR_IDLE_SECONDS, AVATAR_IMAGE, AVATAR_RT_FACTOR, AVATAR_SIZE,
-    AVATAR_TTS_RT_FACTOR,
+    AVATAR_ADDR, AVATAR_CACHE_DIR, AVATAR_CLIP_VERSION, AVATAR_CONCAT_BASE_SIZE,
+    AVATAR_CONCAT_RT_FACTOR, AVATAR_CORNERS, AVATAR_CORNER, AVATAR_IDLE_SECONDS,
+    AVATAR_IMAGE, AVATAR_RT_FACTOR, AVATAR_SIZE, AVATAR_SIZE_MAX, AVATAR_SIZE_MIN,
+    AVATAR_TTS_RT_FACTOR, AVATAR_X, AVATAR_Y, HEIGHT, WIDTH,
 )
 from tts import VO_OFFSET  # noqa: E402
 
@@ -45,6 +46,105 @@ _SHADOW_DX, _SHADOW_DY = 2, 3
 _INPUT_SAMPLE_RATE = 16000
 _AUDIO_STEP_BYTES = _INPUT_SAMPLE_RATE  # 每次送 0.5s(16bit 单声道 → 16000 字节)
 _MAX_RECV_BYTES = 128 * 1024 * 1024      # 单块 464×464×28 帧 RGB24 ≈ 18MB,默认 4MB 不够
+
+
+# ─────────────────────────── 尺寸口径 ───────────────────────────
+#
+# 「数字人大小」= 卡片边长(正方形)。它同时决定三件事:gRPC 出帧的烘焙缩放、
+# 片段缓存键、以及播报视频的画面边长。默认 config.AVATAR_SIZE,成片叠加与
+# 「数字人播报视频」都按任务的设置走;非法值一律在接口层拦成 400,不静默改写。
+
+def normalize_size(value=None, default: int = AVATAR_SIZE) -> int:
+    """把接口/前端传来的边长收敛成合法值(纯函数)。
+
+    None / 空串 → default;必须是**偶数**(奇数过不了 H.264 yuv420p),
+    且落在 [AVATAR_SIZE_MIN, AVATAR_SIZE_MAX] 内。不合法抛 ValueError:
+    静默改成别的尺寸,用户拿到的是"不是我选的那个大小",比报错更难排查。
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return int(default)
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"数字人尺寸必须是整数:{value!r}") from None
+    if size % 2:
+        raise ValueError(f"数字人尺寸必须是偶数:{size}")
+    if not (AVATAR_SIZE_MIN <= size <= AVATAR_SIZE_MAX):
+        raise ValueError(
+            f"数字人尺寸需在 {AVATAR_SIZE_MIN}-{AVATAR_SIZE_MAX} 之间:{size}")
+    return size
+
+
+def safe_size(value=None, default: int = AVATAR_SIZE) -> int:
+    """读路径用的宽松版:历史 state 里的坏值退回 default,绝不抛错(轮询不能被它打断)。"""
+    try:
+        return normalize_size(value, default)
+    except ValueError:
+        return int(default)
+
+
+def concat_rt_factor(size: int = AVATAR_SIZE) -> float:
+    """拼接编码速度系数(秒视频/秒墙钟),按**面积比**从实测基准边长外推。
+
+    编码耗时基本与像素数成正比(AVATAR_CONCAT_BASE_SIZE=320 实测 ≈15×),
+    所以 640 只有 ≈3.75×。注意基准是 320 这个**实测值**,不是当前默认边长 ——
+    默认边长改成 300 以后,系数不该被解释成"300 的实测值"。
+    只影响界面上的「预计时间」,不参与任何产物生成;step 2 生成中会用实测速率覆盖。
+    """
+    base = max(0.5, AVATAR_CONCAT_RT_FACTOR)
+    ref = max(1, int(AVATAR_CONCAT_BASE_SIZE or AVATAR_SIZE))
+    s = max(1, int(size or AVATAR_SIZE))
+    return base * (ref / s) ** 2
+
+
+# ── 四角位置(成片里那个人像放在哪个角) ──
+
+_CORNER_ALIASES = {
+    "tl": "tl", "左上": "tl", "left-top": "tl", "top-left": "tl",
+    "tr": "tr", "右上": "tr", "right-top": "tr", "top-right": "tr",
+    "br": "br", "右下": "br", "right-bottom": "br", "bottom-right": "br",
+    "bl": "bl", "左下": "bl", "left-bottom": "bl", "bottom-left": "bl",
+}
+
+
+def normalize_corner(value=None, default: str = AVATAR_CORNER) -> str:
+    """把接口/前端传来的角落收敛成 'tl'|'tr'|'br'|'bl'(纯函数)。
+
+    接受键名与中文名(「右上」等);None/空串 → default。不合法抛 ValueError,
+    由接口层转 400 —— 位置写错比尺寸更隐蔽(成片出来才发现人像不见了)。
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default if default in AVATAR_CORNERS else "tr"
+    key = _CORNER_ALIASES.get(str(value).strip().lower())
+    if key is None:
+        raise ValueError(
+            f"数字人位置只能是 {'/'.join(AVATAR_CORNERS)}(或 左上/右上/右下/左下):{value!r}")
+    return key
+
+
+def safe_corner(value=None, default: str = AVATAR_CORNER) -> str:
+    """读路径用的宽松版:历史 state 里的坏值退回 default,绝不抛错。"""
+    try:
+        return normalize_corner(value, default)
+    except ValueError:
+        return default if default in AVATAR_CORNERS else "tr"
+
+
+def corner_xy(corner: str = AVATAR_CORNER, size: int = AVATAR_SIZE,
+              margin_x: int = AVATAR_X, margin_y: int = AVATAR_Y,
+              video_w: int = WIDTH, video_h: int = HEIGHT,
+              pad: int = _MARGIN) -> tuple[int, int]:
+    """四角锚点 → ffmpeg overlay 坐标(纯函数)。
+
+    叠加的输入是**带留白的卡片画布**(边长 = size + 2×pad,留白给投影),
+    所以四个角都按整块画布离边 margin 来摆 —— 这样圆角卡片的**视觉**边距
+    四角一致,投影也不会被画面边缘裁掉。
+    """
+    c = normalize_corner(corner)
+    canvas = int(size) + 2 * int(pad)
+    x = margin_x if c in ("tl", "bl") else max(0, int(video_w) - canvas - margin_x)
+    y = margin_y if c in ("tl", "tr") else max(0, int(video_h) - canvas - margin_y)
+    return x, y
 
 
 def _log(msg: str) -> None:
@@ -334,11 +434,14 @@ def ensure_blank_clip(svc: AvatarService, frame_duration: float,
 
 
 def composite_onto_video(base: Path, timeline: list, out: Path,
-                         size: int = AVATAR_SIZE, x: int = 40, y: int = 36,
-                         fps: int = 30, progress_cb=None) -> Path:
-    """把各帧数字人片段按**帧绝对起点**叠加到成片左上角(圆角+投影在此完成)。
+                         size: int = AVATAR_SIZE, x: int | None = None,
+                         y: int | None = None, fps: int = 30, corner: str = AVATAR_CORNER,
+                         progress_cb=None) -> Path:
+    """把各帧数字人片段按**帧绝对起点**叠加到成片指定角落(圆角+投影在此完成)。
 
     timeline: [{"clip": Path, "start": float, "duration": float}, ...]
+    corner: 四角锚点(默认 config.AVATAR_CORNER,现为右上);x/y 显式给出时优先用它们
+    (老调用方与 deploy/verify-avatar.py 的像素校验就是这么传的)。
     关键:卡片流的 PTS 必须先平移到帧起点(setpts=PTS-STARTPTS+start/TB),
     否则叠加窗口内播放的是它自己时间轴的末尾;enabled 窗口负责窗口外不显示。
     progress_cb(done_sec, total_sec):ffmpeg 已编码到第几秒(界面「叠加数字人」进度用)。
@@ -347,6 +450,9 @@ def composite_onto_video(base: Path, timeline: list, out: Path,
     out.parent.mkdir(parents=True, exist_ok=True)
     if not items:
         return base
+    if x is None or y is None:
+        x, y = corner_xy(corner, size)
+    x, y = int(x), int(y)
 
     mask = _mask_path(size)
     inputs: list[str] = ["-i", str(base)]
@@ -508,7 +614,7 @@ def build_broadcast_video(timeline: list, vo: dict, out: Path,
     """把各帧数字人片段顺序拼成一条独立视频,并合上按同一时间轴拼出的配音音轨。
 
     timeline: [{"index", "clip", "duration", "start"}, ...](顺序即播放顺序)
-    产出:单条 mp4(320×320,H.264 + AAC),不掺 BGM、不掺 PPT 画面。
+    产出:单条 mp4(H.264 + AAC),画面边长 = 片段边长(默认 config.AVATAR_SIZE),不掺 BGM、不掺 PPT 画面。
     """
     items = [t for t in timeline if t.get("clip") and Path(t["clip"]).exists()]
     if not items:
@@ -555,16 +661,19 @@ def build_broadcast_video(timeline: list, vo: dict, out: Path,
     return out
 
 
-def estimate_broadcast_sec(video_seconds: float, include_tts: bool = True) -> int:
+def estimate_broadcast_sec(video_seconds: float, include_tts: bool = True,
+                           size: int = AVATAR_SIZE) -> int:
     """粗估「数字人播报视频」生成耗时(秒):配音合成 + 人像逐帧生成 + 拼接编码。
 
     系数取自 config(可用 TTV_AVATAR_RT_FACTOR / TTV_AVATAR_CONCAT_RT_FACTOR /
     TTV_AVATAR_TTS_RT_FACTOR 覆盖);只用于界面上的「预计时间」,不参与任何产物生成。
     include_tts=False 用于配音已缓存(重跑)的场景。
+    size:画面边长。人像推理在服务端固定 464×464(与目标尺寸无关),只有拼接编码随
+    像素数变化,所以只需缩放拼接系数(见 concat_rt_factor)。
     """
     v = max(1.0, float(video_seconds or 0))
     rt = max(0.05, AVATAR_RT_FACTOR)
-    ct = max(0.5, AVATAR_CONCAT_RT_FACTOR)
+    ct = max(0.5, concat_rt_factor(size))
     est = v / rt + v / ct
     if include_tts:
         est += v / max(0.5, AVATAR_TTS_RT_FACTOR)
@@ -578,14 +687,16 @@ def video_duration(path: Path) -> float:
 
 def broadcast_eta(step_index: int, done: int | None, total: int | None,
                   elapsed_in_step: float, av_done_sec: float, av_total_sec: float,
-                  concat_total_sec: float, concat_done_sec: float = 0.0) -> int | None:
+                  concat_total_sec: float, concat_done_sec: float = 0.0,
+                  size: int = AVATAR_SIZE) -> int | None:
     """生成过程中的「预计剩余秒数」(纯函数,便于回归)。
 
     步骤:1 合成配音 / 2 生成数字人片段 / 3 拼接播报视频。
     步骤 2 已产生的片段时间可反算真实速率,所以比静态系数更准。
+    size 只影响步骤 1/2 里对**尚未开始**的拼接段的估计(见 concat_rt_factor)。
     """
     rt = max(0.05, AVATAR_RT_FACTOR)
-    ct = max(0.5, AVATAR_CONCAT_RT_FACTOR)
+    ct = max(0.5, concat_rt_factor(size))
     concat_left = max(0.0, concat_total_sec - concat_done_sec) / ct
     if step_index == 1:
         if not done:

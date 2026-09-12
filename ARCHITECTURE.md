@@ -134,21 +134,33 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
 
 ## 七、数字人片段(可选功能)
 
-用途:让数字人在成片左上角朗读该帧台词。默认关闭,任务级开关 `POST /api/jobs` 的 `avatar=true`
-(Web 端对应"数字人出镜"勾选框),也可用 `TTV_AVATAR=1` 全局默认开启。
+用途:让数字人在成片**选定的角落**(四角可选,默认右上)朗读该帧台词。默认关闭,任务级开关
+`POST /api/jobs` 的 `avatar=true`(Web 端对应"数字人出镜"下拉:**不出镜 / 左上 / 右上(默认)/ 右下 / 左下**),
+也可用 `TTV_AVATAR=1` 全局默认开启。
 
 链路:
 
 ```
 每帧台词音频(vo_NN.mp3,项目自身 TTS 产出)
-   └─ server/avatar.py → CyberVerse AvatarService(gRPC,127.0.0.1:50051,FlashHead)
-        └─ RGB24 原始帧 → ffmpeg 编码成 320×320 片段(仅画面,丢弃服务端音轨)
+   └─ server/avatar.py → CyberVerse AvatarService(gRPC,127.0.0.1:50051,FlashHead,原生 464×464)
+        └─ RGB24 原始帧 → ffmpeg 编码成 <尺寸>×<尺寸> 片段(仅画面,丢弃服务端音轨)
              └─ 全局缓存 .cache/avatar/clip_<形象>_<音频>_<尺寸>_<帧时长>_<版本>.mp4
 渲染成片后
-   └─ server/avatar.py::composite_onto_video → ffmpeg 按帧绝对起点叠加到左上角
+   └─ avatar._overlay_timeline():出镜才读时间轴 → composite_onto_video(corner=…) 叠到该角落
 ```
 
+> **几何按任务存**:`state.avatar_geom = {corner, size}`(默认 `{"tr", 300}`),出镜开关是
+> `state.avatar`(bool)。创作页建任务时设置,预览页可随时改
+> (`POST /api/jobs/{id}/avatar/geom`,三个字段都可选、只传哪个改哪个),下一次构建/渲染生效。
+> 老任务没有 `avatar_geom` → 直接回默认值,不需要迁移。
+> 「数字人播报视频」的大小默认跟随这个 `size`,但可以单独指定(见第八节)。
+
 要点:
+
+- **关闭出镜要盖过残留时间轴**:`stage_render` 用 `_overlay_timeline(job, project)` 取时间轴,
+  它**先看 `state.avatar`** —— 任务在上次构建后改成了「不出镜」时,磁盘上的
+  `avatar_timeline.json` 可能还在,只按文件判断会把不该出现的人像叠回去(成片出来才发现)。
+  `stage_build` 侧同理:不出镜就删掉时间轴。
 
 - **时间轴唯一**:片段时长 = 帧总时长(`frames[].duration`,已由真实配音回填),
   起点 = `assemble.build()` 返回的 `starts` —— 与字幕、音频同一时钟;片段自带音轨丢弃。
@@ -157,9 +169,15 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
 - **圆角与投影在叠加时完成**,不烘焙进片段:H.264 不支持 alpha,烘焙会把透明区变成黑底;
   叠加时用同一张灰度遮罩(`mask_<尺寸>_<半径>_v<版本>.png`)+ boxblur 投影,一次滤镜图完成。
 - **失败不阻塞出片**:数字人任一环节失败只写入 `job.state.avatar_error`,成片照常产出(仅无人像)。
+- **四角坐标**:`avatar.corner_xy(corner, size)` 按"带投影留白的卡片画布"离边 `AVATAR_X/AVATAR_Y`
+  摆位(四角视觉边距一致、投影不被画面裁掉);显式传 `x/y` 时优先用它们(老调用方与
+  `deploy/verify-avatar.py` 的像素校验走这条)。
 - 相关环境变量:`TTV_AVATAR` / `TTV_AVATAR_ADDR` / `TTV_AVATAR_IMAGE` / `TTV_AVATAR_SIZE` /
-  `TTV_AVATAR_X` / `TTV_AVATAR_Y` / `TTV_AVATAR_IDLE_SECONDS` / `TTV_AVATAR_CLIP_VERSION`。
-- 验证:`python deploy/verify-avatar.py`(真跑 assemble.build + 渲染 + 叠加 + 像素校验)。
+  `TTV_AVATAR_SIZE_CHOICES` / `TTV_AVATAR_SIZE_MIN` / `TTV_AVATAR_SIZE_MAX` / `TTV_AVATAR_NATIVE_SIZE` /
+  `TTV_AVATAR_CORNER` / `TTV_AVATAR_X` / `TTV_AVATAR_Y` / `TTV_AVATAR_IDLE_SECONDS` /
+  `TTV_AVATAR_CLIP_VERSION`。
+- 验证:`python deploy/verify-avatar.py`(真跑 assemble.build + 渲染 + 叠加 + 像素校验);
+  四角摆位的纯函数与"锚点确实有人像"另有 `smoke_test` 与一次性像素回归覆盖。
 
 ## 八、数字人播报视频(独立产物)
 
@@ -168,21 +186,32 @@ analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ av
 
 ```
 分析完成(script.json)
-  └─ POST /api/jobs/{id}/avatar/broadcast → 状态 avatar_building
+  └─ POST /api/jobs/{id}/avatar/broadcast {"size": 480} → 状态 avatar_building
        ├─ ① 合成配音   tts.synthesize_frames(复用 state.vo_sig 命中则跳过)
-       ├─ ② 逐帧片段   avatar.build_frame_clips(缓存命中则秒过)
+       ├─ ② 逐帧片段   avatar.build_frame_clips(size=…)(缓存命中则秒过)
        └─ ③ 拼接       avatar.build_broadcast_video
             ├─ 音轨:每帧 = 0.25s 静音 + 该帧配音 + 补静音到帧时长(build_broadcast_audio)
             └─ 画面:各帧片段按时间轴顺序 concat(逐片段 ffprobe 真实时长)+ AAC 合流
-                 → renders/avatar.mp4(320×320,含音轨,不含 BGM/PPT 画面)
+                 → renders/avatar.mp4(size×size,含音轨,不含 BGM/PPT 画面;默认 300×300)
 ```
 
 要点:
 
 - **产物是第三个 artifact**:`state.artifacts.avatar`(另两个是 ppt/final);`GET .../avatar/broadcast/video` 独立入口。
-- **步骤与预计时间**:`state.avatar_broadcast = {status, step_index, step, detail, done, total, eta_sec, elapsed_sec, error}`,
+- **数字人大小(可选,默认跟随任务的数字人大小,现为 300)**:前端是**手输数字**框
+  (留空/非法则由后端校验兜底),档位提示与默认值由 `GET /api/styles → avatar_sizes` 下发
+  (`config.AVATAR_SIZE` / `AVATAR_SIZE_CHOICES` / `AVATAR_NATIVE_SIZE`,原生上限 464,超过只是放大)。
+  选中值按任务记在 `state.avatar_broadcast_size`(没单独选过就用 `state.avatar_geom.size`),接口只认偶数且落在 160–1080
+  (`avatar.normalize_size`,非法值 400;读路径用 `avatar.safe_size` 防坏值把轮询打成 500)。
+  每条播报视频实际生成的尺寸写在 `avatar_broadcast.size`,前端据此显示 —— 改了输入框但没重新生成时,
+  界面会说明"当前这条是 X×X,重新生成会改成 Y×Y"。
+  尺寸进片段缓存键(`clip_<形象>_<音频>_<尺寸>_<帧时长>_<版本>`),不同尺寸各自缓存、互不失效。
+- **步骤与预计时间**:`state.avatar_broadcast = {status, size, step_index, step, detail, done, total, eta_sec, elapsed_sec, error}`,
   每一步由后端逐帧回写(前端只展示不猜);系数见 `config.AVATAR_RT_FACTOR / AVATAR_CONCAT_RT_FACTOR / AVATAR_TTS_RT_FACTOR`,
-  事前预计(`avatar_broadcast_est_sec`)以 `total_sec > 脚本帧时长之和 > duration_sec` 为基准。
+  事前预计(`avatar_broadcast_est_sec`,可带 `?avatar_size=` 按未提交的选中尺寸现算)以
+  `total_sec > 脚本帧时长之和 > duration_sec` 为基准;拼接系数按**面积比**从实测基准边长
+  (`config.AVATAR_CONCAT_BASE_SIZE` = 320)外推(`avatar.concat_rt_factor`)—— 基准不随默认边长漂移,
+  人像推理在服务端固定 464、与目标边长无关,所以只有拼接段随尺寸变化。
 - **失败不伤主线**:失败只写 `avatar_broadcast.error` + `progress` 提示,状态回到进入前的那个,
   脚本、成片、Studio 都不受影响;可反复重试。
 - **与成片的关系**:成片 = PPT 渲染 + 各帧片段**叠加**(同一时钟);播报视频 = 各帧片段**顺序拼接** + 连续音轨。

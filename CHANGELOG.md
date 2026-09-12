@@ -4,6 +4,33 @@
 > 部署位置:**VideoLab 云服务器**(SSH `videolab`,8.130.213.80),整个项目运行在服务器上。
 > 本地此文件夹保存:计划文档、源码副本、风格脚本、部署配置。
 
+## v2.5(2026-09-12)
+
+**新增:数字人出镜可选可关 —— 不出镜 / 四个角落(默认右上)+ 默认 300×300 + 可手输**
+
+- **需求**:数字人放在**右上角**(位置四角可选、默认右上)、默认 **300×300**、大小能**手动输入数字**;「数字人出镜」那一栏里**还要有「不出镜」这个选项**;播报视频那边的大小设置一并保留
+- **出镜开关**:「不出镜」不再是一个额外的勾选框,而是和四个角落并列的选项(同一个下拉的第一项)—— 用户看到的那一栏就是"要不要出镜 + 出在哪"。`state.avatar`(bool)继续是唯一开关,默认 false(不出镜,保持"数字人默认关"的老行为);`POST /api/jobs/{id}/avatar/geom` 新增 `avatar` 字段(只认真正的 JSON 布尔,字符串 `"false"` 会 400 而不是被当假值),三个字段都可选、只传哪个改哪个
+- **修(关键)**:`stage_render` 原来只看 `avatar_timeline.json` 在不在就叠加 —— 关了出镜但上次构建的时间轴还留在磁盘上时,**人像会照旧被叠回去**。现在收敛成 `_overlay_timeline(job, project)`:先看 `state.avatar`,不出镜一律返回空(纯 PPT 版)
+- **位置**(`server/avatar.py` / `server/main.py`):新增 `normalize_corner`(接受 `tl/tr/br/bl` 与「左上/右上/右下/左下」,非法值 400)/`safe_corner`/`corner_xy`(按"带投影留白的卡片画布"离边 `AVATAR_X/AVATAR_Y` 摆位,四角视觉边距一致且投影不被裁);`config.AVATAR_CORNER` 默认 `tr`、`AVATAR_CORNERS` 四角表;`composite_onto_video(..., corner=…)` 缺省按角算坐标,**显式 x/y 仍优先**(老调用方与 `deploy/verify-avatar.py` 的像素校验不受影响)
+- **几何按任务存**:`state.avatar_geom = {corner, size}`(默认 `{tr, 300}`)。创作页建任务时随表单提交(`POST /api/jobs` 的 `avatar_corner`/`avatar_size`),分析完成后还能在预览页「视频预览」上方改,否则想关掉出镜、或换个角落,都得重新提交文章、重新分析。老任务没有该键 → 直接回默认值,零迁移
+- **大小 / 前端**:三处控件都改成**手输数字**(创作页 `#up-avatar-size`、预览页 `#geom-size`、播报面板 `#bc-size`),档位只作 `datalist` 提示;提交/保存前在前端先校验(偶数、160–1080),后端 `avatar.normalize_size` 再兜一层。默认值统一为 **300**(`config.AVATAR_SIZE`,档位改成 240/300/400/464/640);出镜模式下拉(不出镜 + 四角)在创作页与预览页共用同一份清单,选「不出镜」时大小输入框置灰但保留值
+- **播报视频**:尺寸默认**跟随任务的数字人大小**(`state.avatar_geom.size`),可单独指定;其余(按任务记住、实际尺寸写 `avatar_broadcast.size`、不同尺寸各自缓存)沿用 v2.4
+- **拼接系数不再被默认边长带偏**:新增 `config.AVATAR_CONCAT_BASE_SIZE`(=320,系数实测处的边长),`concat_rt_factor` 按面积比从**基准**外推 —— 默认改成 300 后,预计时间不会把 320 的实测值当成 300 的
+- **修**:`api_create` 的入参 `avatar`(布尔)会遮住模块 `avatar`,几何解析抽到模块级 `_normalize_geom` 里(否则 TypeError)
+- **验证**:`smoke_test.py` 新增 20 项 —— 四角坐标/留白对称/越界不为负/中文名/非法值/清单/拼接基准,以及**关掉出镜后旧时间轴也不叠加**(临时 ROOT 里真跑 `main._overlay_timeline`);`fastapi.testclient` 走了一遍建任务(出镜/不出镜)、单字段更新、非法值 400、`"false"` 字符串 400、老任务回默认;**真 ffmpeg 像素回归**:合成片段按 `tr/tl/br/bl` 叠加到 1080p 黑底,四个锚点亮度 255、非锚点 0,显式 x/y 仍生效;又用 `jobs/5590965bf587` 的真实 1080p PPT 帧 + 缓存人像片段叠了一次,右上角画面复杂度从 8.3 升到 56.0(左上角 0.0 未被动)
+- **注意**:换大小/换角落/切不出镜后要对已有任务重新「构建预览」「渲染成片」才生效;片段与缓存都留着,切回出镜不用重新生成
+
+## v2.4(2026-09-12)
+
+**新增:数字人大小可选(「数字人播报视频」区块,默认 320×320)**
+
+- **需求**:播报视频的画面大小要能在页面上设置,且有默认值
+- **前端**(`web/index.html`):「数字人播报视频」区块新增「数字人大小」下拉(240/320/400/464/640,标出默认档;超过原生 464 的档位标注"放大"),默认值来自后端 `GET /api/styles → avatar_sizes`,接口不可用时用同值兜底;面板提示、按钮 toast、"画面 X×X"信息行都跟着所选尺寸走。用户改过下拉后轮询不再覆盖其选择;若当前这条播报视频的尺寸与下拉不同,提示"重新生成会改成 Y×Y"
+- **接口**(`server/main.py`):`POST /api/jobs/{id}/avatar/broadcast` 接受 `{"size": N}`(或 `?size=N`),省略则沿用该任务上次选的尺寸,再回退 `config.AVATAR_SIZE`;选中值随任务持久化在 `state.avatar_broadcast_size`,实际生成尺寸写在 `avatar_broadcast.size`;`GET /api/jobs/{id}` 回传 `avatar_broadcast_size`,并支持 `?avatar_size=N` 让「预计耗时」按**尚未提交**的选中尺寸现算;`GET /api/styles` 下发 `avatar_sizes{default,native,min,max,choices}`
+- **尺寸口径**(`server/avatar.py` / `config.py`):新增 `normalize_size`(偶数 + 160–1080,非法值接口层 400)/`safe_size`(读路径防坏值打成 500)/`concat_rt_factor`(拼接系数按面积比从 320×320 实测值外推)/`config.avatar_size_options()`;尺寸本就进片段缓存键,不同尺寸各自缓存、互不失效(来回切换不重复烧 GPU)
+- **验证**:`smoke_test.py` 新增 14 项(尺寸校验/宽松回退/下拉清单/拼接系数/估算随尺寸增长);接口契约用 `fastapi.testclient` 走了一遍(400 与持久化、`?avatar_size=` 现算、无脚本 409);前端做了 `node --check` 与 DOM id 全量核对
+- **注意**:播报面板的"下拉"在 v2.5 改成手输数字,默认值也由 320 改为 300
+
 ## v2.3(2026-09-12)
 
 **修复:配音「读音完全不正常、断断续续」根因 —— transformers 版本**

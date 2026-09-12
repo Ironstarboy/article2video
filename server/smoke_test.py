@@ -699,6 +699,62 @@ ok("avatar 卡片滤镜标签成对且无占位符残留",
    "[OUT]" in _fc and "MASKV" not in _fc and "[1:v]" in _fc and "[2:v]" in _fc)
 ok("avatar 卡片滤镜含圆角遮罩与投影", "alphamerge" in _fc and "boxblur" in _fc)
 
+# ── 数字人大小(播报视频画面边长):接口层靠它把非法值拦成 400 ──
+ok("avatar 尺寸缺省回退默认", avatar.normalize_size(None) == config.AVATAR_SIZE
+   and avatar.normalize_size("") == config.AVATAR_SIZE)
+ok("avatar 尺寸接受合法偶数", avatar.normalize_size(480) == 480)
+ok("avatar 尺寸接受字符串(表单/查询参数)", avatar.normalize_size("464") == 464)
+ok("avatar 尺寸拒绝奇数(H.264 yuv420p 会失败)",
+   _raises(_via(avatar.normalize_size, 321), ValueError))
+ok("avatar 尺寸拒绝低于下限", _raises(_via(avatar.normalize_size, 8), ValueError))
+ok("avatar 尺寸拒绝高于上限", _raises(_via(avatar.normalize_size, 4000), ValueError))
+ok("avatar 尺寸拒绝非数字", _raises(_via(avatar.normalize_size, "大"), ValueError))
+# 读路径(轮询)不能因为历史 state 里的坏值把接口打成 500
+ok("avatar 尺寸宽松版对坏值回退默认",
+   avatar.safe_size(321) == config.AVATAR_SIZE
+   and avatar.safe_size("bad", 480) == 480)
+ok("avatar 尺寸下拉含默认值且升序去重",
+   config.avatar_size_options() == sorted(set(config.avatar_size_options()))
+   and config.AVATAR_SIZE in config.avatar_size_options())
+ok("avatar 尺寸下拉剔除非法项(奇数/越界)",
+   all(s % 2 == 0 and config.AVATAR_SIZE_MIN <= s <= config.AVATAR_SIZE_MAX
+       for s in config.avatar_size_options()))
+ok("avatar 拼接系数随面积缩放(大画面更慢)",
+   avatar.concat_rt_factor(640) < avatar.concat_rt_factor(config.AVATAR_SIZE)
+   < avatar.concat_rt_factor(240))
+ok("avatar 拼接系数在实测基准边长等于系数值",
+   abs(avatar.concat_rt_factor(config.AVATAR_CONCAT_BASE_SIZE)
+       - avatar.AVATAR_CONCAT_RT_FACTOR) < 1e-9)
+ok("avatar 拼接系数基准不随默认边长漂移",
+   avatar.concat_rt_factor(config.AVATAR_CONCAT_BASE_SIZE)
+   == max(0.5, avatar.AVATAR_CONCAT_RT_FACTOR))
+
+# ── 数字人位置(成片里的四角锚点) ──
+_xy_tr = avatar.corner_xy("tr", 300, margin_x=40, margin_y=36,
+                          video_w=1920, video_h=1080, pad=8)
+ok("数字人默认位置是右上角",
+   config.AVATAR_CORNER == "tr" and _xy_tr == (1920 - 300 - 16 - 40, 36), f"{_xy_tr}")
+ok("数字人四角坐标各不相同且贴对应边",
+   avatar.corner_xy("tl", 300, 40, 36, 1920, 1080, 8) == (40, 36)
+   and avatar.corner_xy("bl", 300, 40, 36, 1920, 1080, 8)== (40, 1080 - 300 - 16 - 36)
+   and avatar.corner_xy("br", 300, 40, 36, 1920, 1080, 8) == (1920 - 300 - 16 - 40,
+                                                              1080 - 300 - 16 - 36))
+ok("数字人四角留白对称(左右/上下边距一致)",
+   avatar.corner_xy("tl", 300, 40, 36, 1920, 1080, 8)[0]
+   == 1920 - (avatar.corner_xy("tr", 300, 40, 36, 1920, 1080, 8)[0] + 300 + 16))
+ok("数字人坐标不为负(卡片比画面还大时)",
+   avatar.corner_xy("br", 1080, 40, 36, 640, 360, 8) == (0, 0))
+ok("数字人位置接受中文名", avatar.normalize_corner("右上") == "tr"
+   and avatar.normalize_corner("左下") == "bl")
+ok("数字人位置缺省回退默认", avatar.normalize_corner(None) == config.AVATAR_CORNER)
+ok("数字人位置拒绝非法值", _raises(_via(avatar.normalize_corner, "中间"), ValueError))
+ok("数字人位置宽松版对坏值回退默认",
+   avatar.safe_corner("中间") == config.AVATAR_CORNER
+   and avatar.safe_corner("中间", "bl") == "bl")
+ok("数字人位置清单四角齐全且含默认角",
+   [o["key"] for o in config.avatar_corner_options()] == ["tl", "tr", "br", "bl"]
+   and config.AVATAR_CORNER in [o["key"] for o in config.avatar_corner_options()])
+
 _tl_src = [{"index": 1, "clip": "/tmp/a.mp4", "start": 1.5, "duration": 3.0}]
 _tl_path = Path(_tmp_text("tl.json", ""))
 avatar.write_timeline(_tl_src, _tl_path)
@@ -772,9 +828,12 @@ ok("tts 峰值可读出", (tts.audio_peak_db(sil_wav) or 0) < -60,
 
 ok("播报耗时估算随片长增长",
    avatar.estimate_broadcast_sec(600) > avatar.estimate_broadcast_sec(300) > 0)
+# 拼接系数按面积比从**实测基准边长**外推:默认边长(300)不等于基准(320)时,
+# 预计时间必须用 300 自己的系数,而不是照搬 320 的实测值
+_ct_default = avatar.AVATAR_CONCAT_RT_FACTOR * (config.AVATAR_CONCAT_BASE_SIZE / config.AVATAR_SIZE) ** 2
 ok("播报耗时估算=配音+人像+拼接",
    avatar.estimate_broadcast_sec(60) == round(60 / avatar.AVATAR_RT_FACTOR
-                                             + 60 / avatar.AVATAR_CONCAT_RT_FACTOR
+                                             + 60 / _ct_default
                                              + 60 / avatar.AVATAR_TTS_RT_FACTOR))
 ok("播报耗时估算可排除已缓存的配音",
    avatar.estimate_broadcast_sec(60, include_tts=False)
@@ -784,10 +843,19 @@ ok("播报 ETA 步骤1 同一帧完成后给正数",
    (avatar.broadcast_eta(1, 1, 4, 10.0, 0, 100, 100) or 0) > 0)
 ok("播报 ETA 步骤3 等于剩余拼接时间",
    avatar.broadcast_eta(3, 0, 0, 30.0, 0, 100, 100, 60.0)
-   == round(40 / avatar.AVATAR_CONCAT_RT_FACTOR))
+   == round(40 / _ct_default))
 ok("播报 ETA 步骤2 用实测速率(快于静态系数时更小)",
    avatar.broadcast_eta(2, 2, 4, 20.0, 20.0, 40.0, 40.0)
    < avatar.broadcast_eta(2, 0, 4, 0.0, 0.0, 40.0, 40.0))
+# 尺寸影响的是**拼接编码**(人像推理在服务端固定 464,与目标边长无关),
+# 所以预计时间只随拼接段变化,且方向必须是"画面越大越慢",否则界面上会低估
+ok("播报耗时估算随尺寸增长",
+   avatar.estimate_broadcast_sec(600, size=640)
+   > avatar.estimate_broadcast_sec(600, size=config.AVATAR_SIZE)
+   > avatar.estimate_broadcast_sec(600, size=240))
+ok("播报 ETA 步骤3 随尺寸增长",
+   avatar.broadcast_eta(3, 0, 0, 30.0, 0, 100, 100, 60.0, size=640)
+   > avatar.broadcast_eta(3, 0, 0, 30.0, 0, 100, 100, 60.0))
 
 _wt = tts.word_times("发展新质生产力", 4.0)
 ok("词级时间轴起点含 VO_OFFSET", abs(_wt[0][1] - tts.VO_OFFSET) < 1e-6)
@@ -834,6 +902,56 @@ else:
         _mism = config.pinned_dep_mismatch(_got)
         ok("TTS venv 运行时为钉版(否则合成必乱码)", _mism == [],
            " ；".join(_mism) if _mism else str(_got))
+
+
+# ═══════════ 数字人出镜开关 / 几何:接口层的规则(临时 ROOT,不碰真实任务) ═══════════
+#
+# 这里必须过一遍 main.py:规则不在纯函数里,而在"渲染前先看出镜开关"这一步 ——
+# 关掉出镜后,磁盘上仍留着上次构建的 avatar_timeline.json,只按文件判断会把
+# 不该出现的人像叠回去(成片出来才发现)。
+
+_orig_root2 = _os.environ.get("TTV_ROOT")
+try:
+    _os.environ["TTV_ROOT"] = _tmpf.mkdtemp(prefix="ttv_geom_")
+    _il.reload(_config)
+    _il.reload(_jobs_mod)
+    import main as _main  # noqa: E402 - 必须在 TTV_ROOT 指向临时目录之后再导入
+
+    _gj = _jobs_mod.create_job("solemn-red", 120, "geom.txt")
+    _gproj = _gj.paths()["project"]
+    _gproj.mkdir(parents=True, exist_ok=True)
+    (_gproj / "avatar_timeline.json").write_text(
+        json.dumps([{"index": 1, "clip": "/tmp/none.mp4", "start": 0.0, "duration": 2.0}]),
+        encoding="utf-8")
+
+    _gj.set(avatar=True)
+    ok("出镜时渲染会叠加(时间轴非空)", len(_main._overlay_timeline(_gj, _gproj)) == 1)
+    _gj.set(avatar=False)
+    ok("关掉出镜后即使旧时间轴还在也不叠加",
+       _main._overlay_timeline(_gj, _gproj) == [])
+    _gj.set(avatar=True)
+    ok("重新开启出镜后旧时间轴又能用",
+       len(_main._overlay_timeline(_gj, _gproj)) == 1)
+
+    # 几何缺省与坏值:老任务没有 avatar_geom → 默认右上/AVATAR_SIZE;坏值不抛错
+    _gj.state.pop("avatar_geom", None)
+    ok("老任务几何回默认(右上 / 默认边长)",
+       _main._avatar_geom(_gj) == {"corner": config.AVATAR_CORNER, "size": config.AVATAR_SIZE},
+       str(_main._avatar_geom(_gj)))
+    _gj.state["avatar_geom"] = {"corner": "中间", "size": 321}
+    ok("几何坏值不抛错、回默认",
+       _main._avatar_geom(_gj) == {"corner": config.AVATAR_CORNER, "size": config.AVATAR_SIZE})
+    ok("几何解析缺省沿用现值",
+       _main._normalize_geom(None, None, {"corner": "bl", "size": 480})
+       == {"corner": "bl", "size": 480})
+    ok("几何解析非法位置抛错",
+       _raises(lambda: _main._normalize_geom("中间", None), ValueError))
+    ok("几何解析非法边长抛错",
+       _raises(lambda: _main._normalize_geom(None, 321), ValueError))
+finally:
+    _os.environ["TTV_ROOT"] = _orig_root2 or str(Path(__file__).resolve().parents[1])
+    _il.reload(_config)
+    _il.reload(_jobs_mod)
 
 
 print()

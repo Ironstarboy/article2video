@@ -23,8 +23,10 @@ from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, str(Path(__file__).parent))
 from config import (  # noqa: E402
-    AVATAR_X, AVATAR_Y, BACKEND_PORT, FPS, HYPERFRAMES_RUNTIME, NODE_BIN_DIR,
+    AVATAR_CORNER, AVATAR_NATIVE_SIZE, AVATAR_SIZE, AVATAR_SIZE_MAX,
+    AVATAR_SIZE_MIN, BACKEND_PORT, FPS, HYPERFRAMES_RUNTIME, NODE_BIN_DIR,
     OVERLAY_RT_FACTOR, RENDER_RT_FACTOR, STUDIO_LOG_DIR, WEB_DIR,
+    avatar_corner_options, avatar_size_options,
 )
 from jobs import JOBS, LOCK, create_job, get_job, remove_job, run_in_background  # noqa: E402
 import extract  # noqa: E402
@@ -250,8 +252,9 @@ def stage_build(job, force_voice: bool = False):
     if job.state.get("avatar"):
         try:
             job.set(progress="生成数字人片段(逐帧)")
+            geom = _avatar_geom(job)
             timeline = avatar.build_frame_clips(
-                script, vo, info["starts"],
+                script, vo, info["starts"], size=geom["size"],
                 progress_cb=lambda msg: job.set(progress=msg))
             avatar.write_timeline(timeline, timeline_path)
             job.set(avatar_clips=len(timeline), avatar_error=None)
@@ -287,19 +290,58 @@ def stage_build(job, force_voice: bool = False):
 AVATAR_BROADCAST_STEPS = ("合成配音", "生成数字人片段", "拼接播报视频")
 
 
-def stage_avatar_broadcast(job, prev_status: str = "analyzed"):
+def _avatar_geom(job) -> dict:
+    """任务级数字人几何:成片里那个人像的角落与边长(纯读,坏值自动回默认)。
+
+    state.avatar_geom 由创建时写入、之后可在预览页改(见 api_avatar_geom);
+    老任务没有这个键 → 用 config 默认(右上 / AVATAR_SIZE),不需要迁移。
+    """
+    g = job.state.get("avatar_geom") or {}
+    return {"corner": avatar.safe_corner(g.get("corner")),
+            "size": avatar.safe_size(g.get("size"))}
+
+
+def _normalize_geom(corner=None, size=None, base: dict | None = None) -> dict:
+    """把接口传来的角落/边长收敛成 {corner, size};缺省沿用 base,非法抛 ValueError。
+
+    做成模块级函数而不是直接写在 api_create 里:那个函数的入参就叫 `avatar`
+    (表单里的出镜开关),会把模块 `avatar` 遮住。
+    """
+    base = base or {"corner": AVATAR_CORNER, "size": AVATAR_SIZE}
+    return {"corner": avatar.normalize_corner(corner, base["corner"]),
+            "size": avatar.normalize_size(size, base["size"])}
+
+
+def _overlay_timeline(job, project_dir) -> list:
+    """渲染前决定要不要叠加数字人,并返回该用的时间轴。
+
+    **先看出镜开关**:任务可能在上一次构建后改成了「不出镜」,此时旧的
+    avatar_timeline.json 还在磁盘上 —— 只按文件判断会把不该出现的人像叠回去。
+    """
+    if not job.state.get("avatar"):
+        return []
+    return avatar.read_timeline(project_dir / "avatar_timeline.json")
+
+
+def stage_avatar_broadcast(job, prev_status: str = "analyzed", size: int | None = None):
     """独立生成「数字人播报视频」:配音 → 逐帧片段 → 顺序拼接(与 PPT 成片解耦)。
 
-    产物 renders/avatar.mp4(320×320,含配音音轨,不含 BGM/PPT 画面)。
+    产物 renders/avatar.mp4(size×size 正方形,含配音音轨,不含 BGM/PPT 画面);
+    size 缺省取任务上次用的值,再回退任务的「数字人大小」(默认 config.AVATAR_SIZE)。
     失败只写 avatar_broadcast.error 并回到进入前的状态 —— 它是一条可选支线,
     不该毁掉脚本、成片或 Studio。
     """
     if not _job_alive(job):
         return
+    # 尺寸在这里再收敛一次:本函数也可能被"重跑"路径直接调用,不能只信接口层
+    if size is None:
+        size = job.state.get("avatar_broadcast_size")
+    size = avatar.safe_size(size, _avatar_geom(job)["size"])
     p = job.paths()
     out = p["renders"] / "avatar.mp4"
     started = time.time()
     bc = {"status": "running", "step_index": 1, "step": AVATAR_BROADCAST_STEPS[0],
+          "size": size,
           "detail": "准备中…", "done": 0, "total": None, "eta_sec": None,
           "elapsed_sec": 0.0, "started_at": started, "updated_at": started,
           "finished_at": None, "error": None}
@@ -313,13 +355,15 @@ def stage_avatar_broadcast(job, prev_status: str = "analyzed"):
     try:
         basis = _broadcast_basis_sec(job)
         step_started = time.time()
-        report(step_index=1, step=AVATAR_BROADCAST_STEPS[0], detail="合成配音",
-               done=0, total=None, eta_sec=avatar.estimate_broadcast_sec(basis))
+        report(step_index=1, step=AVATAR_BROADCAST_STEPS[0],
+               detail=f"合成配音(画面 {size}×{size})",
+               done=0, total=None,
+               eta_sec=avatar.estimate_broadcast_sec(basis, size=size))
 
         def on_tts(done, total):
             report(detail=f"配音合成 {done}/{total} 帧", done=done, total=total,
                    eta_sec=avatar.broadcast_eta(1, done, total, time.time() - step_started,
-                                                0.0, basis, basis))
+                                                0.0, basis, basis, size=size))
 
         script, vo, eng_txt, _reused = _synthesize_and_fit(
             job, reuse_vo=True, next_step="拼接数字人播报视频", on_tts_progress=on_tts)
@@ -333,17 +377,18 @@ def stage_avatar_broadcast(job, prev_status: str = "analyzed"):
         step_started = time.time()
         report(step_index=2, step=AVATAR_BROADCAST_STEPS[1],
                detail=f"生成数字人片段 0/{len(frames)}", done=0, total=len(frames),
-               eta_sec=avatar.broadcast_eta(2, 0, len(frames), 0.0, 0.0, av_total, av_total))
+               eta_sec=avatar.broadcast_eta(2, 0, len(frames), 0.0, 0.0, av_total, av_total,
+                                            size=size))
         av = {"done": 0.0}
 
         def on_frame(n, total, idx, dur):
             av["done"] += float(dur)
             report(detail=f"数字人片段 {n}/{total}(帧 {idx})", done=n, total=total,
                    eta_sec=avatar.broadcast_eta(2, n, total, time.time() - step_started,
-                                                av["done"], av_total, av_total))
+                                                av["done"], av_total, av_total, size=size))
 
         timeline = avatar.build_frame_clips(
-            script, vo, starts, on_frame=on_frame,
+            script, vo, starts, size=size, on_frame=on_frame,
             progress_cb=lambda msg: job.set(progress=msg))
         if not timeline:
             raise RuntimeError("脚本里没有可生成数字人的帧")
@@ -351,7 +396,8 @@ def stage_avatar_broadcast(job, prev_status: str = "analyzed"):
         step_started = time.time()
         report(step_index=3, step=AVATAR_BROADCAST_STEPS[2], detail="拼接片段与音轨",
                done=0, total=round(av_total, 1),
-               eta_sec=avatar.broadcast_eta(3, 0, 0, 0.0, 0.0, av_total, av_total, 0.0))
+               eta_sec=avatar.broadcast_eta(3, 0, 0, 0.0, 0.0, av_total, av_total, 0.0,
+                                            size=size))
 
         # 写临时文件、成功才 replace:重新生成失败时不能毁掉上一次的可用产物
         tmp_out = out.with_name(out.stem + ".tmp" + out.suffix)
@@ -360,7 +406,8 @@ def stage_avatar_broadcast(job, prev_status: str = "analyzed"):
             report(detail=f"拼接中 {done_sec:.0f}/{total_sec:.0f} 秒",
                    done=round(done_sec, 1), total=round(total_sec, 1),
                    eta_sec=avatar.broadcast_eta(3, 0, 0, time.time() - step_started,
-                                                0.0, av_total, total_sec, done_sec))
+                                                0.0, av_total, total_sec, done_sec,
+                                                size=size))
 
         try:
             avatar.build_broadcast_video(timeline, vo, tmp_out, progress_cb=on_concat)
@@ -369,12 +416,13 @@ def stage_avatar_broadcast(job, prev_status: str = "analyzed"):
         finally:
             tmp_out.unlink(missing_ok=True)
         job._record_artifact("avatar", out)
-        report(status="done", detail=f"完成:{len(timeline)} 段 · {real:.0f} 秒",
+        report(status="done",
+               detail=f"完成:{len(timeline)} 段 · {size}×{size} · {real:.0f} 秒",
                done=len(timeline), total=len(timeline), eta_sec=0,
                finished_at=time.time(), duration=round(real, 1),
                bytes=out.stat().st_size)
-        job.set(status=prev_status or "analyzed", progress="")
-        log.info("job %s 数字人播报视频完成:%s", job.id, out)
+        job.set(status=prev_status or "analyzed", progress="", avatar_broadcast_size=size)
+        log.info("job %s 数字人播报视频完成(%d×%d):%s", job.id, size, size, out)
     except Exception as e:  # noqa: BLE001 - 支线失败不影响任务主线
         log.exception("job %s 数字人播报视频失败", job.id)
         report(status="failed", error=str(e)[:200], eta_sec=None,
@@ -557,10 +605,11 @@ def stage_render(job, fmt: str = "mp4"):
             raise RuntimeError(f"渲染失败:{out[-1500:]}")
         if not ppt.exists() or ppt.stat().st_size < 10000:
             raise RuntimeError(f"渲染产物缺失或过小:{out[-600:]}")
-        # 数字人叠加:用 assemble 的同一时钟把各帧片段叠到左上角。
-        # 有片段 → 叠到 final;无片段 → 纯 PPT 版本身就是最终版。
-        timeline = avatar.read_timeline(p["project"] / "avatar_timeline.json")
+        # 数字人叠加:用 assemble 的同一时钟把各帧片段叠到任务选定的角落(默认右上)。
+        # 有片段 → 叠到 final;无片段(含"不出镜")→ 纯 PPT 版本身就是最终版。
+        timeline = _overlay_timeline(job, p["project"])
         if timeline:
+            geom = _avatar_geom(job)
             job.set(progress="叠加数字人片段", render_progress={
                 "step": 2, "step_name": "叠加数字人片段", "detail": "准备中",
                 "done": 0, "total": round(total_sec or 0), "percent": 85,
@@ -585,8 +634,8 @@ def stage_render(job, fmt: str = "mp4"):
 
             try:
                 avatar.composite_onto_video(ppt, timeline, final,
-                                            x=AVATAR_X, y=AVATAR_Y, fps=FPS,
-                                            progress_cb=on_overlay)
+                                            size=geom["size"], corner=geom["corner"],
+                                            fps=FPS, progress_cb=on_overlay)
                 job.set(avatar_clips=len(timeline), avatar_error=None)
             except Exception as e:  # noqa: BLE001 - 叠加失败保留纯 PPT 版成片
                 log.warning("数字人叠加失败: %s", e)
@@ -812,6 +861,17 @@ def api_styles():
             {"key": "qwen3tts", "name": "本地 Qwen3-TTS", "voices": ["male", "female", "male_narrator"]},
             {"key": "doubao", "name": "豆包 seed-tts-2.0(云)", "voices": tts.DOUBAO_VOICES},
         ],
+        # 「数字人」的尺寸档位与四角位置(默认值 + 可选项 + 原生清晰上限),
+        # 由后端下发:前端不再硬编码,改配置只改 config.py 一处
+        "avatar_sizes": {
+            "default": AVATAR_SIZE,
+            "native": AVATAR_NATIVE_SIZE,
+            "min": AVATAR_SIZE_MIN,
+            "max": AVATAR_SIZE_MAX,
+            "choices": avatar_size_options(),
+        },
+        "avatar_corners": avatar_corner_options(),
+        "avatar_corner_default": AVATAR_CORNER,
     }
 
 
@@ -821,11 +881,17 @@ async def api_create(file: UploadFile = File(None), style: str = Form(None),
                      font: str = Form(None), palette: str = Form(None),
                      bg: str = Form(None), motion: str = Form(None),
                      voice_engine: str = Form("cosyvoice3"), voice: str = Form(None),
-                     video_kind: str = Form("promo"), avatar: bool = Form(False)):
+                     video_kind: str = Form("promo"), avatar: bool = Form(False),
+                     avatar_corner: str = Form(None), avatar_size: int = Form(None)):
     if voice_engine not in ("cosyvoice3", "qwen3tts", "doubao"):
         raise HTTPException(400, f"未知配音引擎:{voice_engine}")
     if video_kind not in ("promo", "lecture"):
         raise HTTPException(400, f"未知视频类型:{video_kind}")
+    # 数字人几何(位置 + 大小):创建时的选择;之后还能在预览页改(见 api_avatar_geom)
+    try:
+        geom = _normalize_geom(avatar_corner, avatar_size)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
     # 并发防护:进行中任务过多时拒绝新任务(公网无鉴权,防批量提交挤爆 LLM/GPU)
     if _inflight_count() >= MAX_INFLIGHT_JOBS:
         raise HTTPException(429, f"当前进行中任务过多(≥{MAX_INFLIGHT_JOBS}),请稍后再试")
@@ -860,6 +926,7 @@ async def api_create(file: UploadFile = File(None), style: str = Form(None),
     else:
         raise HTTPException(400, "请上传文件或粘贴不少于 50 字的文本")
     job.state["avatar"] = bool(avatar)
+    job.state["avatar_geom"] = geom
     job._save()
     run_in_background(job, stage_analyze)
     return job.to_dict()
@@ -942,14 +1009,26 @@ def _broadcast_basis_sec(job) -> float:
 
 
 @app.get("/api/jobs/{job_id}")
-def api_job(job_id: str, brief: int = 0):
+def api_job(job_id: str, brief: int = 0, avatar_size: int | None = None):
     job = get_job(job_id)
     if not job:
         raise HTTPException(404, "任务不存在")
     d = job.to_dict(brief=bool(brief))
-    # 「数字人播报视频」的事前预计耗时(界面在点击前显示「预计约 X 分钟」;
-    # 生成过程中的实时 ETA 由 avatar_broadcast.eta_sec 给出)
-    d["avatar_broadcast_est_sec"] = avatar.estimate_broadcast_sec(_broadcast_basis_sec(job))
+    # 「数字人」几何:成片里那个人像的位置(四角)与大小;前端两处控件(创作页 / 预览页)都读它
+    geom = _avatar_geom(job)
+    d["avatar_geom"] = geom
+    # 「数字人播报视频」的尺寸口径:前端输入框的当前值 = 任务上次用的尺寸,
+    # 没生成过则跟随任务的数字人大小(默认 config.AVATAR_SIZE)
+    d["avatar_broadcast_size"] = avatar.safe_size(
+        job.state.get("avatar_broadcast_size"), geom["size"])
+    # 事前预计耗时(界面在点击前显示「预计约 X 分钟」;生成过程中的实时 ETA 由
+    # avatar_broadcast.eta_sec 给出)。avatar_size = 用户在下拉里**刚选中但还没提交**
+    # 的尺寸,让预计时间跟着选择走,而不是停在任务上次用的那一档。
+    est_size = d["avatar_broadcast_size"]
+    if avatar_size is not None:
+        est_size = avatar.safe_size(avatar_size, est_size)
+    d["avatar_broadcast_est_sec"] = avatar.estimate_broadcast_sec(
+        _broadcast_basis_sec(job), size=est_size)
     if job.status in ("preview", "rendering"):
         # 自愈:Studio 进程若已死亡则自动重建(渲染期间编辑器也应保持可用)
         port = _live_studio_port(job.id)
@@ -1013,28 +1092,84 @@ def api_video(job_id: str):
                         filename=f"{job.id}{out.suffix}")
 
 
+@app.post("/api/jobs/{job_id}/avatar/geom")
+async def api_avatar_geom(job_id: str, request: Request):
+    """改「成片里数字人」的出镜开关、位置与大小。
+
+    请求体三个字段都可选,只传哪个就改哪个:
+      avatar: true/false —— 「不出镜」也是这里的一个选项(false)
+      corner: tl/tr/br/bl 或 左上/右上/右下/左下
+      size:   正方形边长(偶数, 160–1080)
+    创建时的选择写在 state;这里让分析完成后的任务也能改 ——
+    否则想关掉出镜、或换个角落,都得重新提交文章、重新分析。
+    改动对**下一次构建/渲染**生效(关了出镜就不叠,旧片段仍留在缓存里)。
+    """
+    job = get_job(job_id) or _http404()
+    if job.status in ("analyzing", "building", "avatar_building", "rendering"):
+        raise HTTPException(409, f"当前状态 {job.status} 不能改数字人设置(等待完成)")
+    body = {}
+    try:
+        body = await request.json() or {}
+    except Exception:  # noqa: BLE001 - 无请求体/非 JSON 都按"没传"处理
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    # 出镜开关:只认真正的 JSON 布尔,字符串 "false" 在这里是"没传",不能当假值用
+    raw_on = body.get("avatar")
+    if raw_on is None:
+        enabled = bool(job.state.get("avatar"))
+    elif isinstance(raw_on, bool):
+        enabled = raw_on
+    else:
+        raise HTTPException(400, "avatar 需要 true 或 false")
+    cur = _avatar_geom(job)
+    try:
+        geom = _normalize_geom(body.get("corner"), body.get("size"), cur)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    job.set(avatar=enabled, avatar_geom=geom)
+    return {"ok": True, "avatar": enabled, "avatar_geom": geom}
+
+
 @app.post("/api/jobs/{job_id}/avatar/broadcast")
-def api_avatar_broadcast(job_id: str):
+async def api_avatar_broadcast(job_id: str, request: Request, size: int | None = None):
     """独立生成「数字人播报视频」:分析完成后即可点,与 PPT 构建/渲染互不依赖。
 
     用拒绝列表(而非允许列表)守卫:这条支线最需要作用于已渲染的任务
     (改了一句台词、或想单独交付口播片),允许列表会把 rendered 挡在门外。
+
+    size:画面边长(正方形)。可放请求体 {"size": 480},也可用 ?size=480;
+    省略则沿用该任务上次选的尺寸,再回退任务的「数字人大小」(默认 config.AVATAR_SIZE)。
     """
     job = get_job(job_id) or _http404()
     if job.status in ("analyzing", "building", "avatar_building", "rendering"):
         raise HTTPException(409, f"当前状态 {job.status} 不能生成播报视频(等待完成)")
     if not job.paths()["script"].exists():
         raise HTTPException(409, "脚本尚未生成,请先完成分析")
+    body = {}
+    try:
+        body = await request.json() or {}
+    except Exception:  # noqa: BLE001 - 无请求体/非 JSON 都按"没传尺寸"处理
+        body = {}
+    raw = body.get("size", size) if isinstance(body, dict) else size
+    if raw is None:
+        raw = job.state.get("avatar_broadcast_size")
+    if raw is None:
+        raw = _avatar_geom(job)["size"]   # 没单独选过 → 跟随任务的数字人大小
+    try:
+        size = avatar.normalize_size(raw)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
     prev = job.status
     # 状态在 dispatch 之前翻转:避免重复提交窗口(与 stage_render 的写法不同,这里更严)
-    job.set(status="avatar_building", error=None,
+    job.set(status="avatar_building", error=None, avatar_broadcast_size=size,
             avatar_broadcast={"status": "running", "step_index": 1,
-                              "step": AVATAR_BROADCAST_STEPS[0], "detail": "准备中…",
-                              "done": 0, "total": None, "eta_sec": None,
-                              "started_at": time.time(), "updated_at": time.time(),
-                              "finished_at": None, "error": None})
-    run_in_background(job, stage_avatar_broadcast, prev)
-    return {"ok": True, "prev_status": prev}
+                              "step": AVATAR_BROADCAST_STEPS[0], "size": size,
+                              "detail": "准备中…", "done": 0, "total": None,
+                              "eta_sec": None, "started_at": time.time(),
+                              "updated_at": time.time(), "finished_at": None, "error": None})
+    run_in_background(job, stage_avatar_broadcast, prev, size)
+    return {"ok": True, "prev_status": prev, "size": size}
 
 
 @app.get("/api/jobs/{job_id}/avatar/broadcast/video")

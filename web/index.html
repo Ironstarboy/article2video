@@ -188,6 +188,13 @@ table.frames input[type=number]{width:64px;}
 .bc-info b{color:var(--ink);font-weight:600;}
 .bc-dl{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;font-size:13.5px;border-radius:8px;border:1.5px solid var(--navy);background:var(--card);color:var(--navy);font-weight:600;text-decoration:none;}
 .bc-dl:hover{background:var(--navy-soft);}
+.bc-opts{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;font-size:13px;color:var(--muted);}
+.bc-opts select,.bc-opts input[type=number]{border:1.5px solid var(--line-strong);border-radius:8px;padding:7px 10px;font-size:13px;font-family:inherit;background:var(--card);color:var(--ink);cursor:pointer;}
+.bc-opts input[type=number]{width:82px;cursor:text;}
+.bc-opts select:focus,.bc-opts input[type=number]:focus{outline:none;border-color:var(--navy);}
+.bc-opts select:disabled,.bc-opts input[type=number]:disabled{opacity:.55;cursor:not-allowed;}
+.bc-opts-unit{font-size:12.5px;color:var(--faint);}
+.bc-opts-tip{font-size:12.5px;color:var(--faint);}
 
 /* ── 视频区 ── */
 .video-row{margin-top:20px;}
@@ -309,11 +316,14 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
       <span id="durval">2<small>分钟</small></span>
     </div>
     <p class="hint" id="dur-hint" style="margin:12px 0 0;">时长按内容充实度填充:长文短时自动压缩,短文长时逐层展开。</p>
-    <label style="display:flex;align-items:center;gap:10px;margin:16px 0 4px;cursor:pointer;">
-      <input type="checkbox" id="avatar" style="width:18px;height:18px;accent-color:#A61B29;"/>
-      <span>数字人出镜:左上角数字人朗读该帧台词</span>
-    </label>
-    <p class="hint" style="margin:0 0 12px;">开启后逐帧生成数字人片段并叠加到成片左上角,构建与渲染时间会明显变长。</p>
+    <div class="bc-opts" id="up-avatar-opts" style="margin:16px 0 4px;">
+      <label for="up-avatar-mode">数字人出镜</label>
+      <select id="up-avatar-mode" aria-label="数字人是否出镜以及出镜位置"></select>
+      <span>大小</span>
+      <input type="number" id="up-avatar-size" step="2" inputmode="numeric" aria-label="数字人在成片里的边长"/>
+      <span class="bc-opts-unit">px(正方形)</span>
+    </div>
+    <p class="hint" style="margin:0 0 12px;">选「不出镜」就是纯 PPT 成片;选一个角落则逐帧生成数字人片段并叠加到该角落,构建与渲染时间会明显变长。位置与大小之后也能在预览页改。</p>
     <button class="primary" id="submit" disabled>开始分析</button>
   </div>
 </div>
@@ -365,9 +375,17 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
   <div class="step panel hidden" id="avatar-panel" style="padding:24px 26px;">
     <h3>数字人播报视频</h3>
     <p class="hint" style="margin-bottom:14px;">
-      把逐帧数字人画面按时间轴拼成一条独立视频(320×320,含完整配音音轨),与 PPT 成片分开生成,
-      不需要等成片渲染,可单独预览与下载。分析完成后即可生成。
+      把逐帧数字人画面按时间轴拼成一条独立视频(默认 320×320,尺寸可选,含完整配音音轨),
+      与 PPT 成片分开生成,不需要等成片渲染,可单独预览与下载。分析完成后即可生成。
     </p>
+    <div class="bc-opts">
+      <label for="bc-size">数字人大小</label>
+      <input type="number" id="bc-size" step="2" inputmode="numeric" list="bc-size-presets"
+             aria-label="播报视频里数字人的边长"/>
+      <datalist id="bc-size-presets"></datalist>
+      <span class="bc-opts-unit">px(正方形)</span>
+      <span class="bc-opts-tip" id="bc-size-tip"></span>
+    </div>
     <div class="bc-steps" id="bc-steps"></div>
     <div class="hidden" id="bc-bar-wrap">
       <div class="bc-bar"><i id="bc-bar-fill"></i></div>
@@ -387,6 +405,13 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
 
   <div class="step panel video-row" style="padding:24px 26px;">
     <h3>视频预览(Studio 编辑器)</h3>
+    <div class="bc-opts" id="geom-row">
+      <label for="geom-mode">数字人出镜</label>
+      <select id="geom-mode" aria-label="数字人是否出镜以及出镜位置"></select>
+      <input type="number" id="geom-size" step="2" inputmode="numeric" aria-label="数字人在成片里的边长"/>
+      <span class="bc-opts-unit">px(正方形)</span>
+      <span class="bc-opts-tip" id="geom-tip">改后需重新「构建预览」「渲染成片」才生效</span>
+    </div>
     <div class="bc-steps hidden" id="render-steps"></div>
     <div class="hidden" id="render-bar-wrap" style="margin-bottom:14px;">
       <div class="bc-bar"><i id="render-bar-fill"></i></div>
@@ -560,7 +585,7 @@ function renderVoiceList(){
     vl.appendChild(c);
   });
 }
-stylesPromise.then(data => { if (data) { renderStyles(data); renderVoices(data); } });
+stylesPromise.then(data => { if (data) { stylesData = data; renderStyles(data); renderVoices(data); renderAvatarControls(data); } });
 
 /* ── 上传页逻辑 ── */
 const drop = $("#drop"), fileInput = $("#file");
@@ -641,7 +666,18 @@ $("#submit").onclick = ()=>{
   fd.append("voice", chosenVoice);
   fd.append("duration", dur.value);
   fd.append("video_kind", chosenKind);
-  fd.append("avatar", $("#avatar").checked ? "true" : "false");
+  // 数字人出镜:下拉里「不出镜」也是一个选项(off → avatar=false)
+  const upMode = $("#up-avatar-mode").value || AVATAR_OFF;
+  fd.append("avatar", upMode === AVATAR_OFF ? "false" : "true");
+  fd.append("avatar_corner", upMode === AVATAR_OFF ? avatarCornerMeta.default : upMode);
+  // 大小:留空就按默认值提交;填了就必须合法(在提交前拦住,别等后端 400)
+  const upSizeRaw = $("#up-avatar-size").value.trim();
+  const upSize = upSizeRaw ? parseInt(upSizeRaw, 10) : avatarSizeMeta.default;
+  if (upSizeRaw) {
+    const upBad = validateAvatarSize(upSize);
+    if (upBad) { toast(upBad, true); return; }
+  }
+  fd.append("avatar_size", String(upSize));
   const btn = $("#submit");
   btn.disabled = true; btn.textContent = "提交中…";
   fetch("./api/jobs", {method:"POST", body:fd})
@@ -672,7 +708,8 @@ async function poll(){
   if (!jobId) return;
   let j;
   try {
-    const r = await fetch("./api/jobs/" + jobId + "?brief=1");
+    // avatar_size:让「预计耗时」按下拉里当前选中的尺寸现算(尚未提交也生效)
+    const r = await fetch("./api/jobs/" + jobId + "?brief=1&avatar_size=" + selectedBcSize());
     if (r.status === 404) {
       setBanner("任务不存在或已删除。", "err", false);
       return;   // 停止轮询
@@ -719,7 +756,7 @@ async function poll(){
 }
 async function fetchFullScript(){
   try {
-    const j = await (await fetch("./api/jobs/" + jobId)).json();
+    const j = await (await fetch("./api/jobs/" + jobId + "?avatar_size=" + selectedBcSize())).json();
     updateActions(j);
     if (j.script) renderScript(j);
   } catch (e) { /* 下轮轮询重试 */ }
@@ -768,6 +805,7 @@ function renderRenderProgress(j){
 function updateActions(j){
   const bb = $("#btn-build"), rb = $("#btn-render");
   renderAvatarPanel(j);
+  syncGeomRow(j);
   renderRenderProgress(j);
   const hasScript = !!(j.script_updated_at);
   bb.disabled = !(["analyzed","preview","rendered","failed"].includes(j.status) && hasScript);
@@ -802,6 +840,171 @@ const STYLE_NAMES = {"solemn-red":"庄重肃穆 · 中国红","academic-ink":"�
 const AVATAR_STEPS = ["合成配音", "生成数字人片段", "拼接播报视频"];
 const AVATAR_STEP_WEIGHT = [0.30, 0.65, 0.05];   // 进度条加权(与后端耗时占比一致)
 let lastAvatarStamp = null;
+
+/* ── 数字人设置:大小(正方形边长,可手输)+ 成片里的四角位置 ──
+   档位与默认值由后端 /api/styles 下发(大小默认 300、位置默认右上),下面的常量
+   只是风格接口不可用时的兜底,取值与 config.py 保持一致。三处控件共用这份数据:
+     创作页   #up-avatar-mode / #up-avatar-size → 建任务时的出镜选项与大小(随表单提交)
+     预览页   #geom-mode / #geom-size          → 改已有任务的出镜开关/位置/大小(存后端,构建/渲染后生效)
+     播报面板 #bc-size                            → 这条播报视频的画面边长(留空则跟随任务) */
+const AVATAR_FALLBACK = {
+  sizes: {default: 300, native: 464, min: 160, max: 1080, choices: [240, 300, 400, 464, 640]},
+  corners: [{key:"tl",name:"左上"}, {key:"tr",name:"右上"}, {key:"br",name:"右下"}, {key:"bl",name:"左下"}],
+  cornerDefault: "tr",
+};
+let avatarSizeMeta = AVATAR_FALLBACK.sizes;
+let avatarCornerMeta = {options: AVATAR_FALLBACK.corners, default: AVATAR_FALLBACK.cornerDefault};
+const AVATAR_OFF = "off";   // 「不出镜」:和四个角落并列的一个选项,不是"没选"
+let avatarRenderedKey = "";
+let bcServerSize = null;   // 后端下发的播报尺寸(输入框留空时的兜底)
+let geomServer = null;     // 后端当前的成片几何(保存失败要回滚到它)
+let geomSaving = false;
+let bcSizeTouched = false; // 用户手输过播报尺寸后,轮询不再覆盖
+
+function applyAvatarMeta(data){
+  if (!data) return;
+  if (data.avatar_sizes && (data.avatar_sizes.choices || []).length) avatarSizeMeta = data.avatar_sizes;
+  if (data.avatar_corners && data.avatar_corners.length) {
+    avatarCornerMeta = {options: data.avatar_corners, default: data.avatar_corner_default || "tr"};
+  }
+}
+function avatarCornerName(key){
+  const o = avatarCornerMeta.options.find(x => x.key === key);
+  return o ? o.name : key;
+}
+function avatarModeName(mode){
+  return mode === AVATAR_OFF ? "不出镜" : ("数字人出镜 · " + avatarCornerName(mode));
+}
+function validateAvatarSize(n){
+  const min = avatarSizeMeta.min || 160, max = avatarSizeMeta.max || 1080;
+  if (!Number.isFinite(n)) return "数字人大小请填一个数字(如 300)";
+  if (n % 2) return "数字人大小必须是偶数(如 300、400)";
+  if (n < min || n > max) return "数字人大小需在 " + min + "–" + max + " 之间";
+  return "";
+}
+function renderAvatarControls(data){
+  applyAvatarMeta(data);
+  const key = avatarSizeMeta.choices.join(",") + "|" + avatarSizeMeta.default
+    + "|" + avatarCornerMeta.options.map(o => o.key).join(",") + "|" + avatarCornerMeta.default;
+  if (key === avatarRenderedKey) return;
+  avatarRenderedKey = key;
+  // 大小:手输为主,档位只作 datalist 提示(留空不填默认,避免盖掉用户的选择)
+  [$("#up-avatar-size"), $("#bc-size"), $("#geom-size")].forEach(inp=>{
+    if (!inp) return;
+    inp.min = avatarSizeMeta.min; inp.max = avatarSizeMeta.max;
+    if (!inp.value) inp.value = String(avatarSizeMeta.default);
+  });
+  const dl = $("#bc-size-presets");
+  if (dl) {
+    dl.innerHTML = "";
+    avatarSizeMeta.choices.forEach(s=>{
+      const o = document.createElement("option");
+      o.value = String(s);
+      o.label = s + "×" + s + (s === avatarSizeMeta.default ? "(默认)" : "")
+        + ((avatarSizeMeta.native && s > avatarSizeMeta.native) ? " 放大" : "");
+      dl.appendChild(o);
+    });
+  }
+  // 出镜模式:不出镜 + 四个角落,默认角标出来(两个页面同一个清单)
+  [$("#up-avatar-mode"), $("#geom-mode")].forEach(sel=>{
+    if (!sel) return;
+    const keep = sel.value;
+    sel.innerHTML = "";
+    const off = document.createElement("option");
+    off.value = AVATAR_OFF;
+    off.textContent = "不出镜";
+    sel.appendChild(off);
+    avatarCornerMeta.options.forEach(o=>{
+      const opt = document.createElement("option");
+      opt.value = o.key;
+      opt.textContent = o.name + (o.key === avatarCornerMeta.default ? "(默认)" : "");
+      sel.appendChild(opt);
+    });
+    sel.value = keep || AVATAR_OFF;
+  });
+  updateBcSizeTip();
+  syncUpAvatarMode();
+}
+function selectedBcSize(){
+  const box = $("#bc-size");
+  const n = box && box.value ? parseInt(box.value, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : (bcServerSize || avatarSizeMeta.default);
+}
+function updateBcSizeTip(){
+  const tip = $("#bc-size-tip");
+  if (!tip) return;
+  const s = selectedBcSize(), native = avatarSizeMeta.native;
+  tip.textContent = (native && s > native)
+    ? "超过原生 " + native + "×" + native + ",只是放大,清晰度不再增加"
+    : "正方形画面;越大文件越大、拼接越慢";
+}
+$("#bc-size").oninput = ()=>{ bcSizeTouched = true; updateBcSizeTip(); };
+$("#bc-size").onchange = ()=>{
+  bcSizeTouched = true;
+  if (!validateAvatarSize(parseInt($("#bc-size").value, 10))) updateBcSizeTip();
+  poll();   // 预计耗时跟着新尺寸刷新(轻量轮询,接口按 avatar_size 现算)
+};
+
+/* 创作页:出镜模式 = 不出镜 / 四个角落;选「不出镜」时大小不可编辑(值仍保留) */
+function syncUpAvatarMode(){
+  const off = $("#up-avatar-mode").value === AVATAR_OFF;
+  const size = $("#up-avatar-size");
+  if (size) size.disabled = off;
+}
+$("#up-avatar-mode").onchange = syncUpAvatarMode;
+
+/* 预览页:改已有任务的出镜开关/位置/大小,存后端,构建/渲染后生效 */
+function syncGeomRow(j){
+  const row = $("#geom-row");
+  if (!row) return;
+  const g = j.avatar_geom || {};
+  geomServer = {on: !!j.avatar, corner: g.corner || avatarCornerMeta.default,
+                size: g.size || avatarSizeMeta.default};
+  const ms = $("#geom-mode"), ss = $("#geom-size");
+  // 正在输入 / 正在保存时绝不回写,否则轮询会把用户刚选的吃掉
+  if (!geomSaving && document.activeElement !== ms) {
+    ms.value = geomServer.on ? geomServer.corner : AVATAR_OFF;
+  }
+  if (!geomSaving && document.activeElement !== ss) ss.value = String(geomServer.size);
+  ss.disabled = ms.value === AVATAR_OFF;
+}
+function revertGeom(){
+  if (!geomServer) return;
+  $("#geom-mode").value = geomServer.on ? geomServer.corner : AVATAR_OFF;
+  $("#geom-size").value = String(geomServer.size);
+  $("#geom-size").disabled = !geomServer.on;
+}
+async function saveGeom(){
+  const mode = $("#geom-mode").value;
+  const off = mode === AVATAR_OFF;
+  const size = parseInt($("#geom-size").value, 10);
+  // 选「不出镜」时不动大小(保持后端已有的值),所以也就不必校验它
+  const bad = off ? "" : validateAvatarSize(size);
+  if (bad) { toast(bad, true); revertGeom(); return; }
+  const payload = off ? {avatar: false} : {avatar: true, corner: mode, size: size};
+  geomSaving = true;
+  try {
+    const r = await fetch("./api/jobs/" + jobId + "/avatar/geom", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.detail || "保存失败");
+    geomServer = {on: !!j.avatar, corner: j.avatar_geom.corner, size: j.avatar_geom.size};
+    revertGeom();
+    toast(j.avatar
+      ? "数字人已改为" + avatarCornerName(j.avatar_geom.corner) + " · " +
+        j.avatar_geom.size + "×" + j.avatar_geom.size + ";重新构建并渲染后生效"
+      : "已改为不出镜;重新构建并渲染后,成片就是纯 PPT 版");
+  } catch(e) {
+    toast("保存失败:" + (e.message || e), true);
+    revertGeom();
+  } finally { geomSaving = false; }
+}
+$("#geom-mode").onchange = saveGeom;
+$("#geom-size").onchange = saveGeom;
+renderAvatarControls(null);   // 先用兜底档位渲染,风格接口回来后再对齐
+
 function fmtClock(sec){
   sec = Math.max(0, Math.round(sec || 0));
   const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
@@ -821,6 +1024,17 @@ function renderAvatarPanel(j){
   const done = ab.status === "done";
   const failed = ab.status === "failed";
   const busy = ["analyzing","building","avatar_building","rendering"].includes(j.status);
+
+  // 尺寸输入:首轮用任务上次用的尺寸(后端下发),用户手输过就不再被轮询覆盖
+  if (j.avatar_broadcast_size) bcServerSize = j.avatar_broadcast_size;
+  renderAvatarControls(stylesData);
+  const sizeBox = $("#bc-size");
+  if (sizeBox) {
+    if (!bcSizeTouched && document.activeElement !== sizeBox && j.avatar_broadcast_size) {
+      sizeBox.value = String(j.avatar_broadcast_size);
+    }
+    sizeBox.disabled = busy;
+  }
 
   // 步骤清单:已完成打勾,当前高亮,失败标红
   const stepBox = $("#bc-steps"); stepBox.innerHTML = "";
@@ -875,13 +1089,18 @@ function renderAvatarPanel(j){
 
   // 事前预计耗时(没生成过时给用户一个量级;生成中由 ETA 接管)
   const note = $("#bc-note");
+  const pickSize = selectedBcSize();
+  const genSize = ab.size || null;   // 这条播报视频**实际**生成的尺寸(不是下拉当前值)
   if (!generating && !done && j.avatar_broadcast_est_sec) {
     note.textContent = "预计耗时约 " + Math.max(1, Math.round(j.avatar_broadcast_est_sec / 60)) +
-      " 分钟(人像逐帧生成 + 拼接;已缓存的片段会跳过,重跑更快)。";
+      " 分钟(" + pickSize + "×" + pickSize + " 人像逐帧生成 + 拼接;已缓存的片段会跳过,重跑更快)。";
   } else if (done && (ab.stale ||
              (j.artifacts && j.artifacts.avatar &&
               j.script_updated_at && j.artifacts.avatar.at * 1e9 < j.script_updated_at))) {
     note.textContent = "⚠ 脚本或配音在这条播报视频之后又变过,重新生成可让两者一致(片段有缓存,重跑很快)。";
+  } else if (done && genSize && genSize !== pickSize) {
+    note.textContent = "当前这条是 " + genSize + "×" + genSize + ";点「重新生成播报视频」会改成 " +
+      pickSize + "×" + pickSize + "(原尺寸的片段仍在缓存,换回来很快)。";
   } else {
     note.textContent = "";
   }
@@ -897,8 +1116,9 @@ function renderAvatarPanel(j){
       $("#bc-dl").href = url;
       $("#bc-dl").textContent = "下载播报视频(" + (art.fmt || "mp4").toUpperCase() + " · " + fmtSize(art.bytes) + ")";
       $("#bc-dl").classList.remove("hidden");
+      const shownSize = genSize || j.avatar_broadcast_size || pickSize;
       $("#bc-info").textContent = "";
-      $("#bc-info").appendChild(el("div", null, "画面:320×320 数字人 · 含完整配音音轨"));
+      $("#bc-info").appendChild(el("div", null, "画面:" + shownSize + "×" + shownSize + " 数字人 · 含完整配音音轨"));
       $("#bc-info").appendChild(el("div", null, "生成时间:" + new Date(art.at * 1000).toLocaleString("zh-CN")));
       $("#bc-player").classList.remove("hidden");
     }
@@ -906,10 +1126,16 @@ function renderAvatarPanel(j){
 }
 $("#btn-avatar-video").onclick = ()=>{
   const btn = $("#btn-avatar-video");
+  const size = selectedBcSize();
+  const bad = validateAvatarSize(size);
+  if (bad) { toast(bad, true); return; }
   btn.disabled = true;
-  fetch("./api/jobs/" + jobId + "/avatar/broadcast", {method:"POST"}).then(r=>r.json()).then(j=>{
+  fetch("./api/jobs/" + jobId + "/avatar/broadcast", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({size: size}),
+  }).then(r=>r.json()).then(j=>{
     if (!j.ok) { toast(j.detail || "触发失败", true); btn.disabled = false; return; }
-    toast("已开始生成数字人播报视频");
+    toast("已开始生成数字人播报视频(" + size + "×" + size + ")");
     poll();
   }).catch(e=>{ toast("触发失败:" + e.message, true); btn.disabled = false; });
 };
