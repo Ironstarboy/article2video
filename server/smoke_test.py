@@ -751,6 +751,20 @@ ok("播报音轨与源配音逐字节对齐(无半字节错位)",
    _e[_head_b:_head_b + len(_tone)] == _tone,
    f"比对区间 [{_head_b}, {_head_b + len(_tone)})")
 
+# 配音验收必须同时看「时长」和「有没有声音」:eafca9e512a8 整组配音就是
+# 峰值 -91dB 的占位静音,时长却完全"合理",只查时长会全部放行。
+sil_wav = Path(_tmp_text("bc_silent.wav", ""))
+with _wave.open(str(sil_wav), "wb") as _w:
+    _w.setnchannels(1)
+    _w.setsampwidth(2)
+    _w.setframerate(44100)
+    _w.writeframes(b"\x00" * (44100 * 2))          # 1.0s 静音
+ok("tts 有声音的配音判合格", tts.audio_plausible("测试文本", _src_wav, 1.0))
+ok("tts 静音配音(时长正常)判不合格",
+   not tts.audio_plausible("测试文本", sil_wav, 1.0))
+ok("tts 峰值可读出", (tts.audio_peak_db(sil_wav) or 0) < -60,
+   f"静音峰值={tts.audio_peak_db(sil_wav)}")
+
 ok("播报耗时估算随片长增长",
    avatar.estimate_broadcast_sec(600) > avatar.estimate_broadcast_sec(300) > 0)
 ok("播报耗时估算=配音+人像+拼接",

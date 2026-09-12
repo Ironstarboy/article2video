@@ -86,6 +86,9 @@ _SAMPLING_CFG = {
 _ACCEPT = (float(os.environ.get("TTV_TTS_ACCEPT_LO", "0.65")),
            float(os.environ.get("TTV_TTS_ACCEPT_HI", "1.8")))
 _ATTEMPTS = max(1, int(os.environ.get("TTV_TTS_ATTEMPTS", "6")))
+# 峰值下限:短句也会把语速按字数折算,但**静音样本**时长可以完全正常
+# (eafca9e512a8 整组配音就是 -91dB 的占位静音),所以必须一起验收
+_MIN_PEAK = float(os.environ.get("TTV_TTS_MIN_PEAK", "0.01"))   # ≈ -40 dBFS
 _LLM_PATCHED = False
 _FP16 = os.environ.get("TTV_TTS_FP16", "1") == "1"
 
@@ -221,9 +224,10 @@ def tts(req: TTSRequest):
                     continue
                 speech = torch.cat(chunks, dim=1)
                 ratio = (speech.shape[1] / SAMPLE_RATE) / expected
+                peak = float(speech.abs().max()) if speech.numel() else 0.0
                 if best is None or abs(ratio - 1) < abs(best[0] - 1):
-                    best = (ratio, speech)
-                if _ACCEPT[0] <= ratio <= _ACCEPT[1]:
+                    best = (ratio, peak, speech)
+                if _ACCEPT[0] <= ratio <= _ACCEPT[1] and peak >= _MIN_PEAK:
                     break
         finally:
             _GEN.clear()
@@ -232,12 +236,12 @@ def tts(req: TTSRequest):
             _SAMPLING_CFG.update(saved_s)
         if best is None:
             raise HTTPException(500, "合成失败:无输出")
-        ratio, speech = best
-        if not (_ACCEPT[0] <= ratio <= _ACCEPT[1]):
-            logging.warning("时长仍不在验收窗口:%.2f× 预期,已重采 %d 次,文本 %s",
-                            ratio, used, text[:30])
+        ratio, peak, speech = best
+        if not (_ACCEPT[0] <= ratio <= _ACCEPT[1]) or peak < _MIN_PEAK:
+            logging.warning("验收未过(时长 %.2f× 预期,峰值 %.4f),已重采 %d 次,文本 %s",
+                            ratio, peak, used, text[:30])
         elif used > 1:
-            logging.info("重采 %d 次后通过时长验收(%.2f×)", used, ratio)
+            logging.info("重采 %d 次后通过验收(%.2f×,峰值 %.3f)", used, ratio, peak)
         data = speech.detach().cpu().numpy()
         if data.ndim == 2:
             data = data.T
@@ -246,7 +250,7 @@ def tts(req: TTSRequest):
     return Response(content=buf.getvalue(), media_type="audio/wav",
                     headers={"X-Sample-Rate": str(SAMPLE_RATE),
                              "X-TTS-Ratio": f"{ratio:.3f}",
-                             "X-TTS-Attempts": str(used)})
+                             "X-TTS-Attempts": str(used), "X-TTS-Peak": f"{peak:.4f}"})
 
 
 if __name__ == "__main__":

@@ -22,6 +22,9 @@ VO_OFFSET = 0.25
 # 0.01× (残句) 到 3.4× (复读) 的音频,TTS 服务侧已按时长重采;这里再兜一层:
 # 服务仍未给出合理时长时换实例再要一次。见 CHANGELOG v2.2「配音时长验收」。
 ACCEPT_RATIO = (0.65, 1.8)
+# 峰值下限(dBFS):时长正常但**整段静音**的样本也要拒(eafca9e512a8 的整组配音
+# 就是 -91dB 的占位静音,时长却完全"合理",只查时长查不出来)
+MIN_PEAK_DB = -45.0
 TTS_LAST_RATIO: float | None = None
 
 
@@ -34,6 +37,27 @@ def duration_ratio(text: str, dur: float) -> float:
 def duration_plausible(text: str, dur: float) -> bool:
     r = duration_ratio(text, dur)
     return ACCEPT_RATIO[0] <= r <= ACCEPT_RATIO[1]
+
+
+def audio_peak_db(path: Path) -> float | None:
+    """音频峰值(dBFS);读不出来返回 None。"""
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(path), "-af", "volumedetect",
+                        "-f", "null", "-"], capture_output=True, text=True)
+    for ln in r.stderr.splitlines():
+        if "max_volume" in ln:
+            try:
+                return float(ln.split("max_volume:")[1].replace("dB", "").strip())
+            except ValueError:
+                return None
+    return None
+
+
+def audio_plausible(text: str, path: Path, dur: float) -> bool:
+    """时长合理 **且** 不是静音。"""
+    if not duration_plausible(text, dur):
+        return False
+    peak = audio_peak_db(path)
+    return peak is None or peak >= MIN_PEAK_DB
 
 # CosyVoice3 多实例池(默认三实例;单实例部署时只写 8016 一个即可)
 TTS_POOL = [u.strip() for u in os.environ.get(
@@ -263,13 +287,13 @@ def _synth_frame(idx: int, text: str, voice: str, audio_dir: Path, speed: float,
         if _synth_pool(text, voice, out, speed):
             engine = "cosyvoice3"
     dur = audio_duration(out)
-    # 时长验收:服务端已重采,这里再兜一层(换实例重新采样)。本地 CosyVoice3 的采样
-    # 不稳定,同一句多要一次往往就能拿到正常时长;不通过就留痕,便于排查。
-    if engine and engine != "silence" and not duration_plausible(text, dur):
-        for _try in range(2):
+    # 验收(时长 + 非静音):服务端已重采,这里再兜一层(换实例重新采样)。本地
+    # CosyVoice3 的采样不稳定,同一句多要一次往往就能拿到正常样本;不通过就留痕。
+    if engine and engine != "silence" and not audio_plausible(text, out, dur):
+        for _try in range(3):
             if _synth_pool(text, voice, out, speed):
                 d2 = audio_duration(out)
-                if duration_plausible(text, d2):
+                if audio_plausible(text, out, d2):
                     dur = d2
                     break
                 dur = d2
@@ -277,7 +301,8 @@ def _synth_frame(idx: int, text: str, voice: str, audio_dir: Path, speed: float,
         engine = _silence_placeholder(text, out)
         dur = audio_duration(out)
     return idx, {"path": str(out), "duration": dur, "words": word_times(text, dur),
-                 "engine": engine, "ratio": round(duration_ratio(text, dur), 3)}
+                 "engine": engine, "ratio": round(duration_ratio(text, dur), 3),
+                 "peak_db": audio_peak_db(out)}
 
 
 def synthesize_frames(frames: list[dict], voice: str, audio_dir: Path, speed: float = 1.0,
