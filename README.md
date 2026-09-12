@@ -88,7 +88,7 @@
 
 ### 1. 获取代码与主站依赖
 
-仓库只跟踪约 60 个源码/文档文件,权重、字体、venv 全部不入库(`.gitignore`)。
+仓库只跟踪源码与文档:模型权重、字体、venv、上传的数字人形象等运行时数据全部不入库(`.gitignore`)。
 
 ```bash
 git clone git@github.com:Ironstarboy/article2video.git
