@@ -6,10 +6,10 @@
   GET  /voices            → 可用音色列表
   POST /tts {text, voice, speed} → audio/wav
 
-部署规范(与服务器其他模型一致):
-  - 权重:/mnt/models/CosyVoice3-0.5B(HuggingFace FunAudioLLM/Fun-CosyVoice3-0.5B-2512)
-  - 服务:venv /mnt/workspace/ttv/tts-venv,启动脚本 deploy/start-tts.sh
-  - 端口:127.0.0.1:8016;GPU:PPU1(CUDA_VISIBLE_DEVICES=1,GPU0 被 ComfyUI 占用)
+部署规范:
+  - 权重:工作区内 models/CosyVoice3-0.5B(FunAudioLLM/Fun-CosyVoice3-0.5B-2512,ModelScope 下载)
+  - 服务:工作区内 tts-venv,启动脚本 deploy/start-tts.sh
+  - 端口:127.0.0.1:8016;GPU 由 start-tts.sh 的 TTV_TTS_GPUS 指定
 """
 import io
 import threading
@@ -41,8 +41,10 @@ torchaudio.save = _sf_save
 from cosyvoice.cli.cosyvoice import AutoModel
 from cosyvoice.utils.file_utils import load_wav
 
-MODEL_DIR = "/mnt/models/CosyVoice3-0.5B"
-REF_DIR = "/mnt/models/CosyVoice3-0.5B/asset-v2"   # 零样本参考音频(edge-tts 新闻腔种子)
+from config import COSYVOICE_MODEL_DIR
+
+MODEL_DIR = str(COSYVOICE_MODEL_DIR)
+REF_DIR = str(COSYVOICE_MODEL_DIR / "asset-v2")   # 零样本参考音频(edge-tts 新闻腔种子)
 SAMPLE_RATE = 24000
 
 app = FastAPI(title="CosyVoice3 TTS")

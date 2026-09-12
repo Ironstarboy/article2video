@@ -1,0 +1,38 @@
+syntax = "proto3";
+package cyberverse;
+
+option go_package = "github.com/cyberverse/server/internal/pb";
+
+message AudioChunk {
+  bytes data = 1;
+  int32 sample_rate = 2;
+  int32 channels = 3;
+  string format = 4;
+  bool is_final = 5;
+  int64 timestamp_ms = 6;
+}
+
+message VideoChunk {
+  bytes data = 1;
+  int32 width = 2;
+  int32 height = 3;
+  int32 num_frames = 4;
+  int32 fps = 5;
+  int32 chunk_index = 6;
+  bool is_final = 7;
+}
+
+message ImageFrame {
+  bytes data = 1;
+  string mime_type = 2;
+  int32 width = 3;
+  int32 height = 4;
+  string source = 5;
+  int64 timestamp_ms = 6;
+  int64 frame_seq = 7;
+}
+
+message PluginConfig {
+  string plugin_name = 1;
+  map<string, string> params = 2;
+}

@@ -19,7 +19,7 @@ import httpx
 
 from config import (
     CHARS_PER_SEC, DEEPSEEK_CLOUD_KEYFILE, DEEPSEEK_CLOUD_MODEL, DEEPSEEK_CLOUD_URL,
-    DEEPSEEK_LOCAL_URL, DEEPSEEK_MODEL, read_cloud_api_key,
+    DEEPSEEK_LOCAL_KEY, DEEPSEEK_LOCAL_URL, DEEPSEEK_MODEL, read_cloud_api_key,
 )
 
 # ═══════════════════════ 换算常量(全局统一,禁止各处硬编码) ═══════════════════════
@@ -107,31 +107,49 @@ def _tier_max_tokens(target_duration: int) -> int:
 
 def _call_local(prompt_system: str, prompt_user: str, max_tokens: int = 8192,
                 temperature: float = 0.35) -> str | None:
-    """本地 vLLM。返回内容文本,失败返回 None。"""
+    """本地 vLLM(或任何 OpenAI 兼容网关)。返回内容文本,失败返回 None。
+
+    DEEPSEEK_LOCAL_KEY 非空时带 Bearer 头(指向需鉴权的网关时用),否则保持原样。
+
+    思考型网关(如 DeepSeek-V4-Flash 经 paratera)会把 max_tokens 同时用于思考链和正文:
+    思考过长时正文会是空串,下游 JSON 解析直接失败。这里在检测到"正文空、思考非空"时
+    用 reasoning_effort=none 重试一次(网关支持则生效,不支持会忽略该字段)。
+    """
     global _last_truncated
     _last_truncated = False
-    try:
+    headers = {"Authorization": f"Bearer {DEEPSEEK_LOCAL_KEY}"} if DEEPSEEK_LOCAL_KEY else {}
+    base_payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": prompt_system},
+            {"role": "user", "content": prompt_user},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+
+    def _post(extra: dict) -> tuple[str, bool, bool]:
+        """返回 (正文, 是否截断, 思考是否非空)。"""
         with LLM_SEM:
-            with httpx.Client(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
-                r = client.post(
-                    f"{DEEPSEEK_LOCAL_URL}/chat/completions",
-                    json={
-                        "model": DEEPSEEK_MODEL,
-                        "messages": [
-                            {"role": "system", "content": prompt_system},
-                            {"role": "user", "content": prompt_user},
-                        ],
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                        "response_format": {"type": "json_object"},
-                    },
-                )
+            with httpx.Client(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+                r = client.post(f"{DEEPSEEK_LOCAL_URL}/chat/completions",
+                                headers=headers, json={**base_payload, **extra})
                 r.raise_for_status()
-                data = r.json()
-                choice = data["choices"][0]
-                if choice.get("finish_reason") == "length":
-                    _last_truncated = True
-                return choice["message"]["content"]
+                choice = r.json()["choices"][0]
+        msg = choice.get("message") or {}
+        content = msg.get("content") or ""
+        reasoning = msg.get("reasoning_content") or ""
+        return content, choice.get("finish_reason") == "length", bool(reasoning)
+
+    try:
+        content, truncated, had_reasoning = _post({})
+        if not content.strip() and had_reasoning:
+            # 思考吃光了预算:关掉思考重试一次
+            content, truncated2, _ = _post({"reasoning_effort": "none"})
+            truncated = truncated or truncated2
+        _last_truncated = truncated
+        return content
     except Exception:
         return None
 

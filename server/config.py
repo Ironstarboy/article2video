@@ -1,16 +1,29 @@
 # -*- coding: utf-8 -*-
-"""全局配置:路径、模型端点、风格清单。"""
+"""全局配置:路径、模型端点、风格清单。
+
+所有路径默认落在**仓库根目录(= 工作区根)**内,不依赖任何工作区外的绝对路径;
+每项都可用 TTV_* 环境变量覆盖(生产部署只需设 TTV_ROOT 指向部署目录)。
+"""
 import os
+import shutil
 from pathlib import Path
 
-# 部署根目录(服务器:/mnt/workspace/ttv)
-ROOT = Path(os.environ.get("TTV_ROOT", "/mnt/workspace/ttv"))
+# 仓库根目录:server/ 的上一级。生产环境可用 TTV_ROOT 覆盖。
+ROOT = Path(os.environ.get("TTV_ROOT", str(Path(__file__).resolve().parents[1])))
 JOBS_DIR = ROOT / "jobs"
 WEB_DIR = ROOT / "web"
 ASSETS_DIR = ROOT / "assets"          # 共享资产:字体/BGM/vendor
 FONTS_DIR = ASSETS_DIR / "fonts"
 BGM_DIR = ASSETS_DIR / "bgm"
 VENDOR_DIR = ASSETS_DIR / "vendor"
+
+# 模型权重与本地运行时(全部在工作区内,不入库;见 .gitignore)
+MODELS_DIR = Path(os.environ.get("TTV_MODELS_DIR", str(ROOT / "models")))
+COSYVOICE_MODEL_DIR = Path(os.environ.get("TTV_COSYVOICE_DIR", str(MODELS_DIR / "CosyVoice3-0.5B")))
+QWEN_TTS_MODEL_DIR = Path(os.environ.get(
+    "TTV_QWEN_TTS_DIR", str(MODELS_DIR / "Qwen3-TTS-0.6B" / "Qwen3-TTS-0.6B-Base")))
+COSYVOICE_SRC_DIR = Path(os.environ.get("TTV_COSYVOICE_SRC", str(ROOT / "cosyvoice-src")))
+TTS_VENV_DIR = Path(os.environ.get("TTV_TTS_VENV", str(ROOT / "tts-venv")))
 
 # 日志统一收在 ROOT/logs 下(不污染项目根目录;deploy/*.sh 的重定向路径与此一致)
 LOG_DIR = Path(os.environ.get("TTV_LOG_DIR", str(ROOT / "logs")))
@@ -21,8 +34,12 @@ TTS_LOG_DIR = LOG_DIR / "tts"              # CosyVoice3 多实例 / Qwen3-TTS �
 # 本地 DeepSeek(vLLM,OpenAI 兼容,纯 HTTP 走网关)
 DEEPSEEK_LOCAL_URL = os.environ.get("TTV_DEEPSEEK_URL", "http://8.130.213.80:20001/v1")
 DEEPSEEK_MODEL = os.environ.get("TTV_DEEPSEEK_MODEL", "DeepSeek-V4-Flash")
-# 云 API 备份(读取服务器上已有 key 文件,key 文件不存在则跳过)
-DEEPSEEK_CLOUD_KEYFILE = "/mnt/workspace/wsh/cot/.env"
+# 可选:本地端点需要鉴权时(如指向 paratera 等 OpenAI 兼容网关)填 Bearer key。
+# 生产 vLLM 不校验鉴权,留空即可保持原行为。
+DEEPSEEK_LOCAL_KEY = os.environ.get("TTV_DEEPSEEK_KEY", "")
+# 云 API 备份(工作区内的 key 文件,不存在则跳过)
+DEEPSEEK_CLOUD_KEYFILE = os.environ.get(
+    "TTV_DEEPSEEK_KEYFILE", str(ROOT / ".secrets" / "deepseek.env"))
 DEEPSEEK_CLOUD_URL = "https://api.deepseek.com/v1"
 DEEPSEEK_CLOUD_MODEL = "deepseek-chat"
 
@@ -41,8 +58,79 @@ STYLES = {
 # 视频规格
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 
-# Node(服务器上不在 PATH)
-NODE_BIN_DIR = "/mnt/workspace/node/bin"
+
+def _resolve_node_bin_dir() -> str:
+    """node 可执行文件所在目录:显式覆盖 > 当前 node > 空(不改动 PATH)。
+
+    服务器上 node 不在 PATH,故服务调用 hyperframes 时会把该目录前置到 PATH。
+    """
+    explicit = os.environ.get("TTV_NODE_BIN")
+    if explicit:
+        return explicit
+    node = shutil.which("node")
+    return str(Path(node).resolve().parent) if node else ""
+
+
+NODE_BIN_DIR = _resolve_node_bin_dir()
+
+
+def _resolve_hyperframes_runtime() -> Path:
+    """hyperframes 的预览运行时脚本,按 node 全局包布局推导(可用 TTV_HYPERFRAMES_RUNTIME 覆盖)。"""
+    explicit = os.environ.get("TTV_HYPERFRAMES_RUNTIME")
+    if explicit:
+        return Path(explicit)
+    node = shutil.which("node")
+    if node:
+        prefix = Path(node).resolve().parents[1]
+        return prefix / "lib" / "node_modules" / "hyperframes" / "dist" / "hyperframe-runtime.js"
+    return Path("hyperframe-runtime.js")
+
+
+HYPERFRAMES_RUNTIME = _resolve_hyperframes_runtime()
+
+# ── 数字人(avatar)片段 ──
+# 由 CyberVerse 的 AvatarService(gRPC)按每帧台词音频驱动出帧,再烘焙成卡片片段。
+# 默认关闭:只有任务显式开启数字人时才生成,不影响既有出片流程。
+AVATAR_ENABLED = os.environ.get("TTV_AVATAR", "0") == "1"
+AVATAR_ADDR = os.environ.get("TTV_AVATAR_ADDR", "127.0.0.1:50051")
+# 形象:默认取 builder.styles.AVATARS 注册表里的默认形象;TTV_AVATAR_IMAGE 可覆盖
+def _default_avatar_image() -> Path:
+    try:
+        from builder.styles import avatar_file
+        return ASSETS_DIR / avatar_file()
+    except Exception:
+        return ASSETS_DIR / "avatars" / "jinli.png"
+
+
+AVATAR_IMAGE = Path(os.environ.get("TTV_AVATAR_IMAGE", str(_default_avatar_image())))
+# 成片里数字人的边长(生成端可能更高,烘焙时缩放)
+AVATAR_SIZE = int(os.environ.get("TTV_AVATAR_SIZE", "320"))
+# 片段缓存(跨任务复用;与形象/音频/规格/版本共同决定键)
+AVATAR_CACHE_DIR = Path(os.environ.get("TTV_AVATAR_CACHE", str(ROOT / ".cache" / "avatar")))
+# 待机片段时长:每个形象只生成一段,用于填充帧内无台词的时间
+AVATAR_IDLE_SECONDS = float(os.environ.get("TTV_AVATAR_IDLE_SECONDS", "6.0"))
+# 片段规格版本:烘焙/编码参数变化时递增,自动失效旧缓存
+AVATAR_CLIP_VERSION = os.environ.get("TTV_AVATAR_CLIP_VERSION", "2")
+# 数字人在成片里的左上角位置(像素)
+AVATAR_X = int(os.environ.get("TTV_AVATAR_X", "40"))
+AVATAR_Y = int(os.environ.get("TTV_AVATAR_Y", "36"))
+# 速度系数(用于「生成步骤 + 预计时间」,只影响展示,不影响产物):
+# AVATAR_RT_FACTOR = 人像出片速度(秒视频 / 秒墙钟)。5090 + FlashHead 实测 ≈0.85
+#   (23.9s 音频 → 28.6s 墙钟);AVATAR_CONCAT_RT_FACTOR = 拼接编码速度(秒视频/秒墙钟),
+# 实测 320×320 约 56×,取 15× 留足音轨解码/探长的余量(宁高估不低估);
+# AVATAR_TTS_RT_FACTOR = 配音合成速度(秒音频/秒墙钟),单实例实测 ≈2.5×。
+# 事前预计把配音也算进去(首次生成必须合成配音;配音已缓存时会略微高估)。
+AVATAR_RT_FACTOR = float(os.environ.get("TTV_AVATAR_RT_FACTOR", "0.85"))
+AVATAR_CONCAT_RT_FACTOR = float(os.environ.get("TTV_AVATAR_CONCAT_RT_FACTOR", "15.0"))
+AVATAR_TTS_RT_FACTOR = float(os.environ.get("TTV_AVATAR_TTS_RT_FACTOR", "2.5"))
+# 渲染与叠加的速度系数(秒视频/秒墙钟),用于「渲染中」的预计剩余(只影响展示)。
+# 实测 1080p + --workers 1 流式捕获:81s 片 ≈85s(0.95)、152s 片 ≈200s(0.76),
+# 取 0.8;叠加(libx264 medium,1080p):81s 片 15s(5.4)、152s 片 ≈40s(3.8),取 4.5。
+# 捕获阶段一旦有帧数,预计剩余改用实测速率反推,比这两个静态系数准。
+RENDER_RT_FACTOR = float(os.environ.get("TTV_RENDER_RT_FACTOR", "0.8"))
+OVERLAY_RT_FACTOR = float(os.environ.get("TTV_OVERLAY_RT_FACTOR", "4.5"))
+# CyberVerse(数字人推理服务)所在目录,供 deploy/start-avatar.sh 启动
+CYBERVERSE_DIR = Path(os.environ.get("TTV_CYBERVERSE_DIR", str(ROOT / "CyberVerse-main")))
 
 # 单帧旁白语速校准:字数/秒(用于 DeepSeek 提示与时长估算)
 CHARS_PER_SEC = 4.2

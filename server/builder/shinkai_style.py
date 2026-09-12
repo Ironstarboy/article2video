@@ -3,10 +3,10 @@ shinkai_style.py — 新海诚风政务宣传视频风格卡片
 =============================================
 在 ttv 现有 modern-blue 基础上定制为 2D新海诚风商务微动画
 
-使用方法（在服务器上）：
+使用方法（在仓库根目录下）：
   python3 -c "
-    import sys; sys.path.insert(0, '/mnt/workspace/ttv/server')
-    from shinkai_style import SHINKAI_GOV_STYLE, generate_shinkai_script
+    import sys; sys.path.insert(0, 'server')
+    from builder.shinkai_style import SHINKAI_GOV_STYLE, generate_shinkai_script
     script = generate_shinkai_script('文章内容', target_duration=900)
     print(script)
   "

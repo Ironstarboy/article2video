@@ -18,8 +18,10 @@ from pydantic import BaseModel
 
 from qwen_tts import Qwen3TTSModel
 
-MODEL_DIR = "/mnt/models/Qwen3-TTS-0.6B/Qwen3-TTS-0.6B-Base"
-REF_DIR = "/mnt/models/CosyVoice3-0.5B/asset-v2"   # 复用三份新闻腔种子音频
+from config import COSYVOICE_MODEL_DIR, QWEN_TTS_MODEL_DIR
+
+MODEL_DIR = str(QWEN_TTS_MODEL_DIR)
+REF_DIR = str(COSYVOICE_MODEL_DIR / "asset-v2")   # 复用三份新闻腔种子音频
 SAMPLE_RATE = 24000
 
 app = FastAPI(title="Qwen3-TTS")

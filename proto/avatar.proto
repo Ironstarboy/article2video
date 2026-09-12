@@ -1,0 +1,44 @@
+syntax = "proto3";
+package cyberverse;
+
+option go_package = "github.com/cyberverse/server/internal/pb";
+
+import "common.proto";
+
+service AvatarService {
+  rpc SetAvatar (SetAvatarRequest) returns (SetAvatarResponse);
+  rpc GenerateStream (stream AudioChunk) returns (stream VideoChunk);
+  rpc Reset (ResetRequest) returns (ResetResponse);
+  rpc GetInfo (GetInfoRequest) returns (AvatarInfo);
+}
+
+message SetAvatarRequest {
+  string session_id = 1;
+  bytes image_data = 2;
+  string image_format = 3;
+  bool use_face_crop = 4;
+}
+
+message SetAvatarResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ResetRequest {
+  string session_id = 1;
+}
+
+message ResetResponse {
+  bool success = 1;
+}
+
+message GetInfoRequest {}
+
+message AvatarInfo {
+  string model_name = 1;
+  int32 output_fps = 2;
+  int32 output_width = 3;
+  int32 output_height = 4;
+  int32 frames_per_chunk = 5;
+  float chunk_duration_s = 6;
+}

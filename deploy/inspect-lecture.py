@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """一次性诊断:检查讲解视频任务脚本质量(手动传入 job_id)。"""
 import json
+import os
 import sys
 from collections import Counter
+from pathlib import Path
 
 job_id = sys.argv[1]
-p = f"/mnt/workspace/ttv/jobs/{job_id}/script.json"
+root = Path(os.environ.get("TTV_ROOT", str(Path(__file__).resolve().parents[1])))
+p = root / "jobs" / job_id / "script.json"
 s = json.load(open(p, encoding="utf-8"))
 lp = s.get("lecture_plan", {})
 print("== 标题:", s.get("title"), "|", s.get("subtitle"))

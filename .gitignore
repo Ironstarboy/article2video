@@ -44,6 +44,7 @@ CyberVerse-main.zip
 *.h5
 weights/
 checkpoints/
+models/
 
 # 本地环境/缓存/工具链(仓库根级, 不入库)
 .venv/

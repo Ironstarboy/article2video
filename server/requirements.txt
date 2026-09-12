@@ -4,3 +4,7 @@ httpx>=0.28
 python-multipart>=0.0.9
 jieba>=0.42
 fonttools>=4.53
+
+# 数字人片段:调用 CyberVerse AvatarService(gRPC)
+grpcio>=1.60
+protobuf>=4.25

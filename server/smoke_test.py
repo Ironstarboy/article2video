@@ -586,10 +586,168 @@ try:
     _j2 = _jobs_mod.get_job(_j.id)
     ok("jobs 重启 uploaded→failed", _j2 is not None and _j2.status == "failed",
        f"status={_j2.status if _j2 else None}")
+
+    # ── 成片双产物:ppt(纯 PPT 版)+ final(含数字人的最终版) ──
+    # 见 docs/数字人操作按钮前端方案.md 第十节
+    _legacy_job = _jobs_mod.create_job("solemn-red", 120, "t2.txt")
+    _legacy_job.set(status="rendered", render_format="mp4")
+    ok("jobs 无产物时 video_path 为 None", _legacy_job.video_path() is None)
+
+    # 造一个旧式产物 out.mp4(模拟双产物改造之前的任务)
+    _renders = _legacy_job.paths()["renders"]
+    _renders.mkdir(parents=True, exist_ok=True)
+    (_renders / "out.mp4").write_bytes(b"x" * 20480)
+    ok("jobs 旧产物 out.mp4 可被识别(迁移前)",
+       _legacy_job.video_path() is not None
+       and _legacy_job.video_path().name == "out.mp4")
+
+    # 重启触发一次性迁移:out.mp4 → final.mp4 + ppt.mp4
+    _il.reload(_jobs_mod)
+    _mig = _jobs_mod.get_job(_legacy_job.id)
+    ok("jobs 旧产物迁出 final.mp4", (_renders / "final.mp4").exists())
+    ok("jobs 旧产物迁出 ppt.mp4", (_renders / "ppt.mp4").exists())
+    ok("jobs 旧产物 out.mp4 已清理", not (_renders / "out.mp4").exists())
+    ok("jobs 迁移后 video_path 指向 final",
+       _mig.video_path() is not None and _mig.video_path().name == "final.mp4",
+       f"实际={_mig.video_path()}")
+    _md = _mig.to_dict(brief=True)
+    ok("jobs to_dict 暴露两个产物",
+       set(_md.get("artifacts") or {}) == {"ppt", "final"},
+       f"artifacts={sorted((_md.get('artifacts') or {}).keys())}")
+    ok("jobs 产物记录含大小与格式",
+       (_md["artifacts"]["final"].get("bytes") == 20480
+        and _md["artifacts"]["final"].get("fmt") == "mp4"))
+    ok("jobs 迁移打标记", _mig.state.get("artifacts_migrated") is True)
+
+    # 幂等:再启动一次不得重复迁移(也不得改变产物记录)
+    _before = dict(_mig.state.get("artifacts") or {})
+    _il.reload(_jobs_mod)
+    _again = _jobs_mod.get_job(_legacy_job.id)
+    ok("jobs 迁移幂等", (_again.state.get("artifacts") or {}) == _before)
+
+    # 显式记录的产物缺失时不得报错,退回 None(文件被外部删除的情形)
+    (_renders / "final.mp4").unlink()
+    (_renders / "ppt.mp4").unlink()
+    ok("jobs 产物文件缺失时 video_path 安全返回 None",
+       _again.video_path() is None or _again.video_path().exists())
+
+    # ── 数字人播报视频:第三个产物(独立于 ppt/final) ──
+    _bc_path = _again.paths()["renders"] / "avatar.mp4"
+    _bc_path.write_bytes(b"y" * 4096)
+    _again._record_artifact("avatar", _bc_path)
+    _bd = _again.to_dict(brief=True)
+    ok("jobs 播报产物进入 artifacts", "avatar" in (_bd.get("artifacts") or {}),
+       f"artifacts={sorted((_bd.get('artifacts') or {}).keys())}")
+    ok("jobs 播报产物记录格式与大小",
+       _bd["artifacts"]["avatar"].get("fmt") == "mp4"
+       and _bd["artifacts"]["avatar"].get("bytes") == 4096)
+    ok("jobs 播报产物可按 key 取路径", _again.artifact_path("avatar") == _bc_path)
+    _bc_path.unlink()
+    ok("jobs 播报产物缺失时安全返回 None", _again.artifact_path("avatar") is None)
+    ok("jobs 播报产物缺失不影响最终版入口", _again.video_path() is None)
+
+    # 产物文件在磁盘上、state.artifacts 里没记录(v2.2 之前的渲染不写 artifacts)
+    # → 启动时只补记录,不动文件
+    _bf = _jobs_mod.create_job("solemn-red", 120, "t3.txt")
+    _bf.set(status="rendered", render_format="mp4")
+    _bf_renders = _bf.paths()["renders"]
+    _bf_renders.mkdir(parents=True, exist_ok=True)
+    (_bf_renders / "final.mp4").write_bytes(b"z" * 20480)
+    (_bf_renders / "ppt.mp4").write_bytes(b"z" * 20480)
+    _il.reload(_jobs_mod)
+    _bf_arts = (_jobs_mod.get_job(_bf.id).to_dict(brief=True).get("artifacts") or {})
+    ok("jobs 产物未记录时启动补录", set(_bf_arts) == {"ppt", "final"},
+       f"artifacts={sorted(_bf_arts)}")
+    ok("jobs 补录不改动文件", (_bf_renders / "final.mp4").stat().st_size == 20480)
+    _il.reload(_jobs_mod)   # 幂等:final 已记录后不再重复补录
+    ok("jobs 补录幂等",
+       set((_jobs_mod.get_job(_bf.id).to_dict(brief=True).get("artifacts") or {}))
+       == {"ppt", "final"})
 finally:
-    _os.environ["TTV_ROOT"] = _orig_root or "/mnt/workspace/ttv"
+    _os.environ["TTV_ROOT"] = _orig_root or str(Path(__file__).resolve().parents[1])
     _il.reload(_config)
     _il.reload(_jobs_mod)
+
+
+# ═══════════════════════ 数字人片段(纯函数,不含 GPU/网络) ═══════════════════════
+
+import avatar  # noqa: E402
+
+_audio = Path(_tmp_text("fake_vo.mp3", "x" * 64))
+_img = Path("assets/avatars/jinli.png")
+_k_a = avatar.frame_clip_path(_img, _audio, 5.0, 320)
+_k_b = avatar.frame_clip_path(_img, _audio, 5.0, 320)
+_k_c = avatar.frame_clip_path(_img, _audio, 6.0, 320)
+ok("avatar 片段缓存键稳定(同输入同路径)", _k_a == _k_b)
+ok("avatar 片段缓存键随帧时长变化", _k_a != _k_c)
+ok("avatar 片段缓存键随尺寸变化",
+   avatar.frame_clip_path(_img, _audio, 5.0, 320) != avatar.frame_clip_path(_img, _audio, 5.0, 256))
+ok("avatar 缓存键含规格版本", f"_{avatar.AVATAR_CLIP_VERSION}" in _k_a.name)
+
+ok("avatar 遮罩名含尺寸与版本",
+   avatar.mask_name(320).startswith("mask_320_")
+   and f"_v{avatar.AVATAR_CLIP_VERSION}" in avatar.mask_name(320))
+ok("avatar 遮罩名随尺寸变化", avatar.mask_name(320) != avatar.mask_name(256))
+
+_fc = avatar.card_overlay_filter("1:v", "2:v", "OUT", 320, 20)
+ok("avatar 卡片滤镜标签成对且无占位符残留",
+   "[OUT]" in _fc and "MASKV" not in _fc and "[1:v]" in _fc and "[2:v]" in _fc)
+ok("avatar 卡片滤镜含圆角遮罩与投影", "alphamerge" in _fc and "boxblur" in _fc)
+
+_tl_src = [{"index": 1, "clip": "/tmp/a.mp4", "start": 1.5, "duration": 3.0}]
+_tl_path = Path(_tmp_text("tl.json", ""))
+avatar.write_timeline(_tl_src, _tl_path)
+ok("avatar 时间轴读写往返", avatar.read_timeline(_tl_path) == _tl_src)
+ok("avatar 缺失时间轴返回空列表", avatar.read_timeline(Path("/tmp/不存在_tl.json")) == [])
+
+ok("avatar 注册表默认形象可解析",
+   styles.avatar_file() == styles.AVATARS[styles.DEFAULT_AVATAR]["file"])
+ok("avatar 未知形象回退默认", styles.avatar_file("不存在的形象") == styles.avatar_file())
+
+
+# ═══════════════ 数字人播报视频:音轨拼接 / 步骤 ETA(纯函数,无 GPU/网络) ═══════════════
+
+import wave as _wave  # noqa: E402
+
+_tl_audio = [{"index": 2, "clip": "/tmp/none_a.mp4", "start": 0.0, "duration": 2.5},
+             {"index": 3, "clip": "/tmp/none_b.mp4", "start": 2.5, "duration": 1.5}]
+_wav_out = Path(_tmp_text("bc_audio.wav", ""))
+_bc_total = avatar.build_broadcast_audio(_tl_audio, {}, _wav_out)
+ok("播报音轨时长等于时间轴汇总", abs(_bc_total - 4.0) < 1e-6, f"实际={_bc_total}")
+with _wave.open(str(_wav_out), "rb") as _w:
+    _bc_rate, _bc_ch, _bc_frames = _w.getframerate(), _w.getnchannels(), _w.getnframes()
+ok("播报音轨规格 44.1k 单声道", _bc_rate == 44100 and _bc_ch == 1)
+ok("播报音轨采样数等于总时长", abs(_bc_frames / _bc_rate - 4.0) < 0.005,
+   f"{_bc_frames}/{_bc_rate}")
+# 无台词帧(vo 里没有该帧)整段静音:首帧 0.25s 偏移内必须全零
+with _wave.open(str(_wav_out), "rb") as _w:
+    _pcm = _w.readframes(_bc_frames)
+ok("播报音轨帧首为静音(与成片 VO_OFFSET 对齐)", _pcm[:1000] == b"\x00" * 1000)
+ok("播报音轨缺失配音也不报错(按静音补齐)", _bc_total > 0)
+
+ok("播报耗时估算随片长增长",
+   avatar.estimate_broadcast_sec(600) > avatar.estimate_broadcast_sec(300) > 0)
+ok("播报耗时估算=配音+人像+拼接",
+   avatar.estimate_broadcast_sec(60) == round(60 / avatar.AVATAR_RT_FACTOR
+                                             + 60 / avatar.AVATAR_CONCAT_RT_FACTOR
+                                             + 60 / avatar.AVATAR_TTS_RT_FACTOR))
+ok("播报耗时估算可排除已缓存的配音",
+   avatar.estimate_broadcast_sec(60, include_tts=False)
+   < avatar.estimate_broadcast_sec(60, include_tts=True))
+ok("播报 ETA 步骤1 无进度时不给数字", avatar.broadcast_eta(1, 0, None, 0, 0, 100, 100) is None)
+ok("播报 ETA 步骤1 同一帧完成后给正数",
+   (avatar.broadcast_eta(1, 1, 4, 10.0, 0, 100, 100) or 0) > 0)
+ok("播报 ETA 步骤3 等于剩余拼接时间",
+   avatar.broadcast_eta(3, 0, 0, 30.0, 0, 100, 100, 60.0)
+   == round(40 / avatar.AVATAR_CONCAT_RT_FACTOR))
+ok("播报 ETA 步骤2 用实测速率(快于静态系数时更小)",
+   avatar.broadcast_eta(2, 2, 4, 20.0, 20.0, 40.0, 40.0)
+   < avatar.broadcast_eta(2, 0, 4, 0.0, 0.0, 40.0, 40.0))
+
+_wt = tts.word_times("发展新质生产力", 4.0)
+ok("词级时间轴起点含 VO_OFFSET", abs(_wt[0][1] - tts.VO_OFFSET) < 1e-6)
+# 词级时间轴从 VO_OFFSET 起铺满配音时长(与成片 audio 的 data-start 同一口径)
+ok("词级时间轴跨度等于配音时长", abs((_wt[-1][2] - _wt[0][1]) - 4.0) < 1e-6)
 
 
 print()

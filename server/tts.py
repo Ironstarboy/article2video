@@ -78,12 +78,12 @@ def split_words(text: str) -> list[str]:
 
 
 def _load_doubao_key() -> str:
-    """豆包 ARK key 不入库:优先环境变量,其次服务器本地密钥文件。"""
+    """豆包 ARK key 不入库:优先环境变量,其次工作区内的本地密钥文件。"""
     k = os.environ.get("TTV_DOUBAO_KEY", "").strip()
     if k:
         return k
     try:
-        p = Path("/mnt/workspace/ttv/.secrets/doubao.key")
+        p = Path(os.environ.get("TTV_ROOT", str(Path(__file__).resolve().parents[1]))) / ".secrets" / "doubao.key"
         if p.exists():
             return p.read_text().strip()
     except Exception:
@@ -208,6 +208,19 @@ def _silence_placeholder(text: str, out: Path) -> str:
     return "silence"
 
 
+def word_times(text: str, dur: float) -> list:
+    """词级时间轴(帧内按字数均分):[(word, t0, t1), ...],起点含 VO_OFFSET。"""
+    words = split_words(text)
+    n_chars = max(1, len(text.replace(" ", "")))
+    t0 = VO_OFFSET
+    out = []
+    for w in words:
+        wdur = dur * len(w) / n_chars
+        out.append((w, t0, t0 + wdur))
+        t0 += wdur
+    return out
+
+
 def _synth_frame(idx: int, text: str, voice: str, audio_dir: Path, speed: float,
                  provider: str, pool_url: str | None) -> tuple[int, dict]:
     """单帧完整链路(合成 → ffmpeg 转码 → 时长 → 分词),供线程池并行调用。"""
@@ -229,23 +242,17 @@ def _synth_frame(idx: int, text: str, voice: str, audio_dir: Path, speed: float,
     if engine is None:
         engine = _silence_placeholder(text, out)
     dur = audio_duration(out)
-    words = split_words(text)
-    n_chars = max(1, len(text.replace(" ", "")))
-    t0 = VO_OFFSET
-    word_times = []
-    for w in words:
-        wdur = dur * len(w) / n_chars
-        word_times.append((w, t0, t0 + wdur))
-        t0 += wdur
-    return idx, {"path": str(out), "duration": dur, "words": word_times, "engine": engine}
+    return idx, {"path": str(out), "duration": dur, "words": word_times(text, dur),
+                 "engine": engine}
 
 
 def synthesize_frames(frames: list[dict], voice: str, audio_dir: Path, speed: float = 1.0,
-                      provider: str = "cosyvoice3") -> dict:
+                      provider: str = "cosyvoice3", progress_cb=None) -> dict:
     """为所有帧合成旁白 → {frame_index: {path, duration, engine, words:[(word, t0, t1)]}}。
 
     多实例并行:cosyvoice3 按存活实例数并行(轮询分发,单实例串行 GPU 推理);
     其余引擎保持单路。返回后由调用方根据真实时长重算帧 duration。
+    progress_cb(done, total):每完成一帧回调一次(数字人播报的步骤展示用)。
     """
     audio_dir.mkdir(parents=True, exist_ok=True)
     result = {}
@@ -266,9 +273,13 @@ def synthesize_frames(frames: list[dict], voice: str, audio_dir: Path, speed: fl
             url = pool[n % len(pool)] if pool else None
             futs[ex.submit(_synth_frame, idx, text, voice, audio_dir, speed,
                            provider, url)] = idx
+        done = 0
         for fut in as_completed(futs):
             idx, entry = fut.result()
             result[idx] = entry
+            done += 1
+            if progress_cb:
+                progress_cb(done, len(texts))
     return result
 
 

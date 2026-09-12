@@ -1,4 +1,4 @@
-# 项目结构文档(Theory-to-Video v2.0)
+# 项目结构文档(Theory-to-Video v2.2)
 
 ## 一、总体架构
 
@@ -32,6 +32,7 @@ vtt/
 │   ├── tts.py               配音:CosyVoice3 多实例轮询并行合成(httpx 全局共享连接池,修复 FD 耗尽)+ 词级时间轴 + 真实时长向目标靠拢(apply_real_durations);失败重试×3 → 静音占位
 │   ├── tts_server.py        CosyVoice3 服务(8016/8018/8019 三实例:GPU1/GPU2/GPU3,三音色零样本克隆,speed 钳位下限 1.0)
 │   ├── tts_qwen_server.py   Qwen3-TTS 服务(8017,GPU2,备用引擎,默认停;<8 字 400)
+│   ├── avatar.py            数字人:片段生成/时间轴/叠加 + 播报视频(音轨拼接、顺序合流、ETA 估算)+ gRPC 探活
 │   ├── smoke_test.py        冒烟回归:纯函数路径(extract/styles/时长靠拢/校验门/讲解校验)
 │   ├── jobs.py              任务状态机(磁盘持久化,重启恢复;video_kind 持久化;重启时 uploaded 同样置 failed)
 │   └── builder/
@@ -48,11 +49,21 @@ vtt/
 uploaded → analyzing → analyzed → building → preview → rendering → rendered
               │                       │              │
               │ DeepSeek              │ TTS 池并行   │ hyperframes render
-              │ 宣传:两阶段(诊断→脚本)│ +二次拓展     │ (渲染并发 ≤2,完成后回收)
+              │ 宣传:两阶段(诊断→脚本)│ +二次拓展     │ (并发 ≤2,--workers 1 走流式)
               │ 讲解:备课+分段并行    │ +组装+Studio │ 讲解片超时放宽到 3h
               │ (3 worker,≈3-10 分钟) │ 同步拉起     │
               └─ 失败可 /analyze 重跑 └─ 自动 check  └─ 成片就绪
+
+analyzed ──(分析完成后即可,与上面的 PPT 主线并列)──▶ avatar_building ──▶ 回到进入前的状态
+              「数字人播报视频」:配音 → 逐帧片段 → 顺序拼接(不经过 HyperFrames)
 ```
+
+关键设计(v2.1 数字人播报视频):
+- **支线状态 `avatar_building`**:只被 `POST /avatar/broadcast` 使用;进入前记住原状态,成功/失败都回到原状态(失败不毁任务)
+- **配音复用**:`state.vo_sig = sha1(逐帧台词 + 音色 + 引擎)`;指纹未变且配音文件齐全时跳过合成 —— 重跑/构建后重跑都是秒级。
+  **构建与播报共用同一份配音**:`stage_build` 默认也复用(`?force_voice=1` 强制重合成),所以「先构建后播报」与「先播报后构建」拿到的是同一版声音,顺序不影响结果。
+- **两条轨道共用片段缓存**:播报视频与成片用的是同一批 `.cache/avatar/*.mp4`(键 = 形象+音频+尺寸+帧时长+版本),所以画面与配音天然一致
+- **音轨跟画面走**:拼接前逐片段 ffprobe 真实时长,音轨按真实时长铺 —— 声明时长与编码时长的毫秒差逐帧累积会让 `-shortest` 从片尾裁掉台词
 
 关键设计(v1.0):
 - **构建期 Studio 同步拉起**:组装完成后、置 preview 状态前启动 Studio(`--foreground` 直管进程,绕开 CLI 会话注册表),状态翻转瞬间编辑器即就绪(零等待);Studio 启动串行化 + 槽满回收确认端口释放,进程按需自愈
@@ -91,7 +102,10 @@ uploaded → analyzing → analyzed → building → preview → rendering → r
 3. **语速恒为 1.0**(自然语速):tts_server 钳位下限 1.0,实测 speed<1 非线性恶化(0.8 → 5 倍时长怪音)
 4. **帧时长以真实配音为准**:DeepSeek 的 duration 仅是初始估时,构建时按 TTS 实际时长重算
 5. **字体完整版**(82MB 全 CJK):渲染必须完整版 OTF(子集字体缺生僻字会渲染成方框);网页端则用 woff2 子集化(约 3000 常用字 + 静态文案,每份 <300KB,unicode-range 回退系统字体)
-6. **Studio 唯一预览**:每任务一个 hyperframes preview 进程(槽位 4150-4153,构建期同步拉起、按需自愈),经 /api/studio/ 反向代理(全 HTTP 方法)接入;HTML/JS 绝对路径窄化重写(/assets/、/api/ 前缀)
+6. **Studio 唯一预览**:每任务一个 hyperframes preview 进程(槽位 4150-4153,构建期同步拉起、按需自愈),经 /api/studio/ 反向代理(全 HTTP 方法)接入;HTML/JS 绝对路径窄化重写(/assets/、/api/ 前缀)。
+   两处**必须自适应、不可写死**(写死的失败表现就是「构建预览一直转圈」或编辑器空转):
+   - **挂载前缀**:`_client_base(request)` 从 Referer/Origin 推断(根部署 `""`、nginx `/ttv/` 部署 `"/ttv"`)—— nginx 的 proxy_pass 会把前缀剥掉,后端自己看不见它
+   - **Studio 项目 id**:hyperframes 用**工作区根目录名**(`/mnt/workspace/ttv` → `ttv`,本工作区 `/data/Avatar` → `Avatar`),由 `_studio_project_id()` 向 Studio 的 `/api/projects` 探测(按 dir 匹配,失败按目录名兜底),请求与响应两侧做 id 桥接(前端 iframe 的 `#project/ttv` 保持不变)
 7. **安全**:docx zip 炸弹防护(50MB/2000 条目)、文件名净化、路径防穿越(projects 代理 '..' 拦截)、txt/md 上传 >1.5MB 拒绝、script title HTML 转义(存储型 XSS)、提示词注入隔离声明、前端 textContent 防 XSS
 
 ## 五、接口清单
@@ -102,8 +116,10 @@ uploaded → analyzing → analyzed → building → preview → rendering → r
 | POST | /api/jobs | 上传(file/text + style/font/palette/bg/motion/duration/video_kind);进行中任务 >4 返回 429 |
 | GET | /api/jobs/{id} | 状态 + 分析结果;?brief=1 轻量轮询(不含 script) |
 | POST | /api/jobs/{id}/analyze | 重新分析(analyzing/building/rendering 期间 409) |
-| POST | /api/jobs/{id}/build | 构建(配音+组装+自动 check) |
+| POST | /api/jobs/{id}/build | 构建(配音+组装+自动 check);默认**复用已有配音**,`?force_voice=1` 强制重新合成 |
 | POST | /api/jobs/{id}/render | 渲染 MP4 |
+| POST | /api/jobs/{id}/avatar/broadcast | 生成「数字人播报视频」(独立支线;analyzing/building/avatar_building/rendering 期间 409) |
+| GET | /api/jobs/{id}/avatar/broadcast/video | 播报视频预览/下载(支持 Range;未生成 404) |
 | DELETE | /api/jobs/{id} | 删除任务(rendered/failed 可删;building/rendering 409) |
 | GET | /api/jobs/{id}/video | 下载成片(按 state.render_format 检查对应产物,非 mp4 同样有入口) |
 | 全方法 | /api/studio/{id}/… | Studio 编辑器代理(原硬编码 GET 已放开为全 HTTP 方法) |
@@ -114,3 +130,62 @@ uploaded → analyzing → analyzed → building → preview → rendering → r
 - 新配色/背景:builder/styles.py 注册表加条目(前端自动出现)
 - 精确字幕对齐:tts.py 词级时间轴换 whisper 对齐
 - BGM:assets/bgm/ 放入同名 MP3 即生效
+- 数字人形象:builder/styles.py 的 AVATARS 注册表加条目(或用 TTV_AVATAR_IMAGE 指到任意图片)
+
+## 七、数字人片段(可选功能)
+
+用途:让数字人在成片左上角朗读该帧台词。默认关闭,任务级开关 `POST /api/jobs` 的 `avatar=true`
+(Web 端对应"数字人出镜"勾选框),也可用 `TTV_AVATAR=1` 全局默认开启。
+
+链路:
+
+```
+每帧台词音频(vo_NN.mp3,项目自身 TTS 产出)
+   └─ server/avatar.py → CyberVerse AvatarService(gRPC,127.0.0.1:50051,FlashHead)
+        └─ RGB24 原始帧 → ffmpeg 编码成 320×320 片段(仅画面,丢弃服务端音轨)
+             └─ 全局缓存 .cache/avatar/clip_<形象>_<音频>_<尺寸>_<帧时长>_<版本>.mp4
+渲染成片后
+   └─ server/avatar.py::composite_onto_video → ffmpeg 按帧绝对起点叠加到左上角
+```
+
+要点:
+
+- **时间轴唯一**:片段时长 = 帧总时长(`frames[].duration`,已由真实配音回填),
+  起点 = `assemble.build()` 返回的 `starts` —— 与字幕、音频同一时钟;片段自带音轨丢弃。
+- **待机片段**:无台词帧(opening/closing)与帧尾留白都用"闭嘴静默"片段填充,
+  每个形象只生成一段并全局缓存(`idle_*.mp4`)。
+- **圆角与投影在叠加时完成**,不烘焙进片段:H.264 不支持 alpha,烘焙会把透明区变成黑底;
+  叠加时用同一张灰度遮罩(`mask_<尺寸>_<半径>_v<版本>.png`)+ boxblur 投影,一次滤镜图完成。
+- **失败不阻塞出片**:数字人任一环节失败只写入 `job.state.avatar_error`,成片照常产出(仅无人像)。
+- 相关环境变量:`TTV_AVATAR` / `TTV_AVATAR_ADDR` / `TTV_AVATAR_IMAGE` / `TTV_AVATAR_SIZE` /
+  `TTV_AVATAR_X` / `TTV_AVATAR_Y` / `TTV_AVATAR_IDLE_SECONDS` / `TTV_AVATAR_CLIP_VERSION`。
+- 验证:`python deploy/verify-avatar.py`(真跑 assemble.build + 渲染 + 叠加 + 像素校验)。
+
+## 八、数字人播报视频(独立产物)
+
+用途:不改动 PPT 成片链路,单独产出**一条数字人朗读全篇旁白的视频** —— 用于单独预览、单独交付口播片。
+分析完成后即可生成,不需要先构建预览、也不需要等成片渲染。
+
+```
+分析完成(script.json)
+  └─ POST /api/jobs/{id}/avatar/broadcast → 状态 avatar_building
+       ├─ ① 合成配音   tts.synthesize_frames(复用 state.vo_sig 命中则跳过)
+       ├─ ② 逐帧片段   avatar.build_frame_clips(缓存命中则秒过)
+       └─ ③ 拼接       avatar.build_broadcast_video
+            ├─ 音轨:每帧 = 0.25s 静音 + 该帧配音 + 补静音到帧时长(build_broadcast_audio)
+            └─ 画面:各帧片段按时间轴顺序 concat(逐片段 ffprobe 真实时长)+ AAC 合流
+                 → renders/avatar.mp4(320×320,含音轨,不含 BGM/PPT 画面)
+```
+
+要点:
+
+- **产物是第三个 artifact**:`state.artifacts.avatar`(另两个是 ppt/final);`GET .../avatar/broadcast/video` 独立入口。
+- **步骤与预计时间**:`state.avatar_broadcast = {status, step_index, step, detail, done, total, eta_sec, elapsed_sec, error}`,
+  每一步由后端逐帧回写(前端只展示不猜);系数见 `config.AVATAR_RT_FACTOR / AVATAR_CONCAT_RT_FACTOR / AVATAR_TTS_RT_FACTOR`,
+  事前预计(`avatar_broadcast_est_sec`)以 `total_sec > 脚本帧时长之和 > duration_sec` 为基准。
+- **失败不伤主线**:失败只写 `avatar_broadcast.error` + `progress` 提示,状态回到进入前的那个,
+  脚本、成片、Studio 都不受影响;可反复重试。
+- **与成片的关系**:成片 = PPT 渲染 + 各帧片段**叠加**(同一时钟);播报视频 = 各帧片段**顺序拼接** + 连续音轨。
+  两者共用同一批缓存片段与同一份帧时长,差别只在"有没有 PPT 画面"。
+- 验证:`python server/smoke_test.py`(音轨拼接/ETA 纯函数)+ 端到端(见 `CHANGELOG.md`)。
+

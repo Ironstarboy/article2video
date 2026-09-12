@@ -1,8 +1,50 @@
 # 理论文章转视频网站 — 项目计划与进度
 
-> 最后更新:2026-08-28
+> 最后更新:2026-09-12
 > 部署位置:**VideoLab 云服务器**(SSH `videolab`,8.130.213.80),整个项目运行在服务器上。
 > 本地此文件夹保存:计划文档、源码副本、风格脚本、部署配置。
+
+## v2.2(2026-09-12)
+
+**修复:渲染期间「长时间没有反应、没有进度」**
+- `stage_render` 由 `subprocess.run` 一次性收走输出,改为**流式**读取并解析 hyperframes 的帧级进度(`Streaming frame n/N` / `Capturing frame n/N` / `Calibration: capturing test frame n/N`),界面显示「捕获帧 n/N · 已用 · 预计剩余」与进度条(两步:渲染 PPT 视频 → 叠加数字人片段);捕获阶段一旦有帧数,预计剩余改用**实测速率**反推
+- 叠加步骤解析 ffmpeg `-progress`,显示「叠加数字人片段 57% · 已用 0:08 · 预计剩余 0:06」
+- 速率系数实测校准并进 config:`RENDER_RT_FACTOR=0.8`(81s 片≈85s、152s 片≈200s)、`OVERLAY_RT_FACTOR=4.5`(81s 片 15s、152s 片≈40s)——只影响展示
+- **`ppt`/`final` 产物显式写进 `state.artifacts`**:此前渲染完只记 `avatar`,最终版靠 `render_format` 反推文件名,现在三个产物都在 state 里
+- 实测 81 秒成片:渲染 85s + 叠加 15s,进度从「准备中」→ 帧级 → 「编码封装」→ 叠加百分比全程可见(无头 Chrome 抓页面 DOM 复核)
+
+**修复:Studio 预览一直转圈(部署相关,两个硬编码)**- **硬编码 `/ttv/` 资源前缀**:Studio 代理把页面里的 `/assets/`、`/api/` 一律改写成 `/ttv/api/studio/<job>/…`。这在文档里的 nginx `/ttv/` 部署下成立,但应用挂在根路径时(直接访问后端、或未剥前缀的转发),Studio 的 JS/CSS 全部 404 —— 壳页面能加载、bundle 永远不到,表现就是「构建预览一直转圈」。改为按请求推断挂载前缀(`_client_base`:从 Referer/Origin 取 `/ttv` 或空),两种部署都对
+- **硬编码 Studio 项目 id `ttv`**:hyperframes 用**工作区根目录名**当项目 id(文档部署 `/mnt/workspace/ttv` → `ttv`;本工作区根 `/data/Avatar` → **`Avatar`**),写死导致 `/api/projects/ttv`、`/preview`、`/lint`、`/files/*` 全 404。改为向 Studio 的 `/api/projects` 探测真实 id(按 dir 匹配,失败按目录名兜底),请求/响应两侧做 id 桥接,前端 iframe 的 `#project/ttv` 无需改动
+- **`/api/studio/*` 只注册了 GET**:编辑器的保存/选择类请求走 PUT/POST,遇到 405。改为放开 GET/POST/PUT/PATCH/DELETE
+- 实测(根部署,无头 Chrome):Studio bundle 与其全部接口 200(`/api/projects/ttv`、`/preview`、`/lint`、`/files/index.html`、`/renders`),`PUT …/selection` 由 405 变 200,Studio SPA 正常启动
+
+**修复:两条轨道共用同一版配音(顺序不再影响结果)**
+- `stage_build` 改为默认**复用已有配音**(原先每次都删掉重合成)。本地 TTS 逐次结果并不稳定(实测同一句 4.08s / 20.00s / 20.00s),「先播报后构建」会拿到与播报视频不同的另一版声音;现在谁先跑谁定义配音,另一方复用,`state.vo_sig` + `project/script.json` 逐帧文本双重判定,脚本一改立刻重新合成
+- 副作用收益:每次「重新构建」省掉 1-3 分钟 TTS(实测 40s → 4s,配音文件逐字节不变)
+- 新增逃生口 `POST /api/jobs/{id}/build?force_voice=1`(强制重新合成,用于重掷不理想的配音)
+- 播报视频的 `stale` 标记只在**真的重新合成了配音**时打(复用同一版声音则仍然有效)
+
+**数字人播报视频(新功能:分析完成即可单独出片)**
+- 新增独立支线:分析完成后,页面「数字人播报视频」区块一键生成 —— 把逐帧数字人画面按时间轴顺序拼成一条 320×320 视频(含完整配音音轨),**不经过 HyperFrames 渲染**,不需要先构建预览、也不需要等成片
+- 生成步骤与预计时间:区块按「合成配音 → 生成数字人片段 → 拼接播报视频」三步展示,逐帧回写进度条、已用时间与预计剩余;点击前先给出预计耗时
+- 完成后就地独立预览(`<video>` 播放,支持 Range 拖动)与下载(显示格式 + 大小);产物记为第三个 artifact `state.artifacts.avatar → renders/avatar.mp4`
+- 配音复用:`state.vo_sig`(逐帧台词 + 音色 + 引擎摘要)未变且配音文件齐全时跳过合成,重跑由分钟级降到秒级
+- 音轨跟画面走:拼接前逐片段 ffprobe 真实时长,音轨按真实时长铺(帧首 0.25s 静音与成片 `data-start` 同口径),避免毫秒差逐帧累积被 `-shortest` 裁掉片尾
+- 失败无害:失败只写 `avatar_broadcast.error` 并回到进入前的状态,脚本/成片/Studio 均不受影响,可反复重试
+- 并发与状态:新增进行中状态 `avatar_building`(计入 `MAX_INFLIGHT_JOBS`,重启自动置 failed 可重跑);`/analyze`、`DELETE`、`/avatar/broadcast` 全部拒绝在其期间重入
+
+**接口与前端**
+- `POST /api/jobs/{id}/avatar/broadcast`(守卫用拒绝列表,已渲染的任务同样可再生成)、`GET /api/jobs/{id}/avatar/broadcast/video`
+- `GET /api/jobs/{id}` 新增 `avatar_broadcast_est_sec`(事前预计,基准取 `total_sec > 脚本帧时长之和 > duration_sec`)
+- 前端新增「数字人播报视频」面板(步骤芯片 / 进度条 / 已用与预计 / 错误条 / 播放器 / 下载);`avatar_building` 轮询 2s
+- 速度系数集中进 `server/config.py`(`TTV_AVATAR_RT_FACTOR`=0.85 实测、`TTV_AVATAR_CONCAT_RT_FACTOR`=15、`TTV_AVATAR_TTS_RT_FACTOR`=2.5),只影响展示不影响产物
+
+**重构与测试**
+- `stage_build` 的「拓展 + 配音 + 时长回填」抽成 `_synthesize_and_fit()` 与播报支线共用,构建行为不变(顺序、进度文案、清理时机逐条对齐)
+- `build_frame_clips` 增加 `on_frame` 结构化回调(逐帧进度);`tts.synthesize_frames` 增加 `progress_cb`;词级时间轴抽成 `tts.word_times()` 供配音复用路径重建
+- `jobs.Job` 增加 `artifact_path()` / `script()`;`artifacts` 报告改为遍历 `ARTIFACTS`
+- smoke_test 新增 15 项:音轨时长/采样率/帧首静音、耗时估算与三档 ETA、播报产物读写与缺失兜底、`word_times` 口径
+- 端到端实测(30 秒档宣传片):分析 → 播报视频首次 116s / 重跑 1.9s,产物 320×320 h264 + AAC 44.1k 单声道 74.75s;音轨静音段与帧结构逐段吻合(开场 5.17s 静音、句间 0.7-0.9s、结尾 3.5s),浏览器实测进度/ETA/播放器均正常
 
 ## v2.1(2026-09-10)
 

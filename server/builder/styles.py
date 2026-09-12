@@ -105,6 +105,24 @@ MOTION_PARAMS = {
     "still": {"overlap": 0.3, "push_up": False},
 }
 
+# ═══════════ 数字人形象(Avatars) ═══════════
+# 固定一个默认形象,不在前端让用户选;换图只需替换 file 指向的图片
+# (图片相对 assets/),或用环境变量 TTV_AVATAR_IMAGE 覆盖。
+AVATARS = {
+    "jinli": {
+        "name": "金立",
+        "desc": "复旦大学校长金立,新闻播报形象",
+        "file": "avatars/jinli.png",
+    },
+}
+DEFAULT_AVATAR = "jinli"
+
+
+def avatar_file(key: str | None = None) -> str:
+    """形象键 → assets/ 下的相对路径;未知键回落到默认形象。"""
+    a = AVATARS.get(key or DEFAULT_AVATAR) or AVATARS[DEFAULT_AVATAR]
+    return a["file"]
+
 
 def _combo_key(combo: dict) -> str:
     return f"{combo['font']}|{combo['palette']}|{combo['bg']}|{combo['motion']}"

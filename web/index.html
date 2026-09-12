@@ -167,6 +167,28 @@ table.frames input[type=number]{width:64px;}
 .edit-box textarea{width:100%;min-height:70px;border:1.5px solid var(--line-strong);border-radius:8px;padding:10px;font-size:13px;font-family:inherit;margin-bottom:8px;resize:vertical;background:var(--card);}
 .edit-box label{font-size:12.5px;color:var(--muted);display:block;margin-bottom:4px;}
 
+/* ── 数字人播报视频 ── */
+.bc-steps{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
+.bc-step{display:flex;align-items:center;gap:8px;border:1.5px solid var(--line);border-radius:999px;padding:5px 14px;font-size:12.5px;color:var(--muted);background:#FCFBF9;}
+.bc-step .n{width:18px;height:18px;border-radius:50%;border:1.5px solid var(--line-strong);display:flex;align-items:center;justify-content:center;font-size:11px;flex:none;line-height:1;}
+.bc-step.cur{border-color:var(--navy);color:var(--navy);background:var(--navy-soft);}
+.bc-step.cur .n{border-color:var(--navy);color:var(--navy);}
+.bc-step.done{border-color:var(--ok);color:var(--ok);background:var(--ok-soft);}
+.bc-step.done .n{border-color:var(--ok);background:var(--ok);color:#fff;}
+.bc-step.fail{border-color:var(--err);color:var(--err);background:var(--err-soft);}
+.bc-step.fail .n{border-color:var(--err);background:var(--err);color:#fff;}
+.bc-bar{height:6px;border-radius:3px;background:var(--line-strong);overflow:hidden;}
+.bc-bar i{display:block;height:100%;width:0;background:var(--red);border-radius:3px;transition:width .4s ease;}
+.bc-meta{margin-top:8px;font-size:12.5px;color:var(--muted);display:flex;gap:14px;flex-wrap:wrap;}
+.bc-msg{margin-top:12px;font-size:13px;border-radius:8px;padding:9px 14px;background:var(--err-soft);color:var(--err);border:1px solid var(--line);}
+.bc-note{margin-top:12px;font-size:12.5px;color:var(--muted);}
+.bc-player{margin-top:16px;display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap;}
+.bc-player video{width:340px;max-width:100%;border-radius:10px;background:#0B1220;display:block;}
+.bc-info{font-size:13px;color:var(--muted);line-height:2;}
+.bc-info b{color:var(--ink);font-weight:600;}
+.bc-dl{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;font-size:13.5px;border-radius:8px;border:1.5px solid var(--navy);background:var(--card);color:var(--navy);font-weight:600;text-decoration:none;}
+.bc-dl:hover{background:var(--navy-soft);}
+
 /* ── 视频区 ── */
 .video-row{margin-top:20px;}
 .studio-wrap{position:relative;}
@@ -287,6 +309,11 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
       <span id="durval">2<small>分钟</small></span>
     </div>
     <p class="hint" id="dur-hint" style="margin:12px 0 0;">时长按内容充实度填充:长文短时自动压缩,短文长时逐层展开。</p>
+    <label style="display:flex;align-items:center;gap:10px;margin:16px 0 4px;cursor:pointer;">
+      <input type="checkbox" id="avatar" style="width:18px;height:18px;accent-color:#A61B29;"/>
+      <span>数字人出镜:左上角数字人朗读该帧台词</span>
+    </label>
+    <p class="hint" style="margin:0 0 12px;">开启后逐帧生成数字人片段并叠加到成片左上角,构建与渲染时间会明显变长。</p>
     <button class="primary" id="submit" disabled>开始分析</button>
   </div>
 </div>
@@ -335,8 +362,36 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
     </div>
   </div>
 
+  <div class="step panel hidden" id="avatar-panel" style="padding:24px 26px;">
+    <h3>数字人播报视频</h3>
+    <p class="hint" style="margin-bottom:14px;">
+      把逐帧数字人画面按时间轴拼成一条独立视频(320×320,含完整配音音轨),与 PPT 成片分开生成,
+      不需要等成片渲染,可单独预览与下载。分析完成后即可生成。
+    </p>
+    <div class="bc-steps" id="bc-steps"></div>
+    <div class="hidden" id="bc-bar-wrap">
+      <div class="bc-bar"><i id="bc-bar-fill"></i></div>
+      <div class="bc-meta" id="bc-meta"></div>
+    </div>
+    <div class="bc-msg hidden" id="bc-msg"></div>
+    <div class="btnrow" style="margin-top:14px;">
+      <button id="btn-avatar-video" class="primary" style="width:auto;">生成数字人播报视频</button>
+      <a class="bc-dl hidden" id="bc-dl" download>下载播报视频</a>
+    </div>
+    <p class="bc-note" id="bc-note"></p>
+    <div class="bc-player hidden" id="bc-player">
+      <video id="bc-video" controls playsinline preload="metadata"></video>
+      <div class="bc-info" id="bc-info"></div>
+    </div>
+  </div>
+
   <div class="step panel video-row" style="padding:24px 26px;">
     <h3>视频预览(Studio 编辑器)</h3>
+    <div class="bc-steps hidden" id="render-steps"></div>
+    <div class="hidden" id="render-bar-wrap" style="margin-bottom:14px;">
+      <div class="bc-bar"><i id="render-bar-fill"></i></div>
+      <div class="bc-meta" id="render-meta"></div>
+    </div>
     <div class="studio-wrap">
       <div class="studio-box" id="studio-box"><div class="boot"><span class="spin"></span>构建完成后在此加载 Studio 编辑器</div></div>
       <div class="studio-resize-handle" id="studio-resize-handle" title="上下拖拽缩放预览窗口"></div>
@@ -347,7 +402,6 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
       <span class="fmt-row">格式
         <select id="fmt">
           <option value="mp4">MP4</option>
-          <option value="mkv">MKV</option>
           <option value="mov">MOV</option>
           <option value="webm">WebM</option>
         </select>
@@ -587,6 +641,7 @@ $("#submit").onclick = ()=>{
   fd.append("voice", chosenVoice);
   fd.append("duration", dur.value);
   fd.append("video_kind", chosenKind);
+  fd.append("avatar", $("#avatar").checked ? "true" : "false");
   const btn = $("#submit");
   btn.disabled = true; btn.textContent = "提交中…";
   fetch("./api/jobs", {method:"POST", body:fd})
@@ -600,7 +655,8 @@ const q = new URLSearchParams(location.search);
 jobId = q.get("job");
 const STATUS_TEXT = {
   uploaded:"已上传,排队分析", analyzing:"分析中", analyzed:"分析完成,可构建预览",
-  building:"构建中(配音与组装)", preview:"预览就绪", rendering:"渲染中(约 5-20 分钟)", rendered:"成片完成", failed:"出错",
+  building:"构建中(配音与组装)", preview:"预览就绪", rendering:"渲染中",
+  avatar_building:"数字人播报视频生成中", rendered:"成片完成", failed:"出错",
 };
 function setBanner(text, kind, busy){
   const b = $("#banner");
@@ -649,7 +705,7 @@ async function poll(){
     uploadedSince = null;
   }
   setBanner((STATUS_TEXT[status]||status) + (j.progress ? ":" + j.progress : ""),
-            null, ["analyzing","building","rendering","uploaded"].includes(status));
+            null, ["analyzing","building","avatar_building","rendering","uploaded"].includes(status));
   updateActions(j);
   // 脚本有更新才拉全量(轻量轮询不传 script,避免每轮传输数百 KB)
   if (j.script_updated_at && j.script_updated_at !== lastScriptAt && !editMode) {
@@ -657,6 +713,7 @@ async function poll(){
     fetchFullScript();
   }
   if (["analyzed","preview"].includes(status)) pollMs = 5000;
+  if (status === "avatar_building") pollMs = 2000;   // 播报视频进度逐帧刷新
   if (["rendered","failed"].includes(status)) pollMs = 15000;
   schedulePoll();
 }
@@ -678,8 +735,40 @@ document.addEventListener("visibilitychange", ()=>{
   else { poll(); schedulePoll(); }
 });
 
+/* ── 成片渲染进度(渲染 + 叠加两步,数据来自后端 job.render_progress) ── */
+function renderRenderProgress(j){
+  const rendering = j.status === "rendering";
+  const rp = j.render_progress || {};
+  $("#render-steps").classList.toggle("hidden", !rendering);
+  $("#render-bar-wrap").classList.toggle("hidden", !rendering);
+  if (!rendering) return;
+  const hasAvatar = (j.avatar_clips || 0) > 0;
+  const names = hasAvatar ? ["渲染 PPT 视频", "叠加数字人片段"] : ["渲染 PPT 视频"];
+  const cur = rp.step || 1;
+  const box = $("#render-steps");
+  box.innerHTML = "";
+  names.forEach((name, i)=>{
+    const n = i + 1;
+    const cls = n < cur ? "done" : (n === cur ? "cur" : "");
+    const chip = el("div", "bc-step" + (cls ? " " + cls : ""));
+    chip.appendChild(el("span", "n", n < cur ? "✓" : String(n)));
+    chip.appendChild(el("span", null, name));
+    box.appendChild(chip);
+  });
+  const pct = rp.percent == null ? 0 : rp.percent;
+  $("#render-bar-fill").style.width = Math.round(pct) + "%";
+  const bits = [];
+  if (rp.detail) bits.push(rp.detail);
+  if (rp.elapsed_sec) bits.push("已用 " + fmtClock(rp.elapsed_sec));
+  if (rp.eta_sec != null) bits.push("预计剩余 " + fmtClock(rp.eta_sec));
+  if (pct) bits.push(Math.round(pct) + "%");
+  $("#render-meta").textContent = bits.join(" · ");
+}
+
 function updateActions(j){
   const bb = $("#btn-build"), rb = $("#btn-render");
+  renderAvatarPanel(j);
+  renderRenderProgress(j);
   const hasScript = !!(j.script_updated_at);
   bb.disabled = !(["analyzed","preview","rendered","failed"].includes(j.status) && hasScript);
   bb.textContent = j.status==="preview" ? "重新构建" : "构建预览";
@@ -706,6 +795,125 @@ function updateActions(j){
   }
 }
 const STYLE_NAMES = {"solemn-red":"庄重肃穆 · 中国红","academic-ink":"清雅学术 · 墨黛青","modern-blue":"现代锐意 · 科技蓝"};
+
+/* ── 数字人播报视频(独立于 PPT 成片的一条支线) ──
+   数据全部来自后端 job.state.avatar_broadcast(后端逐帧回写,前端只展示不猜):
+   {status, step_index, step, detail, done, total, eta_sec, elapsed_sec, error} */
+const AVATAR_STEPS = ["合成配音", "生成数字人片段", "拼接播报视频"];
+const AVATAR_STEP_WEIGHT = [0.30, 0.65, 0.05];   // 进度条加权(与后端耗时占比一致)
+let lastAvatarStamp = null;
+function fmtClock(sec){
+  sec = Math.max(0, Math.round(sec || 0));
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
+  return (h ? h + ":" + String(m).padStart(2,"0") : String(m)) + ":" + String(s).padStart(2,"0");
+}
+function fmtSize(bytes){
+  if (!bytes) return "";
+  return bytes >= 1024*1024 ? (bytes/1024/1024).toFixed(1) + " MB" : Math.round(bytes/1024) + " KB";
+}
+function renderAvatarPanel(j){
+  const panel = $("#avatar-panel");
+  const hasScript = !!j.script_updated_at;
+  panel.classList.toggle("hidden", !hasScript);
+  if (!hasScript) return;
+  const ab = j.avatar_broadcast || {};
+  const generating = j.status === "avatar_building" && ab.status !== "done";
+  const done = ab.status === "done";
+  const failed = ab.status === "failed";
+  const busy = ["analyzing","building","avatar_building","rendering"].includes(j.status);
+
+  // 步骤清单:已完成打勾,当前高亮,失败标红
+  const stepBox = $("#bc-steps"); stepBox.innerHTML = "";
+  const cur = done ? AVATAR_STEPS.length + 1 : (generating || failed ? (ab.step_index || 1) : 0);
+  AVATAR_STEPS.forEach((name, i)=>{
+    const n = i + 1;
+    const cls = n < cur ? "done" : (n === cur ? (failed ? "fail" : "cur") : "");
+    const chip = el("div", "bc-step" + (cls ? " " + cls : ""));
+    chip.appendChild(el("span", "n", n < cur ? "✓" : String(n)));
+    chip.appendChild(el("span", null, name));
+    stepBox.appendChild(chip);
+  });
+
+  // 进度条 + 已用/预计(ETA 由后端给出,避免前端猜速率)
+  const wrap = $("#bc-bar-wrap");
+  if (generating || done) {
+    let acc = 0;
+    for (let i = 0; i < AVATAR_STEPS.length; i++) {
+      const idx = i + 1;
+      if (done || idx < (ab.step_index || 1)) acc += AVATAR_STEP_WEIGHT[i];
+      else if (idx === (ab.step_index || 1)) {
+        const frac = ab.total ? Math.min(1, (ab.done || 0) / ab.total) : 0;
+        acc += AVATAR_STEP_WEIGHT[i] * frac;
+      }
+    }
+    wrap.classList.remove("hidden");
+    $("#bc-bar-fill").style.width = Math.round(acc * 100) + "%";
+    const bits = [];
+    if (ab.detail) bits.push(ab.detail);
+    if (ab.elapsed_sec) bits.push("已用 " + fmtClock(ab.elapsed_sec));
+    if (generating && ab.eta_sec != null) bits.push("预计剩余 " + fmtClock(ab.eta_sec));
+    if (done && ab.duration) bits.push("总时长 " + fmtClock(ab.duration));
+    $("#bc-meta").textContent = bits.join(" · ");
+  } else {
+    wrap.classList.add("hidden");
+  }
+
+  // 失败原因(支线失败不影响脚本与成片,所以措辞要说清)
+  const msg = $("#bc-msg");
+  if (failed) {
+    msg.classList.remove("hidden");
+    msg.textContent = "生成失败:" + (ab.error || "未知错误") + " —— 分析结果与成片不受影响,可稍后重试。";
+  } else {
+    msg.classList.add("hidden");
+  }
+
+  // 主按钮
+  const btn = $("#btn-avatar-video");
+  btn.disabled = busy || !hasScript;
+  btn.textContent = generating ? "生成中…"
+    : (done || failed ? "重新生成播报视频" : "生成数字人播报视频");
+
+  // 事前预计耗时(没生成过时给用户一个量级;生成中由 ETA 接管)
+  const note = $("#bc-note");
+  if (!generating && !done && j.avatar_broadcast_est_sec) {
+    note.textContent = "预计耗时约 " + Math.max(1, Math.round(j.avatar_broadcast_est_sec / 60)) +
+      " 分钟(人像逐帧生成 + 拼接;已缓存的片段会跳过,重跑更快)。";
+  } else if (done && (ab.stale ||
+             (j.artifacts && j.artifacts.avatar &&
+              j.script_updated_at && j.artifacts.avatar.at * 1e9 < j.script_updated_at))) {
+    note.textContent = "⚠ 脚本或配音在这条播报视频之后又变过,重新生成可让两者一致(片段有缓存,重跑很快)。";
+  } else {
+    note.textContent = "";
+  }
+
+  // 产物:独立播放器 + 下载(按产物时间戳换源,避免轮询打断正在播放的视频)
+  const art = (j.artifacts || {}).avatar;
+  if (art) {
+    const stamp = art.at + ":" + art.bytes;
+    if (stamp !== lastAvatarStamp) {
+      lastAvatarStamp = stamp;
+      const url = "./api/jobs/" + jobId + "/avatar/broadcast/video?t=" + Math.round(art.at * 1000);
+      $("#bc-video").src = url;
+      $("#bc-dl").href = url;
+      $("#bc-dl").textContent = "下载播报视频(" + (art.fmt || "mp4").toUpperCase() + " · " + fmtSize(art.bytes) + ")";
+      $("#bc-dl").classList.remove("hidden");
+      $("#bc-info").textContent = "";
+      $("#bc-info").appendChild(el("div", null, "画面:320×320 数字人 · 含完整配音音轨"));
+      $("#bc-info").appendChild(el("div", null, "生成时间:" + new Date(art.at * 1000).toLocaleString("zh-CN")));
+      $("#bc-player").classList.remove("hidden");
+    }
+  }
+}
+$("#btn-avatar-video").onclick = ()=>{
+  const btn = $("#btn-avatar-video");
+  btn.disabled = true;
+  fetch("./api/jobs/" + jobId + "/avatar/broadcast", {method:"POST"}).then(r=>r.json()).then(j=>{
+    if (!j.ok) { toast(j.detail || "触发失败", true); btn.disabled = false; return; }
+    toast("已开始生成数字人播报视频");
+    poll();
+  }).catch(e=>{ toast("触发失败:" + e.message, true); btn.disabled = false; });
+};
+
 function el(tag, cls, text){
   const e = document.createElement(tag);
   if (cls) e.className = cls;
