@@ -168,7 +168,7 @@ def _vo_signature(script: dict, voice: str, provider: str) -> str:
 def _reuse_vo(script: dict, vo_dir: Path) -> dict | None:
     """已有配音可直接复用时重建 vo 映射(逐帧 ffprobe 时长 + 词级时间轴)。
 
-    任一台词帧缺文件或时长异常即返回 None(调用方重新合成),不做部分复用。
+    任一台词帧缺文件、时长异常或**是静音**即返回 None(调用方重新合成),不做部分复用。
     """
     out = {}
     for f in script.get("frames") or []:
@@ -180,6 +180,14 @@ def _reuse_vo(script: dict, vo_dir: Path) -> dict | None:
             return None
         dur = tts.audio_duration(p)
         if dur <= 0.2:
+            return None
+        # 静音占位绝不复用:构建时 TTS 不在线会落 anullsrc 占位(时长按字数估算,
+        # "文件在 + 时长正常"两条全成立),不查峰值的话 8016 起来之后重新构建/出播报
+        # 视频仍会静默沿用无声配音 —— 用户看到的永远是"数字人没有声音"。
+        peak = tts.audio_peak_db(p)
+        if peak is not None and peak < tts.MIN_PEAK_DB:
+            log.warning("配音复用被拒:%s 是静音(峰值 %.1f dBFS),改为重新合成",
+                        p.name, peak)
             return None
         out[f["index"]] = {"path": str(p), "duration": dur, "engine": "cached",
                            "words": tts.word_times(text, dur)}

@@ -1721,6 +1721,33 @@ try:
     ok("没有时间轴时不报降级",
        _main._cutout_missing({"cutout": True}, []) == "")
 
+    # ── 静音占位配音不得被"复用"(用户口径:数字人跑出来没有声音) ──
+    # 构建时 TTS 不在线 → _silence_placeholder 落 anullsrc 占位 mp3:时长按字数估算,
+    # "文件存在 + 时长正常"两条判据全部成立 —— 声音是静的,产物却看着"正常"。8016 起来
+    # 之后再构建/出播报视频,复用路径必须自己发现是静音并重烧,而不是静默沿用。
+    import subprocess as _sp_vo  # noqa: E402
+    _vo_txt = "讲信修睦、亲仁善邻,是中华优秀传统文化的重要元素。"
+    _vo_script = {"frames": [{"index": 2, "voiceover": _vo_txt}]}
+    _vo_dir = Path(_tmpf.mkdtemp(prefix="ttv_vo_"))
+    _sil = _vo_dir / "vo_02.mp3"
+    _sp_vo.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                "anullsrc=r=44100:cl=mono", "-t",
+                f"{max(2.0, len(_vo_txt) / 3.0 + 1.0):.2f}", "-ar", "44100",
+                "-ac", "1", str(_sil)], check=True)
+    _sdur = tts.audio_duration(_sil)
+    ok("静音占位的时长判据本身'合格'(只查时长查不出无声)",
+       _sdur > 0.2 and tts.duration_plausible(_vo_txt, _sdur),
+       f"时长={_sdur:.2f}s ratio={tts.duration_ratio(_vo_txt, _sdur):.2f}")
+    ok("静音占位配音不得被复用(必须重烧)",
+       _main._reuse_vo(_vo_script, _vo_dir) is None)
+
+    _sp_vo.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                f"sine=frequency=440:duration={_sdur:.2f}", "-ar", "44100",
+                "-ac", "1", str(_sil)], check=True)
+    _reuse = _main._reuse_vo(_vo_script, _vo_dir)
+    ok("有声配音照旧可复用(不误伤既有快路径)",
+       isinstance(_reuse, dict) and _reuse[2]["engine"] == "cached", str(_reuse))
+
     # ── 一键出片:构建 + 渲染一次触发(不拉 Studio、不停在预览态、失败账各记各的) ──
     # 重活(配音/组装/渲染/Studio)全部打桩,这里只验阶段编排与状态口径。
     _sb = _jobs_mod.create_job("solemn-red", 60, "build-direct.txt")

@@ -5,6 +5,7 @@
 CosyVoice3 worker,合成按帧轮询分发、并行执行(约 ×3 吞吐);单个实例挂了自动
 摘除,其余继续。池可用环境变量 TTV_TTS_POOL 覆盖(逗号分隔 URL)。
 """
+import logging
 import os
 import subprocess
 import threading
@@ -14,6 +15,8 @@ from pathlib import Path
 import httpx
 
 from config import CHARS_PER_SEC, LOCAL_TTS_URL
+
+log = logging.getLogger("ttv.tts")
 
 # 旁白起始偏移:帧开始后 0.25s 起念
 VO_OFFSET = 0.25
@@ -298,6 +301,11 @@ def _synth_frame(idx: int, text: str, voice: str, audio_dir: Path, speed: float,
                     break
                 dur = d2
     if engine is None:
+        # 三条合成路径全失败 = 本地池不可达(8016/8018/8019 都没起)。留静音占位让
+        # 构建能跑完,但**必须留痕**:否则只有 whisper 抽检(可关)才看得出来,用户
+        # 拿到的是一个音轨正常、内容全静的成片,只会说"数字人怎么没声音"。
+        log.warning("TTS 引擎全部不可达,配音回落静音占位:%s(%d 字)—— 起好 TTS 后"
+                    "重新构建即可重烧,别用这次产物", out.name, len(text.strip()))
         engine = _silence_placeholder(text, out)
         dur = audio_duration(out)
     return idx, {"path": str(out), "duration": dur, "words": word_times(text, dur),
