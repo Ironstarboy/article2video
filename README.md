@@ -89,7 +89,7 @@ bash deploy/start-all.sh      # 一键起全栈:后端与网页 8015 · 配音 8
 | 网络 | 可访问 DeepSeek 兼容网关、PyPI/npm、ModelScope(或 hf-mirror) | — |
 
 > [!IMPORTANT]
-> **torch 必须是 CUDA 12.8 轮子(`2.8.0+cu128`)**。RTX 5090 是 `sm_120`,老架构轮子(比如 cu121)会在加载内核时报 `no kernel image is available`。配音 venv 里这一条最容易漏 —— 它不是 pip 依赖树自动带进来的,必须显式装(见[第 4 步](#4-本地配音cosyvoice3))。
+> **torch 必须是 CUDA 12.8 轮子(`2.8.0+cu128`)**。RTX 5090 是 `sm_120`(Blackwell):实测该轮子里**编进了 `sm_120` 内核**(`torch.cuda.get_arch_list()` = `sm_70/75/80/86/90/100/120`);换成 cu121 这类老轮子没有对应内核,典型症状是 `no kernel image is available for execution on the device`(或 cuDNN/cuBLAS 直接起不来)。配音 venv 里这一条最容易漏 —— 它不随依赖树自动进来,必须显式装(见[第 4 步](#4-本地配音cosyvoice3))。
 
 ## 从零部署
 
@@ -213,6 +213,9 @@ curl -s http://127.0.0.1:8015/health          # 后端
 curl -s http://127.0.0.1:8016/health          # 配音(回报钉版版本)
 .venv/bin/python server/smoke_test.py         # 后端冒烟回归(须用 .venv 解释器,系统 python3 缺 httpx)
 node tests/avatar-page.test.js                # 前端页面逻辑回归(无 npm 依赖,仓库根直接跑)
+
+# GPU 栈自检:应打印 2.8.0+cu128 / 12.8 / (12, 0) / 含 'sm_120' 的 arch 列表
+tts-venv/bin/python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.get_device_capability(), torch.cuda.get_arch_list())"
 ```
 
 两份回归在本机均 **全部通过**;跑通后打开 `http://localhost:8015/`,上传仓库自带的示例文章 `tests/fixtures/test-article.md`、选最短时长出一条约 30 秒的片子,即可确认整条链路(分析 → 配音 → 渲染)。
