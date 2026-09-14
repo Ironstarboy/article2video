@@ -146,11 +146,16 @@ tts-venv/bin/pip install "transformers==4.51.3" "tokenizers==0.21.4"
 ### 5. 启动与自检
 
 ```bash
-# 一键启动全部(数字人 + 配音 + 后端)
-bash deploy/start-all.sh
-bash deploy/start-all.sh --no-avatar     # 只做纯 PPT 视频:跳过数字人,省 3-6 分钟预热
+# 一键启动 / 管理全栈(数字人 50051 + 配音 8016 + 后端与网页 8015)
+bash deploy/start-all.sh               # 起全栈;已在跑的**自动跳过**(可反复执行,补起缺的那个即可)
+bash deploy/start-all.sh status        # 看状态:端口 / 就绪度 / 各自 pid / GPU / 任务数
+bash deploy/start-all.sh logs          # 跟踪三份日志(Ctrl+C 只退出查看,不停服务)
+bash deploy/start-all.sh restart       # 强制全部重启(等价 start --force)
+bash deploy/start-all.sh stop          # 停全栈(终端下问一次;脚本里加 --yes 跳过)
+bash deploy/start-all.sh --no-avatar   # 只起后端 + 配音(纯 PPT 视频够用,省掉数字人 3-6 分钟预热)
+bash deploy/start-all.sh --no-wait     # 只负责拉起,不在前台等就绪
 
-# 或分步启动
+# 或分步启动(单服务粒度;注意这三个会先 pkill 旧进程,后端重启会打断进行中的任务)
 bash deploy/start-avatar.sh   # 数字人 gRPC 50051(首次 3-6 分钟:载权重 + torch.compile)
 bash deploy/start-tts.sh      # CosyVoice3 8016(多实例见 TTV_TTS_GPUS / TTV_TTS_PORTS)
 bash deploy/start.sh          # 后端与网页 8015
@@ -165,7 +170,7 @@ node tests/avatar-page.test.js                # 前端页面逻辑回归(形象�
 ```
 
 > [!TIP]
-> `deploy/*.sh` 可重复执行,会先杀掉旧进程再启动。停止:`pkill -f "uvicorn main:app"`(后端)、`pkill -f "tts_serve[r]"`(配音)、`bash cyberverse.sh stop`(数字人)。
+> `deploy/start-all.sh` 默认**跳过已在跑的服务** —— 三个服务互相独立,少哪个补哪个,不会"起了这个丢了那个",也不会打断进行中的任务;真要重启用 `restart`。就绪判定是**真探活**:后端/配音走 `/health`,数字人走 gRPC(端口开了 != 模型就绪)。常用环境变量:`TTV_PORT`(8015)、`TTV_TTS_PORTS`(`"8016"` 或 `"8016 8018 8019"`)、`TTV_AVATAR_ADDR`。
 
 ## 使用流程
 
