@@ -27,7 +27,7 @@ VENV="${TTV_TTS_VENV:-$ROOT/tts-venv}"
 COSYVOICE_SRC="${TTV_COSYVOICE_SRC:-$ROOT/cosyvoice-src}"
 
 if [ ! -x "$VENV/bin/python" ]; then
-  echo "错误:TTS venv 不存在($VENV/bin/python)。先按 BUILD.md 第四节创建。" >&2
+  echo "错误:TTS venv 不存在($VENV/bin/python)。先按 docs/BUILD.md 第四节创建。" >&2
   exit 1
 fi
 

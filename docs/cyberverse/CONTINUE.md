@@ -2,7 +2,7 @@
 
 > **用途**：把这个文件（或路径）贴给一个新的对话，即可无缝接着干。
 > **最后更新**：北京时间 2026-09-11 17:45 左右，由当前会话写入。
-> **配套文档**：`/data/Avatar/CyberVerse-DEPLOY-GPU.md`（从 0 部署手册）
+> **配套文档**：`docs/cyberverse/DEPLOY-GPU.md`（从 0 部署手册）
 > **交接下载说明**：`/data/Avatar/.wheels/README-DOWNLOAD.md`
 
 ---
@@ -212,8 +212,8 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:5173/
 
 | 文件 | 说明 |
 |---|---|
-| `/data/Avatar/CyberVerse-DEPLOY-GPU.md` | 从 0 部署手册（含国内源速查、7 个陷阱） |
-| `/data/Avatar/CyberVerse-CONTINUE.md` | 本文件（续接用） |
+| `docs/cyberverse/DEPLOY-GPU.md` | 从 0 部署手册（含国内源速查、7 个陷阱） |
+| `docs/cyberverse/CONTINUE.md` | 本文件（续接用） |
 | `/data/Avatar/.wheels/README-DOWNLOAD.md` | 人工下载交接说明 |
 | `/data/Avatar/.wheels/torch-reqs.txt` | PyTorch CUDA 12.8 全套锁定清单（29 包，≈5.3 GB） |
 | `/data/Avatar/.wheels/proj-reqs.txt` | 项目依赖锁定清单（147 包） |

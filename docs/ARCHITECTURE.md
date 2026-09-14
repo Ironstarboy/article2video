@@ -19,12 +19,18 @@
 
 ```
 vtt/
-├── README.md                使用说明
-├── ARCHITECTURE.md          本文件
-├── BUILD.md                 从零搭建全过程
-├── frames-schema.md         DeepSeek 输出契约(hyperframes 脚本 JSON)
+├── README.md                使用说明(从零部署 / 快速开始)
+├── CHANGELOG.md             版本与变更记录
+├── docs/                    文档
+│   ├── ARCHITECTURE.md      本文件
+│   ├── BUILD.md             从零搭建全过程(⚠️ 老 PPU 机器,历史文档)
+│   ├── CONTEXT.md           领域词汇表(帧 / 台词 / 成片…)
+│   ├── frames-schema.md     DeepSeek 输出契约(hyperframes 脚本 JSON)
+│   ├── 使用说明.md          面向使用者的操作手册
+│   ├── cyberverse/          数字人(CyberVerse / FlashHead)部署与启动手册
+│   └── adr/                 架构决策记录
 ├── styles/                  三套经典风格详细样式脚本(设计文档)
-├── server/                  后端(部署于 /mnt/workspace/ttv/server/)
+├── server/                  后端
 │   ├── main.py              FastAPI:任务 API(项目列表 GET /api/jobs、重命名、DELETE)、自动总结项目标题、阶段历史、Studio/项目代理、流水线阶段、check 质量门、Studio 槽位管理(串行化+自愈)、并发限制(LLM 信号量 6/渲染信号量 2/进行中任务 >4 返回 429)、预览音频看门狗注入
 │   ├── config.py            路径/端口/模型端点配置(CHARS_PER_SEC=4.2 语速常量全局引用)
 │   ├── extract.py           txt/md/docx 提取(zip 炸弹防护;txt/md 字节预检 >1.5MB 拒绝)

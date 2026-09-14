@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # CyberVerse 一键启动 / 停止 / 看状态
 #
-#   ./cyberverse.sh start    启动（已在运行的会自动跳过，可重复执行）
-#   ./cyberverse.sh stop     停止
-#   ./cyberverse.sh status   看状态（端口 + 健康检查 + 显存）
-#   ./cyberverse.sh logs     跟踪日志（Ctrl+C 退出，不停止服务）
+#   bash deploy/cyberverse.sh start    启动（已在运行的会自动跳过，可重复执行）
+#   bash deploy/cyberverse.sh stop     停止
+#   bash deploy/cyberverse.sh status   看状态（端口 + 健康检查 + 显存）
+#   bash deploy/cyberverse.sh logs     跟踪日志（Ctrl+C 退出，不停止服务）
 #
 # 启动顺序：推理服务 → Go API → 前端。Go API 依赖推理服务的 50051。
+# 仓库根按脚本自身位置推导（deploy/ 的上一级），换机器不用改脚本。
 set -uo pipefail
 
-ROOT=/data/Avatar
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO=$ROOT/CyberVerse-main
 TOOLS=$ROOT/.tools
 RUN=$REPO/.run

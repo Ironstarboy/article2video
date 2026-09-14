@@ -8,7 +8,7 @@
 ## 一、启动（就一条命令）
 
 ```bash
-/data/Avatar/cyberverse.sh start
+bash deploy/cyberverse.sh start
 ```
 
 - 第一次启动要等 **3–5 分钟**（加载数字人模型 + 编译加速），终端会停在"等待推理服务加载模型…"，这是正常的。
@@ -27,7 +27,7 @@ http://localhost:5173
 ## 三、看状态（任何时候想知道"它活着吗"）
 
 ```bash
-/data/Avatar/cyberverse.sh status
+bash deploy/cyberverse.sh status
 ```
 
 正常的输出长这样：
@@ -46,13 +46,13 @@ GPU          8824 MiB, 32607 MiB
 ## 四、停止
 
 ```bash
-/data/Avatar/cyberverse.sh stop
+bash deploy/cyberverse.sh stop
 ```
 
 ## 五、卡住了看日志
 
 ```bash
-/data/Avatar/cyberverse.sh logs        # 实时跟踪三个服务的日志，Ctrl+C 退出（不会停服务）
+bash deploy/cyberverse.sh logs        # 实时跟踪三个服务的日志，Ctrl+C 退出（不会停服务）
 ```
 
 ---
@@ -61,12 +61,12 @@ GPU          8824 MiB, 32607 MiB
 
 | 现象 | 先做什么 |
 |---|---|
-| 浏览器打不开页面 | 跑 `cyberverse.sh status`，看"前端"是不是"未监听"；再看 `logs` |
+| 浏览器打不开页面 | 跑 `deploy/cyberverse.sh status`，看"前端"是不是"未监听"；再看 `logs` |
 | 健康检查显示 `"status":"error"` 且 `inference_connected:false` | 推理服务没起来或还在加载。`tail -50 /data/Avatar/CyberVerse-main/.run/logs/inference.log` 看最后几行 |
 | 启动后过很久 50051 还是"未监听" | 正常情况首次要 3–5 分钟；超过 8 分钟看 inference.log 有没有报错 |
 | 说话没反应 / 没声音 | **还缺语音的云端 Key**，见第七节 |
 | 提示端口被占用 | 服务是别的方式启动的：`ss -ltnp \| grep -E ':(50051\|8080\|5173)'` 找到进程再 kill |
-| 想彻底重启 | `cyberverse.sh stop && sleep 5 && cyberverse.sh start` |
+| 想彻底重启 | `deploy/cyberverse.sh stop && sleep 5 && deploy/cyberverse.sh start` |
 
 ---
 
@@ -82,7 +82,7 @@ GPU          8824 MiB, 32607 MiB
 想换别的厂商（阿里百炼 / Gemini / OpenAI 等）：编辑 `/data/Avatar/CyberVerse-main/config/env`，填对应 Key，然后
 
 ```bash
-/data/Avatar/cyberverse.sh stop && sleep 5 && /data/Avatar/cyberverse.sh start
+bash deploy/cyberverse.sh stop && sleep 5 && bash deploy/cyberverse.sh start
 ```
 
 > 数字人**出画**完全不需要云端 Key；Key 只影响"语音对话"这一环。
@@ -109,7 +109,7 @@ RTP = 1.527 / 1.400 = 1.09
 | `height` / `width`: 464 → 416 或 384 | 分辨率和算力同时下降，明显更流畅 |
 | `tgt_fps: 20` → `15` | 降低目标帧率，更容易达标（画面不再那么顺滑） |
 
-改完必须重启：`cyberverse.sh stop && cyberverse.sh start`
+改完必须重启：`deploy/cyberverse.sh stop && deploy/cyberverse.sh start`
 
 **显存**：FlashHead 单独约占 **8.8 GB / 32 GB**，余量很充足（不是 24G 那种"刚好够用"）。
 
@@ -132,7 +132,7 @@ ssh -L 8443:127.0.0.1:8443 -L 5173:127.0.0.1:5173 -L 8080:127.0.0.1:8080 用户�
 
 | 用途 | 路径 |
 |---|---|
-| 一键脚本 | `/data/Avatar/cyberverse.sh` |
+| 一键脚本 | `deploy/cyberverse.sh` |
 | 程序本体 | `/data/Avatar/CyberVerse-main` |
 | 配置文件 | `CyberVerse-main/config/`（`env` 放 Key，`cyberverse.yaml` 主配置） |
 | 数字人参数 | `CyberVerse-main/config/avatar_models/flash_head.yaml` |
@@ -140,4 +140,4 @@ ssh -L 8443:127.0.0.1:8443 -L 5173:127.0.0.1:5173 -L 8080:127.0.0.1:8080 用户�
 | 模型权重 | `CyberVerse-main/checkpoints/`（15.4 GB） |
 | Python 环境 | `CyberVerse-main/.venv`（uv 管理，勿手动装包） |
 
-部署过程、踩坑记录、从 0 重装 → 见 `CyberVerse-DEPLOY-GPU.md`。
+部署过程、踩坑记录、从 0 重装 → 见 `DEPLOY-GPU.md`。

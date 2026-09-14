@@ -33,7 +33,7 @@ from config import CHARS_PER_SEC, COSYVOICE_MODEL_DIR, PINNED_TTS_DEPS, pinned_d
 # 而时长与峰值全部正常(2026-09-12 e868f32bec3d 实测 5/5 样本 ratio 0.84–0.88、峰值 -2dB),
 # 时长/静音验收一律放行。静默坏音比启动失败危险得多,所以这里直接拒绝启动。
 # 成因:tts-venv 用 `--system-site-packages` 建、没装官方 requirements(怕 torch 被降级),
-# 于是继承了系统里更新的 transformers。修法见 BUILD.md 第四节。
+# 于是继承了系统里更新的 transformers。修法见 docs/BUILD.md 第四节。
 def check_runtime(strict: bool = True) -> list:
     """返回与钉版不符的依赖描述;[strict] 时直接抛错拒绝启动。"""
     versions = {}

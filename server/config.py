@@ -25,7 +25,7 @@ QWEN_TTS_MODEL_DIR = Path(os.environ.get(
 COSYVOICE_SRC_DIR = Path(os.environ.get("TTV_COSYVOICE_SRC", str(ROOT / "cosyvoice-src")))
 TTS_VENV_DIR = Path(os.environ.get("TTV_TTS_VENV", str(ROOT / "tts-venv")))
 
-# CosyVoice3 锁定的运行时依赖(见 BUILD.md 第四节):语音 LLM 跑在 Qwen2 backbone 上,
+# CosyVoice3 锁定的运行时依赖(见 docs/BUILD.md 第四节):语音 LLM 跑在 Qwen2 backbone 上,
 # **只有**官方锁定的 transformers 能解码正确;4.52+ 会让 speech token 乱掉,听感是
 # 「读音完全不正常、断断续续」,而时长与峰值全部正常 —— 时长/静音验收发现不了。
 # tts 服务启动时硬校验(不符即拒启),smoke_test 另做一次环境校验。
