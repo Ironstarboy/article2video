@@ -38,6 +38,17 @@ for f in assets/fonts/*.otf; do
   [ "$sz" -ge 10000000 ] || { echo "错误:$f 仅 $sz 字节,疑似子集版(必须完整版 ≥10MB)"; exit 1; }
 done
 
+echo "== 前端 UI 字体子集(web/index.html 引用的 assets/fonts-woff2/ui-song.woff2) =="
+# 不生成的话首屏字体 404,只能回退系统字体(美观度下降,不影响出片)
+if "$PY" deploy/make-ui-font.py; then
+  # 直连 8015(不经 nginx)时前端根目录是 web/,相对路径 ./assets/ 落在 web/assets/;
+  # 走 nginx 时 /ttv/assets/ 已指向仓库根的 assets/,两份都留着才能两种访问方式都对
+  mkdir -p web/assets/fonts-woff2
+  cp -f assets/fonts-woff2/ui-song.woff2 web/assets/fonts-woff2/
+else
+  echo "⚠️  UI 字体子集生成失败(见上方报错);网页会回退系统字体,不阻塞出片"
+fi
+
 echo "== gsap =="
 [ -s assets/vendor/gsap.min.js ] || curl -fL --retry 2 -o assets/vendor/gsap.min.js \
   https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js
@@ -92,8 +103,10 @@ else
   echo "⚠️  抠像解释器不存在:$MATTE_PY(可用 TTV_MATTE_PYTHON 指向装有 onnxruntime 的解释器)"
 fi
 
-echo "== hyperframes CLI + Chrome(版本与 BUILD.md 一致:0.8.15) =="
-npm install -g hyperframes@0.8.15
+echo "== hyperframes CLI + Chrome =="
+# 版本可用 TTV_HYPERFRAMES_VERSION 覆盖;默认与实测环境一致(见 README「从零部署」第 2 步)
+HF_VERSION="${TTV_HYPERFRAMES_VERSION:-0.8.34}"
+npm install -g "hyperframes@$HF_VERSION"
 hyperframes browser ensure
 hyperframes doctor || true
 
@@ -104,13 +117,16 @@ if [ "${TTV_SKIP_NGINX:-0}" = "1" ] || [ ! -d /etc/nginx ]; then
 fi
 
 echo "== nginx =="
-cp deploy/nginx-ttv.conf /etc/nginx/ttv-locations.conf
+# 模板里的 alias 路径是老机器的占位(/mnt/workspace/ttv),按本次实际仓库根替换后再装
+sed "s#/mnt/workspace/ttv#$ROOT#g" deploy/nginx-ttv.conf > /etc/nginx/ttv-locations.conf
 "$PY" - <<'EOF'
 p = "/etc/nginx/sites-enabled/comfyui-20013"
 try:
     s = open(p).read()
 except FileNotFoundError:
     print(f"skip: {p} 不存在(非本机站点配置)")
+    print("      路由文件已生成:/etc/nginx/ttv-locations.conf ——")
+    print("      请自行在你的 server 块里加一行:include /etc/nginx/ttv-locations.conf;")
     raise SystemExit(0)
 if "ttv-locations" not in s:
     s = s.replace("    # WebSocket 支持", "    include /etc/nginx/ttv-locations.conf;\n\n    # WebSocket 支持")

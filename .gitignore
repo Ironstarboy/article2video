@@ -26,9 +26,11 @@ tts-venv/
 tts-qwen-venv/
 cosyvoice-src/
 assets/fonts-woff2/
+# 前端直连(不经 nginx)时用的 UI 字体镜像,由 deploy/setup.sh 从 assets/fonts-woff2 复制而来
+web/assets/
 
 # 生成产物(渲染成片等, 不入库, 仅保留本地)
-复旦大学校长-金立-对话视频.mp4
+assets/screenshots/demo-*.mp4
 
 # CyberVerse(第三方项目, 从 upstream 单独拉取): 代码与权重均不入库
 CyberVerse/
