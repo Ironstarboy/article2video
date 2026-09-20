@@ -1,13 +1,35 @@
 # CyberVerse GPU 部署（0 → 运行）
 
 单卡 **RTX 5090** + Ubuntu 22.04 + Python 3.10，用 **uv 隔离环境**，跑本地数字人 **FlashHead** + Go API + 前端。
-实测环境：RTX 5090 32GB / 驱动 595.58.03 / CUDA 12.8 / Python 3.10.12。全程 30–60 分钟，下载量约 21GB（权重 15.4GB + wheel 5GB）。
+实测环境：RTX 5090 32GB / 驱动 580.65.06 / CUDA 12.8 / Python 3.10.12。全程 30–60 分钟，下载量约 21GB（权重 15.4GB + wheel 5GB）。
 
 > 命令按顺序敲即可。**第 8 节「踩坑速查」是最省时间的部分**，卡住了先看它。
 
 ```bash
-export ROOT=/data/Avatar REPO=$ROOT/CyberVerse-main TOOLS=$ROOT/.tools WHEELS=$ROOT/.wheels
+# $ROOT 是**本仓库根目录**（本文统一用它；不要写死机器路径）
+export ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd || pwd)"
+export REPO=$ROOT/CyberVerse-main TOOLS=$ROOT/.tools WHEELS=$ROOT/.wheels
 ```
+> 实测机器上该值是 `/mnt/data/ttv`。若只想用 CyberVerse 的 gRPC 推理服务给本仓库出片，
+> 可直接用 `deploy/start-avatar.sh` 启动（它已封装第 3/6 节的环境变量与探活）。
+
+---
+
+## 0. 先拿到 CyberVerse 源码（本文档之外，最容易漏）
+
+**CyberVerse 不在本仓库内**，也不在任何公开模型仓库里；上游是 <https://github.com/Lynpoint/CyberVerse>（公开）。
+
+```bash
+cd "$ROOT"
+git clone https://gh-proxy.com/https://github.com/Lynpoint/CyberVerse.git CyberVerse-main   # 国内走 gh-proxy；直连慢
+# 或：git clone git@github.com:Lynpoint/CyberVerse.git CyberVerse-main
+```
+
+落位必须是 `<仓库根>/CyberVerse-main/`——`deploy/start-avatar.sh` 与 `deploy/cyberverse.sh`
+都按这个相对位置找它（可用 `TTV_CYBERVERSE_DIR` 覆盖）。
+
+> 实测参考：`main` 分支 HEAD `13a6a95b47e5e6f0809683458767746ad54d7d7f`，解压/克隆后约 667 个文件、**不含** `.git` 之外的权重。
+> 仓库**不跟踪** CyberVerse，所以它不会被本仓库的 `git pull` 影响。
 
 ---
 
@@ -28,27 +50,75 @@ apt-get install -y --no-install-recommends \
 
 ```bash
 mkdir -p $TOOLS/dl
-curl -fL -o $TOOLS/dl/go.tgz https://dl.google.com/go/go1.25.0.linux-amd64.tar.gz
+curl -fL -o $TOOLS/dl/go.tgz https://dl.google.com/go/go1.25.0.linux-amd64.tar.gz   # 直连可用
 mkdir -p $TOOLS/go && tar -C $TOOLS/go --strip-components=1 -xzf $TOOLS/dl/go.tgz
+# protoc 在 GitHub releases：国内直连很慢/会断，走 gh-proxy
 curl -fL -o $TOOLS/dl/protoc.zip \
-  https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip
+  "https://gh-proxy.com/https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip"
 mkdir -p $TOOLS/protobuf-29.3 && unzip -qo $TOOLS/dl/protoc.zip -d $TOOLS/protobuf-29.3
 ln -sf $TOOLS/go/bin/go /usr/local/bin/go
 ln -sf $TOOLS/protobuf-29.3/bin/protoc /usr/local/bin/protoc
 go version && protoc --version      # go1.25.0 / libprotoc 29.3
 ```
 
+> [!IMPORTANT]
+> **protoc 的查找路径有坑**：`generate_proto.sh` 依次找 `$PROTOC` → `$HOME/.local/cyberverse-tools/protobuf-29.3/bin/protoc` → `command -v protoc`。
+> 而 `start-avatar.sh` 会把 `HOME` 改写成 `$ROOT/.home` 并且**不设 `PROTOC`**，于是上面第二条路径会落空。
+> 第三条能兜住（前提是 `/usr/local/bin/protoc` 已在 PATH），但为了不依赖 PATH，**建议再多做一个软链**：
+> ```bash
+> mkdir -p $ROOT/.home/.local/cyberverse-tools/protobuf-29.3/bin
+> ln -sf /usr/local/bin/protoc $ROOT/.home/.local/cyberverse-tools/protobuf-29.3/bin/protoc
+> ```
+> 版本必须**恰好** `libprotoc 29.3`，`generate_proto.sh` 会硬校验并拒绝其他版本（为了 Go 产物可复现）。
+> Go 模块记得走国内源：`export GOPROXY=https://goproxy.cn,direct`。
+
 ## 3. uv 隔离环境
 
 ```bash
 export HOME=$ROOT/.home UV_CACHE_DIR=$ROOT/.cache/uv UV_PYTHON_INSTALL_DIR=$TOOLS/pythons
 export HF_HOME=$ROOT/.cache/huggingface TORCHINDUCTOR_CACHE_DIR=$ROOT/.cache/torch_inductor
-mkdir -p $HOME
-curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=$TOOLS/bin UV_NO_MODIFY_PATH=1 sh
-export PATH=$TOOLS/bin:$PATH
-cd $REPO && uv venv .venv --python 3.10
-uv pip install --python .venv/bin/python -e ".[dev,inference,flash_head]"
+mkdir -p "$HOME"
+
+# uv：astral.sh 的安装脚本在国内可能很慢，用 Python 包更稳（也可用官方脚本）
+python3 -m venv "$TOOLS/toolenv"
+"$TOOLS/toolenv/bin/pip" install -q -U uv modelscope     # modelscope 后面下权重要用
+UV="$TOOLS/toolenv/bin/uv"
+
+cd "$REPO" && "$UV" venv .venv --python 3.10
+
+# ── torch：先单独装（本机做法，确保走清华源）──
+# 注意：torch **没有**写在 pyproject.toml 的依赖里，但会被 xformers / accelerate / xfuser
+# 等**传递依赖**带进来（仓库自带的 uv.lock 中就有 torch 2.8.0，244 个包）。
+# 所以直接跑下面的 `uv pip install -e "..."` 也会装 torch；先单独装只是为了锁定索引、
+# 避开不通的 pypi.org，并让失败点更清晰。
+# 走清华 PyPI 即可拿到 +cu128；**别用 download.pytorch.org**（常见 403）。
+"$UV" pip install --python .venv/bin/python \
+  --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+  torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0
+
+# ── 项目依赖组 ──
+"$UV" pip install --python .venv/bin/python \
+  --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+  -e ".[dev,inference,flash_head]"
 ```
+> **关于 `uv.lock`（1.6MB）与"是否 uv 隔离环境"**：
+> `uv venv` 建出来的 `.venv` **是与系统包隔离的**（`pyvenv.cfg` 里 `uv = 0.12.17`、
+> `include-system-site-packages = false`、**不含 pip**），但**不等同于 `uv sync` 的锁文件环境**——
+> 上面用的是 `uv pip install`（pip 兼容接口），**绕过了仓库自带的 `uv.lock`**。原因是
+> `uv.lock` 的 `source` 记的是 `registry = "https://pypi.org/simple"`，而本机 pypi.org 不通
+> （仓库自己的 Makefile/文档也未提 `uv sync`）。
+>
+> **实测差异**（装完后与 `uv.lock` 逐包比对，232 个锁定包）：**一致 95 个 / 版本不同 51 个 / 未安装 86 个**。
+> - 版本漂移例：`diffusers` 0.38.0→**0.39.0**、`accelerate` 1.14.0→1.15.0、`grpcio` 1.81.1→1.84.0、
+>   `fastapi` 0.138.0→0.141.1、`llvmlite` 0.47.0→0.49.0、`mediapipe` 0.10.35→**1.0.1**。
+> - "未安装"的 86 个基本是**故意没装的组**（`rag`/`milvus`/`omni`/`live_act`，如 `chromadb`、`jsonschema`）。
+> - 该环境**已跑通完整出片**（1080p、含数字人叠加），所以漂移是可接受的；但要**严格复现**请到能访问
+>   pypi.org 的网络下用 `uv sync --extra dev --extra inference --extra flash_head`，或给 `uv sync` 指定可用索引。
+>
+> 对比：本仓库 article2video 的 `.venv` 同样隔离（`include-system-site-packages = false`），
+> 而 **`tts-venv` 是 `true`（不隔离）**——它刻意复用系统基础包，也正是"transformers 钉版最容易被带坏"的根因。
+> `--index-url` 也可以换成 `export UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` 一次性生效（pip 同理写 `~/.config/pip/pip.conf`）。
+> uv 缓存峰值约 8GB，装完可 `"$UV" cache clean` 回收（若大 wheel 已硬链到 venv，回收量可能很小）。
 
 - **HOME 必须指到工作区**：`/root` 可能是只读，且所有缓存默认写 `$HOME`。
 - **不要装 `.[all]`**：会拖入 `vllm`/`live_act`/`milvus`/`rag`，单卡 5090 跑不动 LiveAct 也不需要。
@@ -226,6 +296,59 @@ ffprobe -v error -show_entries stream=codec_name,width,height,nb_frames \
 想达标：`model_type: "lite"`、把 `height/width` 降到 416/384、或把 `tgt_fps` 降到 15。
 测法见 `$ROOT/.run/measure_rtp.py`（逐块打印 wall/playback/RTP 与稳态均值）。
 
+### 7.1 只给本仓库（article2video）出片时的验收
+
+如果只需 CyberVerse 的 gRPC 推理服务，**不必起 Go API 与前端**，用 `bash deploy/start-avatar.sh` 即可
+（它封装了第 3/6 节的环境变量，并且走**真 gRPC 探活**而不是只看端口——就绪会打印
+`← 数字人服务已就绪:avatar.flash_head 512x512 20fps`，首次约 **228 秒**）。
+
+```bash
+# 探活（后端自己的客户端）
+cd $ROOT && .venv/bin/python -c "import sys;sys.path.insert(0,'server');import avatar;print(avatar.probe())"
+# 期望：{'available': True, 'addr': '127.0.0.1:50051', 'model': 'avatar.flash_head',
+#        'server_size': '512x512', 'fps': 20, 'frames_per_chunk': 28}
+```
+
+**叠加是否真的生效，别只看日志**：勾选数字人的任务会同时产出
+`jobs/<id>/project/renders/ppt.mp4`（无数字人）与 `final.mp4`（含数字人），两者时长帧率一致，
+逐帧差分即可定位叠加区域（`cutout=false` 时是整块卡片，差异接近 100%；`cutout=true` 只保留人像，约 50%）：
+
+```bash
+# 以右上角 300px、cutout=true 为例：全帧平均差应很小，右上角区域平均差应极大
+ffmpeg -y -v error -ss 10 -i jobs/<id>/project/renders/ppt.mp4   -frames:v 1 /tmp/a.png
+ffmpeg -y -v error -ss 10 -i jobs/<id>/project/renders/final.mp4 -frames:v 1 /tmp/b.png
+# 依赖 Pillow 与 numpy(裸机没装先 pip install pillow numpy)
+python3 - <<'PY'
+from PIL import Image; import numpy as np
+a=np.asarray(Image.open('/tmp/a.png').convert('RGB')).astype(int)
+b=np.asarray(Image.open('/tmp/b.png').convert('RGB')).astype(int)
+d=np.abs(a-b).sum(axis=2); h,w=d.shape
+print('全帧平均差', round(d.mean(),2), '| 右上角320x320平均差', round(d[:320, w-320:].mean(),2),
+      '| 显著差异像素占比', f'{(d[:320,w-320:]>30).mean()*100:.1f}%')
+PY
+```
+实测参考值：全帧 9.8–10.2，右上角 167–172，占比 46.7–47.5%（`cutout=true`）。
+
+### 7.2 注意力后端：`flash_attn` / `sageattention` 是可选的加速项
+
+启动日志里那句
+`Flash Attention library "flash_attn" not found, using pytorch attention implementation`
+**不影响功能**，只是没用上更快的注意力实现。FlashHead 的选择顺序（见
+`models/flash_head/src/modules/flash_head_model.py` 的 `flash_attention()`）：
+
+1. `compatibility_mode=True` → PyTorch `F.scaled_dot_product_attention`
+2. `sageattention` 可用 → `sageattn`
+3. **FlashAttention 3**（`flash_attn_interface`）可用 → `flash_attn_func`
+4. **FlashAttention 2**（`flash_attn`）可用 → `flash_attn_func`
+5. 都没有 → PyTorch `F.scaled_dot_product_attention`
+
+FlashAttention 是 Dao-AILab 的 IO 感知**精确**注意力实现：通过分块 + 在线 softmax 避免把 S×S
+注意力矩阵完整写回 HBM，从而省显存、提速度（长序列收益最大）。它是**数值精确**的，不是近似，
+所以装不装都不会改变画面正确性，只影响速度与峰值显存。
+本机（RTX 5090 / sm_120）没装 `flash_attn`，走的是第 5 条 PyTorch SDPA，出片正常。
+想再压榨速度可优先试 `sageattention`（第 2 条，优先级更高且 pip 可装），`flash_attn` 在
+Blackwell 上需自行编译、耗时较长。
+
 ## 8. 踩坑速查
 
 | 症状 | 原因 | 解决 |
@@ -239,25 +362,36 @@ ffprobe -v error -show_entries stream=codec_name,width,height,nb_frames \
 | 集成测试 skip | 缺 `examples/girl.png` 或 `podcast_sichuan_16k.wav`（≥8s, 16k mono s16），或 CUDA 不可见 | 见第 7 节 |
 | `model_config_dir` / conda 路径报错 | Makefile 默认指向 `$HOME/miniconda3/envs/cyberverse` | 不用 conda：直接 `go build`（系统 pkg-config 已够） |
 | 磁盘不够 | 权重 15.4GB + wheel 5GB + 缓存数 GB | 预留 40GB+ |
+| 不知道 CyberVerse 从哪来 / `找不到 CyberVerse-main` | 它不在本仓库内，且本文档早期版本没写上游 | 见**第 0 节**：<https://github.com/Lynpoint/CyberVerse>，落到 `<仓库根>/CyberVerse-main/` |
+| GitHub 下 protoc/release 极慢或 ECONNRESET | 直连 GitHub | 走 `https://gh-proxy.com/<原始URL>`（实测 2MB/s） |
+| `uv pip install torch` 失败 / 403 | `download.pytorch.org` 被拒 | 改走清华 PyPI（`torch==2.8.0` 即 `+cu128`），见第 3 节 |
+| `ERROR: protoc version mismatch` 或 `protoc not found` | `start-avatar.sh` 把 `HOME` 改成 `$ROOT/.home` 且不设 `PROTOC` | 见第 2 节：补 `$ROOT/.home/.local/cyberverse-tools/protobuf-29.3/bin/protoc` 软链，或显式 `export PROTOC=...` |
+| `Flash Attention library "flash_attn" not found` | 可选加速库缺失 | **不影响功能**，回退到 PyTorch SDPA；说明见第 7.2 节 |
+| 磁盘被 uv 缓存吃掉几 GB | `UV_CACHE_DIR` 落在工作区 | `"$UV" cache clean`（大 wheel 已硬链时回收量可能很小） |
+| 数字人端口对外 | CyberVerse 默认绑 `0.0.0.0:50051`（本仓库后端只连 `127.0.0.1`） | 不需要对外时用防火墙/安全组收紧；它没有鉴权 |
 
 ## 9. 国内源速查（本机实测）
 
 | 用途 | 地址 | 实测 |
 |---|---|---|
-| PyPI | `https://pypi.tuna.tsinghua.edu.cn/simple` | 2.5–11 MB/s（大文件会断，配 curl） |
-| Go 模块 | `https://goproxy.cn,direct` | 好 |
-| 模型（首选） | ModelScope CLI | 9–12 MB/s |
+| PyPI | `https://pypi.tuna.tsinghua.edu.cn/simple` | **45 MB/s**（本次实测比早期记录的 2.5–11 快很多，大文件也没断） |
+| Go 模块 | `GOPROXY=https://goproxy.cn,direct` | 好 |
+| Go 工具链 | `https://dl.google.com/go/` | **17 MB/s**（直连可用） |
+| GitHub raw / release / clone | `https://gh-proxy.com/<原始URL>` | **2 MB/s**（直连 `raw.githubusercontent.com` 约 35 KB/s） |
+| chrome-headless-shell | `https://cdn.npmmirror.com/binaries/chrome-for-testing/<版本>/linux64/chrome-headless-shell-linux64.zip` | **4.6 MB/s**（Google 存储约 17 KB/s） |
+| 模型（首选） | ModelScope CLI | **4–6.5 MB/s**（比早期记录的 9–12 慢，15.4GB 约 40 分钟） |
 | 模型（备选） | `HF_ENDPOINT=https://hf-mirror.com` | 2.2 MB/s |
-| Go 工具链 | `https://dl.google.com/go/` | 好 |
-| ❌ 尽量避开 | `files.pythonhosted.org`（18KB/s）、`download.pytorch.org`（1.6MB/s）、`huggingface.co`（不通） | |
+| ❌ 尽量避开 | `pypi.org` / `files.pythonhosted.org`（**直接不通**）、`download.pytorch.org`（**403**，别用来装 torch）、`huggingface.co`（不通）、阿里云 `pytorch-wheels`（只有 ~65 KB/s） | |
 
 ## 10. 最短路径
 
 ```bash
-# 1) 系统依赖 + Go/protoc（第 1、2 节）
-# 2) uv venv + 装依赖（第 3 节；卡了就第 3.1 节离线）
-# 3) ModelScope 下权重（第 4 节，可与第 3 节并行）
+# 0) 拉源码到 <仓库根>/CyberVerse-main/（第 0 节；最容易漏的一步）
+# 1) 系统依赖 + Go/protoc（第 1、2 节；protoc 记得补 $ROOT/.home 下的软链）
+# 2) uv venv + torch + 装依赖（第 3 节；卡了就第 3.1 节离线）
+# 3) ModelScope 下权重（第 4 节，可与第 2 节并行）
 # 4) config + proto + 根目录配置（第 5 节）
-# 5) 三个终端起推理/API/前端（第 6 节）
-# 6) health + 集成测试（第 7 节）
+# 5) 起服务：只要给本仓库出片 → bash deploy/start-avatar.sh（只起 50051，见第 7.1 节）；
+#    要用 CyberVerse 自己的界面 → 三个终端起推理/API/前端（第 6 节）
+# 6) health + 集成测试（第 7 节）；本仓库侧用 avatar.probe() + 像素差分验收（第 7.1 节）
 ```

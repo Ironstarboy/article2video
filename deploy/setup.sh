@@ -23,8 +23,18 @@ mkdir -p jobs logs/studio logs/tts assets/fonts assets/bgm assets/vendor web/ass
 echo "== 字体(必须完整版 OTF:子集版会渲染方框,历史教训见 docs/问题修复说明) =="
 # 保存为代码期望的文件名(server/builder/assemble.py 的 FONT_FILES);
 # 注意上游已改名:SourceHanSerifCN→SourceHanSerifSC,NotoSansSC→NotoSansCJKsc。
+# TTV_GH_PROXY 用于国内加速 GitHub raw(例如 https://gh-proxy.com):
+#   只在直连失败后才回退到镜像;不设则行为与原来完全一致(直连失败即报错退出)。
+GH_PROXY="${TTV_GH_PROXY:-}"
 dl_font() { # <目标文件名> <上游 URL>
-  [ -s "assets/fonts/$1" ] || curl -fL --retry 2 -o "assets/fonts/$1" "$2"
+  [ -s "assets/fonts/$1" ] && return 0
+  curl -fL --retry 2 -o "assets/fonts/$1" "$2" && return 0
+  if [ -n "$GH_PROXY" ]; then
+    echo "  直连失败,改用镜像 $GH_PROXY"
+    curl -fL --retry 2 -o "assets/fonts/$1" "$GH_PROXY/$2"
+  else
+    return 1
+  fi
 }
 SH_BASE="https://raw.githubusercontent.com/adobe-fonts/source-han-serif/release/OTF/SimplifiedChinese"
 NOTO_BASE="https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/SimplifiedChinese"
@@ -33,9 +43,11 @@ dl_font "SourceHanSerifCN-Regular.otf" "$SH_BASE/SourceHanSerifSC-Regular.otf"
 dl_font "NotoSansSC-Regular.otf"       "$NOTO_BASE/NotoSansCJKsc-Regular.otf"
 dl_font "NotoSansSC-Bold.otf"          "$NOTO_BASE/NotoSansCJKsc-Bold.otf"
 ls -la assets/fonts/
-for f in assets/fonts/*.otf; do
+# 逐个点名校验:用 for f in assets/fonts/*.otf 的话,文件缺失时 glob 不展开、检查会被跳过
+for n in SourceHanSerifCN-Heavy.otf SourceHanSerifCN-Regular.otf NotoSansSC-Regular.otf NotoSansSC-Bold.otf; do
+  f="assets/fonts/$n"
   sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
-  [ "$sz" -ge 10000000 ] || { echo "错误:$f 仅 $sz 字节,疑似子集版(必须完整版 ≥10MB)"; exit 1; }
+  [ "$sz" -ge 10000000 ] || { echo "错误:$f 仅 $sz 字节,疑似缺失或子集版(必须完整版 ≥10MB)"; exit 1; }
 done
 
 echo "== 前端 UI 字体子集(web/index.html 引用的 assets/fonts-woff2/ui-song.woff2) =="
@@ -58,11 +70,18 @@ echo "== BGM(CC0 占位;可用授权曲目覆盖同名文件) =="
 # 三风格 BGM:solemn-red.mp3 / academic-ink.mp3 / modern-blue.mp3
 # 下载失败或源已失效时生成 60s 静音占位,渲染流程不受阻;后续人工替换正式曲目
 FREEPD_BASE="${TTV_BGM_BASE:-https://freepd.com/music}"
+# 注意:freepd.com 这三个 URL 已失效(实测 404),正常会走到下面的静音占位。
+# 要正式配乐请自备授权曲目覆盖同名文件,或用 TTV_BGM_BASE 指向自己的目录。
 try_dl() { curl -fL --retry 1 -s -o "$1" "$2" && [ -s "$1" ]; }
 try_dl assets/bgm/solemn-red.mp3   "$FREEPD_BASE/Epic%20Boss%20Battle.mp3" || true
 try_dl assets/bgm/academic-ink.mp3 "$FREEPD_BASE/Ambient%20Classical%20Guitar.mp3" || true
 try_dl assets/bgm/modern-blue.mp3  "$FREEPD_BASE/In%20The%20Clouds.mp3" || true
-for f in assets/bgm/*.mp3; do
+# 逐一点名兜底:不能用 `for f in assets/bgm/*.mp3` —— 目录为空时 glob 不展开,
+# 会把字面量 "*.mp3" 当文件名,在 assets/bgm/ 下生成一个无用文件(历史 bug)。
+mkdir -p assets/bgm
+rm -f 'assets/bgm/*.mp3' 2>/dev/null || true   # 清掉历史误产物
+for n in solemn-red academic-ink modern-blue; do
+  f="assets/bgm/$n.mp3"
   [ -s "$f" ] || ffmpeg -y -v error -f lavfi -i anullsrc=r=44100:cl=mono -t 60 -q:a 9 "$f"
 done
 ls -la assets/bgm/

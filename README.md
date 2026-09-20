@@ -93,7 +93,15 @@ bash deploy/start-all.sh      # 一键起全栈:后端与网页 8015 · 配音 8
 
 ## 从零部署
 
-下面命令按顺序执行即可;`$ROOT` 指仓库根目录(本机为 `/data/Avatar`,脚本全部按自身位置推导,不写死路径)。
+下面命令按顺序执行即可;`$ROOT` 指仓库根目录(脚本全部按自身位置推导,不写死路径,换机器不用改)。
+
+> [!TIP]
+> **国内网络先换源**,否则第 2-5 步会大量卡在下载上(实测数据见 [`docs/cyberverse/DEPLOY-GPU.md`](docs/cyberverse/DEPLOY-GPU.md) 第 9 节):
+> - **pip / uv** 换清华源:`export UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`,或写进 `~/.config/pip/pip.conf`。`pypi.org` 与 `files.pythonhosted.org` 常直接不通。
+> - **不要**用 `download.pytorch.org` 装 torch(常见 **403**);清华 PyPI 上的 `torch==2.8.0` 本身就是 `+cu128` 构建(依赖钉死 `nvidia-*-cu12==12.8.*`),已验证 `torch.__version__` 即 `2.8.0+cu128`。
+> - **GitHub raw / release / clone** 走代理 `https://gh-proxy.com/<原始URL>`(实测 2MB/s;直连约 35KB/s)。备选 `gitclone.com`,但它**不传子模块**,见第 4.2 步。
+> - **chrome-headless-shell** 走 npmmirror:`https://cdn.npmmirror.com/binaries/chrome-for-testing/<版本>/linux64/chrome-headless-shell-linux64.zip`(4.6MB/s;Google 存储约 17KB/s)。
+> - **权重**优先 ModelScope CLI(HuggingFace 直连不通,备选 `HF_ENDPOINT=https://hf-mirror.com`)。
 
 ### 1. 系统依赖
 
@@ -114,14 +122,30 @@ curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs
 node --version                     # v22.x
 
-sudo npm install -g hyperframes@0.8.34
-hyperframes browser ensure         # 下载 chrome-headless-shell(~260MB,落在 ~/.cache/hyperframes)
+# npm 11.19+ 默认禁止依赖跑安装脚本;而 onnxruntime-node 的 postinstall 会去
+# GitHub releases 拉 CUDA 包(国内常 ECONNRESET)。跳过它,基础二进制已在包里。
+sudo ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g hyperframes@0.8.34
+# 上面那条的副作用:bin 落成 644,不补可执行位会报 Permission denied
+sudo chmod +x "$(npm prefix -g)"/lib/node_modules/hyperframes/bin/*.mjs
+
+hyperframes browser ensure         # 下载 chrome-headless-shell(落在 ~/.cache/hyperframes)
+# 若下载极慢:改用 npmmirror 预放 zip 再重跑 ensure(见上面的「国内网络先换源」)
 hyperframes doctor                 # Node / FFmpeg / Chrome 三项应全绿
 ```
+
+> [!IMPORTANT]
+> **无头 Chrome 需要一套系统库**,漏装会报 `libatk-1.0.so.0: cannot open shared object file`
+> (此时 `hyperframes doctor` 仍可能显示 Chrome ✓,因为它只查文件存不存在):
+> ```bash
+> sudo apt-get install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 \
+>   libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 \
+>   libcairo2 libatspi2.0-0 libxshmfence1 fonts-liberation
+> ```
 
 > [!NOTE]
 > Node 不在 PATH 时(官方 tarball / nvm 安装),导出 `TTV_NODE_BIN=<node 所在 bin 目录>`;后端会把它前置到 PATH 再调用 hyperframes。
 > `deploy/setup.sh` 会用同一个版本再装一次(可用 `TTV_HYPERFRAMES_VERSION` 覆盖),两者不会打架;hyperframes 自带自动升级,升级因网络超时失败不影响出片。
+> **注意 `setup.sh` 里那次 `npm install` 不带上述 `ONNXRUNTIME_NODE_INSTALL_CUDA=skip`**,在受限网络下会失败;先手动按本节装好,或给 `npm` 配上 `allow-scripts` 与跳过 CUDA 包下载后再跑 `setup.sh`。
 
 ### 3. 主站(后端 + 网页)
 
@@ -138,7 +162,23 @@ python3 -m venv .venv
 bash deploy/setup.sh
 ```
 
-`setup.sh` 还会尽力往 `tts-venv` 里装 `onnxruntime`(抠像 worker 需要)。字体下载走 GitHub raw,国内网络不稳时可用代理/镜像预放好 `assets/fonts/` 四个 OTF(每个 ≥10MB,子集版会把生僻字渲染成方框);UI 字体子集若要单独重跑:`.venv/bin/python deploy/make-ui-font.py`。
+`setup.sh` 还会尽力往 `tts-venv` 里装 `onnxruntime`(抠像 worker 需要)。UI 字体子集若要单独重跑:`.venv/bin/python deploy/make-ui-font.py`。
+
+> [!IMPORTANT]
+> `setup.sh` 从 **GitHub raw** 下 4 个 OTF 字体,国内直连会长时间挂住。**建议先预放好** `assets/fonts/`
+> 四个文件(每个 ≥10MB;子集版会把生僻字渲染成方框,脚本会校验并报错),`setup.sh` 见到非空文件就跳过下载:
+> ```bash
+> P="https://gh-proxy.com/https://raw.githubusercontent.com"
+> curl -fL -o assets/fonts/SourceHanSerifCN-Heavy.otf   "$P/adobe-fonts/source-han-serif/release/OTF/SimplifiedChinese/SourceHanSerifSC-Heavy.otf"
+> curl -fL -o assets/fonts/SourceHanSerifCN-Regular.otf "$P/adobe-fonts/source-han-serif/release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf"
+> curl -fL -o assets/fonts/NotoSansSC-Regular.otf       "$P/notofonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf"
+> curl -fL -o assets/fonts/NotoSansSC-Bold.otf          "$P/notofonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf"
+> ```
+
+> [!WARNING]
+> `setup.sh` 里的 BGM 源(`freepd.com/music/...`)**三个 URL 均已失效(404)**,脚本会退化成 60 秒**静音占位**,不影响出片。
+> 想要配乐请自备授权曲目,按风格覆盖同名文件:`assets/bgm/{solemn-red,academic-ink,modern-blue}.mp3`。
+> 另外该兜底逻辑在 `assets/bgm/` 为空时会生成一个名为 `*.mp3` 的无用文件(glob 未匹配),删掉即可。
 
 ### 4. 本地配音(CosyVoice3)
 
@@ -150,27 +190,83 @@ bash deploy/setup.sh
 # 4.2 源码(需 Matcha-TTS 子模块)
 git clone --depth 1 https://github.com/FunAudioLLM/CosyVoice.git cosyvoice-src
 (cd cosyvoice-src && git submodule update --init)
+# 注意:有些代理/镜像(如 gitclone.com)不传子模块,third_party/Matcha-TTS 会是空目录,
+# 表现为 ModuleNotFoundError: No module named 'matcha'。此时手动补(commit 与上游钉的一致):
+#   rm -rf cosyvoice-src/third_party/Matcha-TTS
+#   git clone https://gh-proxy.com/https://github.com/shivammehta25/Matcha-TTS.git cosyvoice-src/third_party/Matcha-TTS
+#   git -C cosyvoice-src/third_party/Matcha-TTS checkout dd9105b34bf2be2230f4aa1e4769fb586a3c824e
 
 # 4.3 运行时(系统 python3.10;--system-site-packages 只为复用系统基础包)
 #     Ubuntu 24.04 默认没有 python3.10,需自行装(deadsnakes)或改用与实测一致的镜像
 python3.10 -m venv --system-site-packages tts-venv
+
+# 先钉死会被依赖树带坏的包(见下方 WARNING),后续每次装包都带 -c
+cat > tts-constraints.txt <<'EOF'
+transformers==4.51.3
+tokenizers==0.21.4
+huggingface-hub==0.36.2
+diffusers==0.29.0
+EOF
+
+# torch:用清华 PyPI 即可(pypi.org 常不通、download.pytorch.org 常 403);
+# 清华上的 torch==2.8.0 就是 +cu128 构建,装完 torch.__version__ 应为 2.8.0+cu128
 tts-venv/bin/pip install torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0 \
-  --index-url https://download.pytorch.org/whl/cu128
-tts-venv/bin/pip install modelscope wetext sentencepiece hydra-core HyperPyYAML \
+  --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+tts-venv/bin/pip install -c tts-constraints.txt modelscope wetext sentencepiece hydra-core HyperPyYAML \
   omegaconf librosa soundfile inflect pyworld conformer gdown wget lightning openai-whisper
-tts-venv/bin/pip install onnxruntime
-tts-venv/bin/pip install "transformers==4.51.3" "tokenizers==0.21.4"
+tts-venv/bin/pip install -c tts-constraints.txt onnxruntime
+tts-venv/bin/pip install -c tts-constraints.txt "transformers==4.51.3" "tokenizers==0.21.4"
+# 上面清单之外,tts_server.py 还实际需要这几个(清单里漏了,漏装会启动即报错):
+tts-venv/bin/pip install -c tts-constraints.txt fastapi uvicorn pydantic rich pyarrow \
+  diffusers==0.29.0 onnx matplotlib x-transformers
 ```
+
+> [!WARNING]
+> **不要**按 `cosyvoice-src/requirements.txt` 装依赖——那是**上游旧版**(torch 2.3.1),会覆盖掉刚装好的 cu128 栈。本仓库只采用本节这套钉版。
+> **另一个大坑**:装 `diffusers` 的最新版会把 `huggingface-hub` 升到 1.x,直接搞坏 `transformers==4.51.3`(报 `huggingface-hub>=0.30.0,<1.0 is required`)。而 CosyVoice 经 matcha 用到 `diffusers.models.lora.LoRACompatibleLinear`,该符号在新版 diffusers 已删,所以必须钉 `diffusers==0.29.0`。**任何往 `tts-venv` 装包的操作都要带 `-c tts-constraints.txt`。**
 
 > [!WARNING]
 > `transformers==4.51.3` / `tokenizers==0.21.4` **不能改**。语音 LLM 跑在 Qwen2 backbone 上,4.52+ 会让 speech token 序列乱掉:听感是「读音完全不正常、断断续续」,而**时长与峰值全正常**(时长/静音验收拦不住)。`tts_server` 启动时会硬校验版本,不符即拒启(`TTV_TTS_ALLOW_UNPINNED=1` 仅排障用)。
 > 配音 venv 是 `--system-site-packages` 建的,不显式安装就会继承系统里更新的 transformers —— 这一条最容易被漏掉。
 
-**三个零样本种子音色上游不提供**,必须从已有环境拷贝(约 1MB,没有它们无法克隆音色):
+**三个零样本种子音色上游不提供**(ModelScope 权重里没有 `asset-v2/`,官方 CosyVoice 仓库只有 `asset/zero_shot_prompt.wav`),而 `tts_server.py` 启动和预热都要读它们。全新机器有两个选择:
 
+**(a) 从已有环境拷贝**(约 1MB,最省事):
 ```bash
 models/CosyVoice3-0.5B/asset-v2/{male,female,male_narrator}.wav
 ```
+
+**(b) 没有现成的就自己造**——把官方 `zero_shot_prompt.wav` 当音色参考,逐句合成 `tts_server.py` 里 `VOICES` 声明的那三段文本,这样种子音频的逐字内容与其 `prompt_text` 严格一致,**不需要改任何代码**:
+```bash
+cat > /tmp/make-seed-voices.py <<'PY'
+import os, sys, torch, soundfile as sf, torchaudio
+ROOT = os.getcwd()
+sys.path[:0] = [f"{ROOT}/cosyvoice-src", f"{ROOT}/cosyvoice-src/third_party/Matcha-TTS"]
+def _load(p, **k):
+    d, sr = sf.read(str(p), dtype="float32", always_2d=True); return torch.from_numpy(d.T), sr
+def _save(p, t, sr, **k):
+    d = t.detach().cpu().numpy(); sf.write(str(p), d.T if d.ndim == 2 else d, sr)
+torchaudio.load, torchaudio.save = _load, _save          # 与 tts_server.py 相同的 shim
+from cosyvoice.cli.cosyvoice import AutoModel
+MD = f"{ROOT}/models/CosyVoice3-0.5B"; OUT = f"{MD}/asset-v2"; os.makedirs(OUT, exist_ok=True)
+REF = f"{ROOT}/cosyvoice-src/asset/zero_shot_prompt.wav"   # 逐字文本见下
+SYS = "You are a helpful assistant.<|endofprompt|>"
+SEEDS = {  # 文件名 → <|endofprompt|> 之后的逐字文本(与 tts_server.py 的 VOICES 一一对应)
+ "male.wav": "各位观众大家好,欢迎收看今天的节目。当前我国经济社会发展稳中有进,高质量发展扎实推进,各项事业取得新的重大成就。",
+ "female.wav": "大家好,欢迎来到今天的节目。理论创新每前进一步,理论武装就要跟进一步。让我们共同思考,共同学习。",
+ "male_narrator.wav": "新时代赋予新使命,新征程呼唤新作为。让我们坚定信心、真抓实干,在新赛道上跑出加速度。",
+}
+m = AutoModel(model_dir=MD, fp16=True); sr = int(getattr(m, "sample_rate", 24000))
+for name, text in SEEDS.items():
+    for r in m.inference_zero_shot(text, SYS + "希望你以后能够做的比我还好呦。", REF, stream=False):
+        w = r["tts_speech"].squeeze(0).detach().cpu().numpy()
+        sf.write(f"{OUT}/{name}", w, sr); print(f"{name}: {len(w)/sr:.2f}s peak={abs(w).max():.3f}"); break
+PY
+# 必须在**仓库根目录**执行(脚本用 os.getcwd() 当 $ROOT),且要用 tts-venv 解释器
+cd "$ROOT" && tts-venv/bin/python /tmp/make-seed-voices.py
+```
+实测产物:`male.wav` 10.36s / `female.wav` 10.16s / `male_narrator.wav` 9.60s(24kHz 单声道),时长与峰值正常。
+> 代价:三个音色共用同一个参考音色,**听感相同**。要三个不同声音需自备三段参考音频重跑。
 
 > [!TIP]
 > 权重目录里 `llm.rl.pt`、`speech_tokenizer_v3.batch.onnx`、`flow.decoder.estimator.fp32.onnx` 共约 **4.1GB 运行时用不到**(分别是备用 LLM、vLLM 在线路径、TRT 路径),新机器可以不下,省 4GB 下载。
@@ -179,12 +275,20 @@ models/CosyVoice3-0.5B/asset-v2/{male,female,male_narrator}.wav
 
 只有勾选「数字人出镜」的任务需要。整条线是独立第三方项目(**CyberVerse** + **SoulX-FlashHead-1_3B** 权重 15.4GB),完整步骤、离线 wheel 方案与踩坑速查见 [`docs/cyberverse/DEPLOY-GPU.md`](docs/cyberverse/DEPLOY-GPU.md),摘要:
 
+0. **先拿到源码**:CyberVerse **不在本仓库内**,上游是 <https://github.com/Lynpoint/CyberVerse>(公开)。落到 `<仓库根>/CyberVerse-main/`:
+   ```bash
+   git clone https://gh-proxy.com/https://github.com/Lynpoint/CyberVerse.git CyberVerse-main   # 国内走代理
+   ```
+   `deploy/start-avatar.sh` 与 `deploy/cyberverse.sh` 都按 `<仓库根>/CyberVerse-main` 找它(可用 `TTV_CYBERVERSE_DIR` 改)。
 1. `apt-get install -y libopus-dev libopusfile-dev libsoxr-dev pkg-config python3.10-dev`(缺 `python3.10-dev` 时 `torch.compile` 直接失败);
-2. Go 1.25 + protoc 29.3(Go API 与 `generate_proto.sh` 需要);
-3. `uv venv .venv --python 3.10` + `uv pip install -e ".[dev,inference,flash_head]"`,权重放 `CyberVerse-main/checkpoints/`;
-4. 代码与权重落在 `<仓库根>/CyberVerse-main/`(不入库,从上游单独拉取);音频编码器 `wav2vec2-base-960h` 一并下载。
+2. Go 1.25 + protoc 29.3(Go API 与 `generate_proto.sh` 需要;protoc 务必是 `libprotoc 29.3`,`generate_proto.sh` 会硬校验版本);
+3. `uv venv .venv --python 3.10`;torch 不在 `pyproject.toml` 的依赖列表里,但会被 `xformers` 等**传递依赖**带进来(仓库的 `uv.lock` 里就有 `torch 2.8.0`)。本机做法是**先单独装 torch**(确保走清华源、避开不通的 `pypi.org`),再 `uv pip install --index-url <清华> -e ".[dev,inference,flash_head]"`;权重放 `CyberVerse-main/checkpoints/`;
+4. 音频编码器 `wav2vec2-base-960h` 一并下载,与 FlashHead 权重同在 `checkpoints/` 下。
 
-不装数字人也能跑完 PPT 主线,启动时加 `--no-avatar` 即可(见下节)。
+> [!NOTE]
+> CyberVerse 钉 `transformers==4.57.3`,与本仓库 `tts-venv` 的 `4.51.3` **不同**——两者是**独立 venv**,互不影响,升级任一侧时别把另一侧带崩。
+
+不装数字人也能跑完 PPT 主线,启动时加 `--no-avatar` 即可(见下节);数字人只需它的**推理服务(gRPC 50051)**,不需要它自带的 Go API(8080)与前端(5173)。
 
 ### 6. 启动与自检
 
