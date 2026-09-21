@@ -1780,7 +1780,7 @@ try:
         job.set(total_sec=12.0)
         job.record_history("build", detail="总时长 12 秒")
 
-    def _stub_render(job, fmt="mp4"):
+    def _stub_render(job, fmt="mp4", force=False):
         _calls.append(("render", fmt, job.status))
         job.set(status="rendered", render_format=fmt)
         job.record_history("render", detail="成片 1.0 MB")
@@ -1809,7 +1809,7 @@ try:
         _bfail.append("build")
         raise RuntimeError("构建炸了")
 
-    def _count_render(job, fmt="mp4"):
+    def _count_render(job, fmt="mp4", force=False):
         _bfail.append("render")
 
     try:
@@ -1832,7 +1832,7 @@ try:
     def _ok_build(job, force_voice=False, preview=True):
         pass
 
-    def _boom_render(job, fmt="mp4"):
+    def _boom_render(job, fmt="mp4", force=False):
         raise RuntimeError("渲染炸了")
 
     try:
@@ -1899,7 +1899,7 @@ try:
            _res2 == {"ok": True, "direct": False}, str(_res2))
         ok("接口:只渲染仍要求已构建好预览",
            _bg and _bg[0][0] == "stage_render" and _bg[0][2].get("step") == "render"
-           and _bg[0][1] == ("mov",), str(_bg))
+           and _bg[0][1] == ("mov", False), str(_bg))
         _ar.state["status"] = "analyzed"
         ok("接口:analyzed 时只渲染被 409 挡下(必须先构建)",
            _code(lambda: _asyncio.run(
@@ -1907,6 +1907,21 @@ try:
         ok("接口:坏格式仍 400",
            _code(lambda: _asyncio.run(
                _main.api_render(_ar.id, _Req({"format": "avi"})))) == 400)
+        # force_render:忽略历史 PPT 渲染缓存,重渲染幻灯片(严格布尔:字符串不算)
+        ok("接口:force_render 传字符串不算布尔(400)",
+           _code(lambda: _asyncio.run(
+               _main.api_render(_ar.id, _Req({"force_render": "true"})))) == 400)
+        _bg.clear()
+        _ar.state["status"] = "preview"
+        _asyncio.run(_main.api_render(_ar.id, _Req({"format": "mp4", "force_render": True})))
+        ok("接口:force_render=true 透传给 stage_render",
+           _bg and _bg[0][0] == "stage_render" and _bg[0][1] == ("mp4", True), str(_bg))
+        _bg.clear()
+        _ar.state["status"] = "analyzed"
+        _asyncio.run(_main.api_render(
+            _ar.id, _Req({"format": "mp4", "build": True, "force_render": True})))
+        ok("接口:一键出片也能带 force_render",
+           _bg and _bg[0][0] == "stage_direct_render" and _bg[0][1] == ("mp4", True), str(_bg))
     finally:
         _main.run_in_background = _real_bg
 
@@ -1937,6 +1952,159 @@ try:
     ok("配音口径含钉版依赖与合成版本",
        "transformers==" in config.vo_runtime_fingerprint()
        and f"vo{config.VO_SYNTH_VERSION}" in config.vo_runtime_fingerprint())
+
+    # ── 纯 PPT 渲染缓存:只换数字人不重渲染幻灯片(用户口径「换数字人不该重烧 hyperframes」) ──
+    # PPT 画面只由脚本/样式/配音/渲染参数决定;数字人是渲染后由 ffmpeg 叠上去的。
+    _pj = _jobs_mod.create_job("solemn-red", 30, "ppt-cache.txt")
+    _pproj = _pj.paths()["project"]
+    for _d in ("renders", "assets/audio", "assets/bgm"):
+        (_pproj / _d).mkdir(parents=True, exist_ok=True)
+    _pframe = {"index": 1, "duration": 3.0}
+    (_pproj / "script.json").write_text(json.dumps({"frames": [_pframe]}), encoding="utf-8")
+    (_pproj / "assets" / "audio" / "vo_01.mp3").write_bytes(b"voice-one")
+    (_pproj / "assets" / "bgm" / "bgm.mp3").write_bytes(b"bgm-bytes")
+    _pj.set(avatar=True, avatar_geom={"corner": "tr", "size": 300, "cutout": False},
+            total_sec=3.0)
+
+    _sig0 = _main._ppt_render_signature(_pj, "mp4")
+    ok("PPT 渲染指纹稳定(同输入同指纹)",
+       _sig0 == _main._ppt_render_signature(_pj, "mp4"))
+    # 核心口径:换数字人(形象/位置/大小/抠像)绝不改指纹 —— 这正是"不重渲染"的依据
+    _pj.set(avatar_image_name="换了一张脸", avatar_image_file="other.png",
+            avatar_geom={"corner": "bl", "size": 480, "cutout": True})
+    ok("换数字人不改 PPT 指纹(不该重渲染幻灯片)",
+       _main._ppt_render_signature(_pj, "mp4") == _sig0)
+    ok("关掉出镜也不改 PPT 指纹",
+       _main._ppt_render_signature(_pj, "mp4") == _sig0)
+    _pj.set(avatar_geom={"corner": "tr", "size": 300, "cutout": False})
+    # 改台词 / 改样式 / 换配音 / 换格式 → 必须重渲染
+    (_pproj / "script.json").write_text(
+        json.dumps({"frames": [{"index": 1, "duration": 3.0, "voiceover": "改了台词"}]}),
+        encoding="utf-8")
+    _sig_text = _main._ppt_render_signature(_pj, "mp4")
+    ok("改台词改 PPT 指纹(必须重新渲染)", _sig_text != _sig0)
+    (_pproj / "script.json").write_text(json.dumps({"frames": [_pframe]}), encoding="utf-8")
+    _pj.state["combo"] = {"preset": "modern-blue", "font": "Sans", "palette": "blue",
+                          "bg": "grid", "motion": "push"}
+    ok("改样式改 PPT 指纹", _main._ppt_render_signature(_pj, "mp4") != _sig0)
+    _pj.state.pop("combo", None)
+    (_pproj / "assets" / "audio" / "vo_01.mp3").write_bytes(b"voice-two")
+    ok("换配音改 PPT 指纹(成片音轨来自渲染产物)",
+       _main._ppt_render_signature(_pj, "mp4") != _sig0)
+    (_pproj / "assets" / "audio" / "vo_01.mp3").write_bytes(b"voice-one")
+    ok("换格式改 PPT 指纹", _main._ppt_render_signature(_pj, "webm") != _sig0)
+    ok("输入复原后指纹回到原值(缓存才可能命中)",
+       _main._ppt_render_signature(_pj, "mp4") == _sig0)
+    # 模板/样式/组装器源码变了也要失效(不能只靠人记得改 PPT_RENDER_VERSION)
+    import types as _types  # noqa: E402
+    _fake_tpl = _types.ModuleType("ttv_fake_templates")
+    _fake_src = Path(_tmpf.mkdtemp(prefix="ttv_mod_")) / "templates.py"
+    _fake_src.write_text("# 模板改了\n", encoding="utf-8")
+    _fake_tpl.__file__ = str(_fake_src)
+    _real_tpl = _main.templates
+    try:
+        _main.templates = _fake_tpl
+        ok("模板源码变了 PPT 指纹也变", _main._ppt_render_signature(_pj, "mp4") != _sig0)
+    finally:
+        _main.templates = _real_tpl
+
+    # 缓存命中判定:要同时满足「指纹相符 + 格式相符 + 产物在且够大」
+    _ppt_file = _pproj / "renders" / "ppt.mp4"
+    ok("没有渲染记录时不命中", _main._ppt_cached_render(_pj, "mp4", _sig0) is None)
+    _ppt_file.write_bytes(b"p" * 20000)
+    _pj.record_ppt_render(_ppt_file, _sig0, "mp4")
+    ok("指纹与产物都在时命中", _main._ppt_cached_render(_pj, "mp4", _sig0) == _ppt_file)
+    ok("指纹不符不命中", _main._ppt_cached_render(_pj, "mp4", _sig_text) is None)
+    ok("格式不符不命中", _main._ppt_cached_render(_pj, "webm", _sig0) is None)
+    ok("渲染次数与复用次数分开记账",
+       _pj.ppt_render().get("renders") == 1 and _pj.ppt_render().get("reuses") == 0,
+       str(_pj.ppt_render()))
+    _pj.record_ppt_reuse()
+    ok("复用计数可累加", _pj.ppt_render().get("reuses") == 1)
+    _ppt_file.write_bytes(b"x" * 100)          # 产物过小(半成品)
+    ok("产物过小时不命中", _main._ppt_cached_render(_pj, "mp4", _sig0) is None)
+    _ppt_file.unlink()
+    ok("产物缺失时不命中", _main._ppt_cached_render(_pj, "mp4", _sig0) is None)
+
+    # stage_render 串起来:同一份输入第二次出片不再调 hyperframes,改台词/force 才重渲染
+    _rj = _jobs_mod.create_job("solemn-red", 30, "ppt-stage.txt")
+    _rproj = _rj.paths()["project"]
+    for _d in ("renders", "assets/audio", "assets/bgm"):
+        (_rproj / _d).mkdir(parents=True, exist_ok=True)
+    (_rproj / "script.json").write_text(json.dumps({"frames": [_pframe]}), encoding="utf-8")
+    (_rproj / "assets" / "audio" / "vo_01.mp3").write_bytes(b"voice-one")
+    (_rproj / "assets" / "bgm" / "bgm.mp3").write_bytes(b"bgm-bytes")
+    _rj.set(avatar=True, avatar_geom={"corner": "tr", "size": 300, "cutout": False},
+            total_sec=3.0)
+
+    _render_calls = []
+    _leaves_ppt = (_main._run_render, _main._overlay_timeline, _main.stop_studio,
+                   _main.export_final, _main.avatar.composite_onto_video,
+                   _main.avatar.ensure_mattes)
+
+    def _fake_run_render(job, cmd, total_sec, timeout):
+        _render_calls.append(list(cmd))
+        Path(cmd[cmd.index("--output") + 1]).write_bytes(b"p" * 20000)
+        return 0, ""
+
+    def _fake_overlay(base, timeline, out, **kw):
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_bytes(b"f" * 30000)
+        return Path(out)
+
+    try:
+        _main._run_render = _fake_run_render
+        _main._overlay_timeline = lambda job, proj: (
+            [{"clip": "/tmp/none.mp4", "start": 0.0, "duration": 3.0}]
+            if job.state.get("avatar") else [])
+        _main.stop_studio = lambda job: None
+        _main.export_final = lambda job, path: None
+        _main.avatar.composite_onto_video = _fake_overlay
+        _main.avatar.ensure_mattes = lambda timeline, **kw: timeline
+
+        _main.stage_render(_rj, "mp4")
+        ok("首次渲染真的调了 hyperframes", len(_render_calls) == 1, str(len(_render_calls)))
+        ok("首次渲染后记下 PPT 指纹", bool(_rj.ppt_render().get("sig")))
+        ok("首次渲染历史不提复用",
+           "复用历史 PPT" not in _rj.history()[-1]["detail"], _rj.history()[-1]["detail"])
+        # 只换数字人 → 直接复用上面的渲染,只重新叠加
+        _rj.set(avatar_image_name="另一张脸",
+                avatar_geom={"corner": "bl", "size": 480, "cutout": False}, status="preview")
+        _main.stage_render(_rj, "mp4")
+        ok("只换数字人不再重渲染 hyperframes", len(_render_calls) == 1, str(len(_render_calls)))
+        ok("复用历史渲染写进历史", "复用历史 PPT 渲染" in _rj.history()[-1]["detail"],
+           _rj.history()[-1]["detail"])
+        ok("复用后 ppt 缓存仍在原位(纯 PPT 版仍可下载)",
+           (_rproj / "renders" / "ppt.mp4").exists())
+        ok("复用后成片已更新(final 在)",
+           (_rproj / "renders" / "final.mp4").stat().st_size == 30000)
+        # 改台词 → 必须重新渲染
+        (_rproj / "script.json").write_text(
+            json.dumps({"frames": [{"index": 1, "duration": 3.0, "voiceover": "改了台词"}]}),
+            encoding="utf-8")
+        _rj.set(status="preview")
+        _main.stage_render(_rj, "mp4")
+        ok("改台词后重新渲染", len(_render_calls) == 2, str(len(_render_calls)))
+        # force:指纹没变也强制重渲染(怀疑历史幻灯片不对时的逃生口)
+        _rj.set(status="preview")
+        _main.stage_render(_rj, "mp4", force=True)
+        ok("force 强制重渲染(忽略缓存)", len(_render_calls) == 3, str(len(_render_calls)))
+        # 纯 PPT 成片(final)与 ppt 缓存并存:硬链接/复制都不能让叠加把缓存写坏
+        _rj.set(avatar=False, status="preview")
+        _main.stage_render(_rj, "mp4")
+        _ppt_file = _rproj / "renders" / "ppt.mp4"
+        _final_file = _rproj / "renders" / "final.mp4"
+        ok("不出镜时成片仍是纯 PPT 版且缓存保留",
+           _final_file.exists() and _ppt_file.exists())
+        _rj.set(avatar=True, status="preview")
+        _main.stage_render(_rj, "mp4")
+        ok("再叠加时不会把 ppt 缓存截坏(写 final 前先解开硬链接)",
+           _ppt_file.read_bytes()[:1] == b"p" and _ppt_file.stat().st_size == 20000,
+           f"ppt={_ppt_file.stat().st_size}B")
+        ok("叠加后 final 是叠加版", _final_file.read_bytes()[:1] == b"f")
+    finally:
+        (_main._run_render, _main._overlay_timeline, _main.stop_studio, _main.export_final,
+         _main.avatar.composite_onto_video, _main.avatar.ensure_mattes) = _leaves_ppt
 finally:
     _os.environ["TTV_ROOT"] = _orig_root2 or str(Path(__file__).resolve().parents[1])
     _il.reload(_config)

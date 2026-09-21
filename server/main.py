@@ -41,7 +41,7 @@ import avatar  # noqa: E402
 import avatar_library  # noqa: E402
 import preferences  # noqa: E402
 import settings  # noqa: E402
-from builder import assemble, styles  # noqa: E402
+from builder import assemble, styles, templates  # noqa: E402
 
 log = logging.getLogger("ttv.main")
 logging.basicConfig(level=logging.INFO,
@@ -604,6 +604,14 @@ def _run_check(job):
 # 曾收录 mkv,但 CLI 不认这个格式 —— 选它必然失败,已移除。
 RENDER_FORMATS = {"mp4", "mov", "webm"}
 
+# 纯 PPT 渲染缓存的口径版本(见 _ppt_render_signature)。
+# 改了 index.html 模板 / 渲染分辨率 / hyperframes 调用方式之后必须 +1:这些不在指纹的
+# 其它项里,不 +1 的话旧缓存会被判成"内容没变"而继续复用。quality/workers 单点在这里,
+# 改它们指纹会自动变(见 stage_render 的命令与 _ppt_render_signature)。
+PPT_RENDER_VERSION = 1
+PPT_RENDER_QUALITY = "high"
+PPT_RENDER_WORKERS = "1"
+
 # 渲染进度:hyperframes 在捕获阶段往 stdout 打这些行(实测格式见 docs/数字人操作按钮前端方案.md 1.9)
 _RENDER_FRAME_RE = re.compile(r"(?:Streaming|Capturing) frame (\d+)/(\d+)")
 _RENDER_CALIB_RE = re.compile(r"Calibration: capturing test frame (\d+)/(\d+)")
@@ -754,38 +762,128 @@ def export_final(job, path: Path) -> None:
             pass
 
 
-def stage_render(job, fmt: str = "mp4"):
+def _ppt_render_signature(job, fmt: str) -> str:
+    """纯 PPT 渲染的输入指纹:画面/配音/渲染参数任一变化都必须重新渲染。
+
+    覆盖真正决定 ppt.<fmt> 的东西 ——
+      · 渲染用的那版脚本(project/script.json,assemble 写下的、帧时长已按真实配音回填)
+      · 风格组合(换样式/字体/配色/动效)
+      · 逐帧配音文件与 BGM(它们会被 mux 进成片音轨)
+      · 格式与渲染参数(PPT_RENDER_* 口径版本)
+      · **模板/样式/组装器的源码摘要**(改了画面模板就自动失效,不必靠人记得改版本号)
+    数字人**不在**其中:形象/位置/大小/抠像都是渲染之后由 ffmpeg 叠上去的,
+    换数字人本来就不该重渲染 PPT —— 这正是本指纹存在的理由。
+
+    刻意不拿 index.html 的字节当指纹:字体子集化出的 woff2 每次构建都不完全相同
+    (实测同一段文本两次摘要不同),拿产物字节做指纹会让缓存永远命不中。
+    """
+    p = job.paths()
+    proj = p["project"]
+    # 项目内那份才是渲染真正用的(它带着按真实配音回填的帧时长);没建过项目时退回任务脚本
+    script_file = proj / "script.json"
+    if not script_file.exists():
+        script_file = p["script"]
+    parts = [f"v{PPT_RENDER_VERSION}", fmt, PPT_RENDER_QUALITY, PPT_RENDER_WORKERS,
+             "script:" + (avatar.hash_file(script_file) if script_file.exists() else "none"),
+             "style:" + json.dumps(_job_combo(job), ensure_ascii=False, sort_keys=True)]
+    for a in sorted((proj / "assets" / "audio").glob("*.mp3")):
+        parts.append(f"vo:{a.name}:{avatar.hash_file(a)}")
+    bgm = proj / "assets" / "bgm" / "bgm.mp3"
+    if bgm.exists():
+        parts.append("bgm:" + avatar.hash_file(bgm))
+    # 渲染口径的源码摘要:模板排版、样式注册表、组装器改了也必须重新渲染 ——
+    # 只靠 PPT_RENDER_VERSION 要人记得改,漏一次用户就会看到"改了模板却不生效"。
+    for mod in (templates, styles, assemble):
+        src = getattr(mod, "__file__", None)
+        if src and Path(src).exists():
+            parts.append(f"mod:{mod.__name__}:{avatar.hash_file(Path(src))}")
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _ppt_cached_render(job, fmt: str, sig: str) -> Path | None:
+    """指纹相符、产物仍在的纯 PPT 渲染缓存;不命中返回 None。
+
+    只认规范的 renders/ppt.<fmt>:这个文件是本系统自己渲染出来的纯 PPT 版
+    (旧任务迁移出来的 ppt.mp4 内容可能是叠加过的,但它没有指纹记录,自然不会命中)。
+    """
+    rec = job.ppt_render()
+    if rec.get("sig") != sig or rec.get("fmt") != fmt:
+        return None
+    p = job.paths()["project"] / "renders" / f"ppt.{fmt}"
+    try:
+        if p.exists() and p.stat().st_size >= 10000:
+            return p
+    except OSError:
+        return None
+    return None
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """把 src 作为 dst 呈现:优先硬链接(不占额外空间),失败退回复制。
+
+    纯 PPT 成片的 final 与 ppt 内容相同,硬链接后下载/播放/另存都正常。
+    但**写 dst 之前必须先删掉它**:若 dst 是硬链接,ffmpeg -y 截断 dst 会把同一
+    inode 的源文件(ppt 缓存)一起截掉 —— 见 stage_render 里叠加前的 unlink。
+    """
+    try:
+        dst.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def stage_render(job, fmt: str = "mp4", force: bool = False):
     if not _job_alive(job):
         return
     job.set(status="rendering", progress="排队等待渲染槽位…")
     with RENDER_SEM:
         p = job.paths()
         total_sec = float(job.state.get("total_sec") or 0)
-        job.set(progress=f"HyperFrames 渲染中({fmt})", render_progress={
-            "step": 1, "step_name": "渲染 PPT 视频", "detail": "准备中",
-            "done": 0, "total": None, "percent": 1, "elapsed_sec": 0, "eta_sec": None})
         # 两个产物(见 docs/数字人操作按钮前端方案.md 第十节):
-        #   ppt.<fmt>   纯 PPT 渲染 —— 一等产物,不再被叠加覆盖
+        #   ppt.<fmt>   纯 PPT 渲染 —— 一等产物,同时充当渲染缓存,不再被叠加覆盖
         #   final.<fmt> 叠加了数字人的最终版
         ppt = p["project"] / "renders" / f"ppt.{fmt}"
         final = p["project"] / "renders" / f"final.{fmt}"
-        # 渲染期间保留 Studio,预览不中断。注意:hyperframes 会在项目里建
-        # renders/work-*/ 临时目录,所以"只读项目文件"的说法不成立(实测见方案 10.6)
-        # 讲解视频可长达 30 分钟,渲染超时放宽到 3 小时
-        timeout = 10800 if job.state.get("video_kind") == "lecture" else 3600
-        # --workers 必须显式给 1:hyperframes 的流式编码闸门要求 workerCount === 1,
-        # 不传则 auto 会选到 5(本机),于是走落盘捕获并撞上磁盘预检(capture_disk),
-        # 在写第一个字节前就失败。实测:auto→29 秒失败;/ --workers 1→5m03s 出片。
-        # 详见 docs/数字人操作按钮前端方案.md 1.9 与 10.4。
-        code, out = _run_render(job, [
-            "hyperframes", "render", str(p["project"]),
-            "--output", str(ppt), "--format", fmt, "--quality", "high",
-            "--workers", "1",
-        ], total_sec, timeout)
-        if code != 0:
-            raise RuntimeError(f"渲染失败:{out[-1500:]}")
-        if not ppt.exists() or ppt.stat().st_size < 10000:
-            raise RuntimeError(f"渲染产物缺失或过小:{out[-600:]}")
+        # 纯 PPT 渲染可复用:只换了数字人(形象/位置/大小/抠像)时,脚本、样式、配音
+        # 全都没变,上一次的 ppt.<fmt> 原样可用 —— 直接进叠加(几秒),不再让 Chrome
+        # 逐帧重烧(几分钟)。只有脚本/样式/配音/格式变了才重新渲染,见 _ppt_render_signature。
+        sig = _ppt_render_signature(job, fmt)
+        cached = None if force else _ppt_cached_render(job, fmt, sig)
+        reused_ppt = cached is not None
+        if reused_ppt:
+            job.set(progress="复用历史 PPT 渲染(脚本与配音未变,跳过 HyperFrames)",
+                    render_progress={"step": 1, "step_name": "渲染 PPT 视频",
+                                     "detail": "复用历史渲染", "done": 1, "total": 1,
+                                     "percent": 85, "elapsed_sec": 0, "eta_sec": 0,
+                                     "ppt_reused": True})
+            job.record_ppt_reuse()
+            log.info("任务 %s 复用历史 PPT 渲染 %s(指纹 %s)", job.id, cached.name, sig)
+        else:
+            job.set(progress=f"HyperFrames 渲染中({fmt})", render_progress={
+                "step": 1, "step_name": "渲染 PPT 视频", "detail": "准备中",
+                "done": 0, "total": None, "percent": 1, "elapsed_sec": 0, "eta_sec": None})
+            # 渲染期间保留 Studio,预览不中断。注意:hyperframes 会在项目里建
+            # renders/work-*/ 临时目录,所以"只读项目文件"的说法不成立(实测见方案 10.6)
+            # 讲解视频可长达 30 分钟,渲染超时放宽到 3 小时
+            timeout = 10800 if job.state.get("video_kind") == "lecture" else 3600
+            # --workers 必须显式给 1:hyperframes 的流式编码闸门要求 workerCount === 1,
+            # 不传则 auto 会选到 5(本机),于是走落盘捕获并撞上磁盘预检(capture_disk),
+            # 在写第一个字节前就失败。实测:auto→29 秒失败;/ --workers 1→5m03s 出片。
+            # 详见 docs/数字人操作按钮前端方案.md 1.9 与 10.4。
+            code, out = _run_render(job, [
+                "hyperframes", "render", str(p["project"]),
+                "--output", str(ppt), "--format", fmt,
+                "--quality", PPT_RENDER_QUALITY, "--workers", PPT_RENDER_WORKERS,
+            ], total_sec, timeout)
+            if code != 0:
+                raise RuntimeError(f"渲染失败:{out[-1500:]}")
+            if not ppt.exists() or ppt.stat().st_size < 10000:
+                raise RuntimeError(f"渲染产物缺失或过小:{out[-600:]}")
+            # 只有渲染成功且产物合格才记指纹:失败/半成品绝不能被下一次复用
+            job.record_ppt_render(ppt, sig, fmt)
         # 数字人叠加:用 assemble 的同一时钟把各帧片段叠到任务选定的角落(默认右上)。
         # 有片段 → 叠到 final;无片段(含"不出镜")→ 纯 PPT 版本身就是最终版。
         timeline = _overlay_timeline(job, p["project"])
@@ -802,7 +900,7 @@ def stage_render(job, fmt: str = "mp4"):
             job.set(progress="叠加数字人片段", render_progress={
                 "step": 2, "step_name": "叠加数字人片段", "detail": "准备中",
                 "done": 0, "total": round(total_sec or 0), "percent": 85,
-                "elapsed_sec": 0,
+                "elapsed_sec": 0, "ppt_reused": reused_ppt,
                 "eta_sec": round(total_sec / max(0.5, OVERLAY_RT_FACTOR)) if total_sec else None})
             overlay_started = time.time()
 
@@ -818,10 +916,16 @@ def stage_render(job, fmt: str = "mp4"):
                         "detail": f"{done_sec:.0f}/{total_out:.0f} 秒",
                         "done": round(done_sec, 1), "total": round(total_out, 1),
                         "percent": round(85 + pct * 14, 1),
-                        "elapsed_sec": round(elapsed, 1),
+                        "elapsed_sec": round(elapsed, 1), "ppt_reused": reused_ppt,
                         "eta_sec": None if eta is None else round(eta)})
 
             try:
+                # final 可能还是上一次"纯 PPT 成片"留下的 ppt 硬链接:必须先解开,
+                # 否则 ffmpeg -y 截断 final 会把同一 inode 的 ppt 缓存一起截掉(见 _link_or_copy)
+                try:
+                    final.unlink(missing_ok=True)
+                except OSError:
+                    pass
                 avatar.composite_onto_video(ppt, timeline, final,
                                             size=geom["size"], corner=geom["corner"],
                                             cutout=geom["cutout"],
@@ -833,9 +937,13 @@ def stage_render(job, fmt: str = "mp4"):
                 log.warning("数字人叠加失败: %s", e)
                 final.unlink(missing_ok=True)
                 job.set(avatar_error=str(e)[:160])
-        if not final.exists():
-            # 未开数字人,或叠加失败 → 最终版就是纯 PPT 版
-            ppt.replace(final)
+        if not (overlaid and final.exists()):
+            # 未开数字人 / 叠加失败 / 叠加组件没产出 → 最终版必须是**纯 PPT 版**。
+            # 这里不能只看"final 不存在":关掉出镜后重新渲染时,上一版带人像的 final
+            # 还在磁盘上,不管它就会交付旧人像(与「关掉出镜必须是纯 PPT 版」直接冲突)。
+            # 用硬链接呈现 PPT 缓存,不额外占空间;不再 replace —— ppt.<fmt> 是渲染缓存,
+            # 必须留在原位给下一次复用(见 _link_or_copy)。
+            _link_or_copy(ppt, final)
         # 产物路径显式记进任务状态(has_video / 下载入口 / 过期判定都以 artifacts 为准;
         # 此前只有 final 靠 render_format 反推,artifacts 里始终没有 ppt/final)
         if final.exists():
@@ -850,7 +958,8 @@ def stage_render(job, fmt: str = "mp4"):
     job.set(status="rendered", progress="", render_format=fmt,
             render_progress={"step": 1, "step_name": "渲染 PPT 视频", "detail": "完成",
                              "done": 1, "total": 1, "percent": 100,
-                             "elapsed_sec": 0, "eta_sec": 0})
+                             "elapsed_sec": 0, "eta_sec": 0,
+                             "ppt_reused": reused_ppt})
     # 历史记录:这一步出了什么、多大、带不带数字人(项目列表据此直达成片)
     try:
         size_mb = final.stat().st_size / 1048576 if final.exists() else 0.0
@@ -859,20 +968,23 @@ def stage_render(job, fmt: str = "mp4"):
     job.record_history("render",
                        detail=f"{fmt.upper()} · {float(job.state.get('total_sec') or 0):.0f} 秒"
                               + (f" · {size_mb:.1f} MB" if size_mb else "")
+                              + (" · 复用历史 PPT 渲染" if reused_ppt else "")
                               + (f" · 已叠加数字人({len(timeline)} 段)"
                                  + ("·抠像" if _avatar_geom(job).get("cutout") else "")
                                  if overlaid else " · 纯 PPT"),
                        artifact="final", fmt=fmt,
+                       ppt_reused=reused_ppt,
                        avatar_clips=len(timeline) if overlaid else 0,
                        avatar_cutout=bool(_avatar_geom(job).get("cutout")) if overlaid else False)
 
 
-def stage_direct_render(job, fmt: str = "mp4"):
+def stage_direct_render(job, fmt: str = "mp4", force: bool = False):
     """「一键出片」:按当前脚本与数字人设置构建,完成后立即渲染,中途不停在预览态。
 
     与「构建预览 → 渲染成片」两次点击只差两件事:① 构建段不拉 Studio(见 stage_build 的
     preview=False);② 构建完不等用户再点一次。产物、时长、历史与失败口径与分步走完全一致
     (两个阶段原样复用),所以状态机不需要第二套状态:building → rendering → rendered / failed。
+    force=True 表示忽略历史 PPT 渲染缓存、强制重渲染幻灯片(见 stage_render)。
 
     失败的账各记各的(build 的失败记 build、render 的记 render),与分步走时看到的完全一样;
     dispatch 处传 step=None,避免 run_in_background 再按"渲染失败"记一遍。
@@ -884,7 +996,7 @@ def stage_direct_render(job, fmt: str = "mp4"):
             job.record_history("build", status="failed", detail=str(e)[:160])
             raise
         try:
-            stage_render(job, fmt)
+            stage_render(job, fmt, force)
         except Exception as e:  # noqa: BLE001
             job.record_history("render", status="failed", detail=str(e)[:160])
             raise
@@ -1561,6 +1673,10 @@ async def api_render(job_id: str, request: Request):
       {"format": "mp4"}               —— 只渲染(要求已经构建好预览)
       {"format": "mp4", "build": true} —— 「一键出片」:先按当前脚本与数字人设置构建
       (配音 / 组装 / 数字人片段),完成后立即渲染 —— 不必先点「构建预览」再点「渲染成片」。
+
+    可选 force_render:true —— 忽略历史纯 PPT 渲染缓存,强制让 HyperFrames 重渲染幻灯片。
+    默认(false)在脚本/样式/配音都没变时(典型:只换了数字人)直接复用上次渲染的
+    renders/ppt.<fmt>,只把新数字人叠上去,省掉几分钟的逐帧渲染。
     """
     job = get_job(job_id) or _http404()
     body = {}
@@ -1577,6 +1693,9 @@ async def api_render(job_id: str, request: Request):
     direct = body.get("build", False)
     if not isinstance(direct, bool):
         raise HTTPException(400, "build 需要 true 或 false")
+    force = body.get("force_render", False)
+    if not isinstance(force, bool):
+        raise HTTPException(400, "force_render 需要 true 或 false")
     if direct:
         # 与 api_build 同一张允许表:分析完成 / 预览就绪 / 已出片 / 失败都能一键重跑
         if job.status not in ("analyzed", "preview", "rendered", "failed"):
@@ -1586,11 +1705,11 @@ async def api_render(job_id: str, request: Request):
         # 状态在 dispatch 之前翻转:构建要跑几分钟,否则连点两下会并发起两条出片流水线
         job.set(status="building", progress="", error=None, direct_render=True)
         # step=None:两个阶段的失败历史由 stage_direct_render 自己按阶段记
-        run_in_background(job, stage_direct_render, fmt, step=None)
+        run_in_background(job, stage_direct_render, fmt, force, step=None)
         return {"ok": True, "direct": True}
     if job.status not in ("preview", "rendered", "failed"):
         raise HTTPException(409, f"当前状态 {job.status} 不能渲染")
-    run_in_background(job, stage_render, fmt, step="render")
+    run_in_background(job, stage_render, fmt, force, step="render")
     return {"ok": True, "direct": False}
 
 

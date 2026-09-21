@@ -595,6 +595,12 @@ footer{max-width:1080px;margin:0 auto;padding:0 24px 40px;color:var(--faint);fon
     <p class="hint" style="margin:10px 0 0;">
       「一键出片」＝ 构建(配音/组装/数字人片段)+ 渲染一次跑完,中途不用再点;想先看 Studio 时间线就用「构建预览」。
     </p>
+    <p class="hint" style="margin:6px 0 0;">
+      <label class="bc-check" for="force-ppt" title="默认会用上一次渲染好的幻灯片(脚本、样式、配音没变时),只重新合成数字人;怀疑幻灯片画面不对时再勾这个">
+        <input type="checkbox" id="force-ppt"/>
+        强制重新渲染幻灯片(默认复用历史渲染:只换数字人时不必重渲染)
+      </label>
+    </p>
     <div id="dl"><a id="dl-link" target="_blank">下载成片 <small id="dl-size"></small></a></div>
     <p class="bc-note hidden" id="dl-export"></p>
   </div>
@@ -1071,8 +1077,10 @@ function renderRenderProgress(j){
   if (bar) bar.style.display = building ? "none" : "";
   // 构建段还没有权威的片段数(avatar_clips 是上一次构建的结果),先按任务的出镜开关摆上
   const hasAvatar = (j.avatar_clips || 0) > 0 || (building && !!j.avatar);
+  // 后端复用了历史 PPT 渲染(只换了数字人,脚本/样式/配音没变)时,第一步直接标完成
+  const pptStepName = (!building && rp.ppt_reused) ? "复用历史 PPT(未重渲染)" : "渲染 PPT 视频";
   const names = (direct ? ["构建(配音/组装/片段)"] : [])
-    .concat(hasAvatar ? ["渲染 PPT 视频", "叠加数字人片段"] : ["渲染 PPT 视频"]);
+    .concat(hasAvatar ? [pptStepName, "叠加数字人片段"] : [pptStepName]);
   const base = direct ? 1 : 0;                          // 直达出片时「渲染 PPT」排在第 2 步
   const cur = building ? 1 : Math.min(base + (rp.step || 1), names.length);
   const box = $("#render-steps");
@@ -1784,9 +1792,12 @@ $("#btn-revoice").onclick = ()=>{
     poll();
   }).catch(e=>toast("重新合成失败:" + e.message, true));
 };
+/* 强制重渲染幻灯片:勾上就忽略历史 PPT 渲染缓存(见后端 stage_render 的 force)。
+   只换了数字人时不必勾 —— 默认复用历史渲染,几秒就能出片。 */
+function forceRenderPPT(){ const b = $("#force-ppt"); return !!(b && b.checked); }
 $("#btn-render").onclick = ()=>{
   fetch("./api/jobs/"+jobId+"/render", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({format: $("#fmt").value})}).then(r=>r.json()).then(j=>{
+    body: JSON.stringify({format: $("#fmt").value, force_render: forceRenderPPT()})}).then(r=>r.json()).then(j=>{
     if (!j.ok) { toast(j.detail || "渲染触发失败", true); return; }
     $("#btn-render").disabled = true;
     $("#btn-render").textContent = "渲染中…";
@@ -1802,7 +1813,7 @@ $("#btn-direct").onclick = ()=>{
   bd.textContent = "出片中…";
   $("#studio-box").innerHTML = '<div class="boot boot-direct"><span class="spin"></span>一键出片:构建完成后自动渲染,不用再点。</div>';
   fetch("./api/jobs/"+jobId+"/render", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({format: $("#fmt").value, build: true})}).then(r=>r.json()).then(j=>{
+    body: JSON.stringify({format: $("#fmt").value, build: true, force_render: forceRenderPPT()})}).then(r=>r.json()).then(j=>{
     if (!j.ok) { toast(j.detail || "出片触发失败", true); poll(); return; }
     toast("已开始一键出片(构建完成后自动渲染)");
     poll();

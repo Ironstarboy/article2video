@@ -93,6 +93,16 @@ analyzed / preview / rendered / failed ──▶ building ──▶ rendering �
 - **前端两处入口**:详情页主按钮「一键出片」+ 项目列表卡片(有脚本且不在忙态才出现,`GET /api/jobs` 为此带上 `script_updated_at` 与 `direct_render`)。进度区在直达出片时多一段"构建"步骤,但**不给百分比** —— 构建段(配音/组装/逐帧片段)没有可量化的进度,只显示后端 `progress` 原文案,不摆假进度条
 - **顺带修的陈旧播放器**:再次出片后成片 URL 没变,原来的 `<video>` 会继续放上一版(用户以为"渲染没生效");改为按 `artifacts.final` 的 `at:bytes` 指纹决定是否重建播放器 —— 指纹没变就不动,不打断正在播放的视频
 
+关键设计(v2.16 纯 PPT 渲染复用):
+- **问题**:「一键出片」每次都从零跑完整条流水线 —— 只换了一张数字人形象(脚本、PPT 样式、配音一字未改)也要让 Chrome 逐帧重渲染几分钟幻灯片
+- **分工**:`ppt.<fmt>`(纯 PPT 渲染)与数字人叠加是**两步**,数字人是渲染**之后**由 ffmpeg 叠上去的 —— 所以 PPT 画面只由「脚本 + 样式 + 配音 + 渲染参数」决定,与数字人无关
+- **渲染缓存指纹**(`main._ppt_render_signature`):`sha1(PPT_RENDER_VERSION + fmt + PPT_RENDER_QUALITY + PPT_RENDER_WORKERS + project/script.json 摘要 + 风格组合 + 逐帧配音摘要 + BGM 摘要 + builder 模板/样式/组装器源码摘要)`,`state.ppt_render` 记 `{sig,fmt,path,bytes,at,renders,reuses}`。指纹相符且 `renders/ppt.<fmt>` 在(≥10KB)→ **跳过 HyperFrames**,直接进叠加;否则照旧渲染并在**成功之后**才记指纹(失败/半成品绝不留可复用记录)
+- **为什么不用 index.html 的字节做指纹**:字体子集化出的 woff2 每次构建都不同(实测同一段文本两次摘要不一致),产物字节做指纹会让缓存永远命不中。所以指纹只覆盖**输入**
+- **配音进指纹**:`ppt.<fmt>` 的音轨就是配音+BGM(`composite_onto_video` 用 `-map 0:a?` 直接搬),所以**换声音(哪怕台词没变)也必须重渲染** —— 逐帧 mp3 内容摘要正是这一条
+- **ppt 缓存必须留在原位**:叠加输出是 `final.<fmt>`,没有再开数字人时用**硬链接**把 ppt 呈现成 final(不额外占空间);**写 final 之前一律先 unlink**(否则 ffmpeg `-y` 截断同一 inode 会把 ppt 缓存一起截掉)。这同时修掉一个旧 bug:关掉出镜后重新渲染,旧 final(带人像)还在磁盘上,`if not final.exists()` 会把它当成本次产物交付
+- **逃生口**:`force_render:true` 忽略缓存强制重渲染;前端在渲染按钮下方有「强制重新渲染幻灯片」勾选框(默认不勾)
+- **回归**:`server/smoke_test.py` 32 项 —— 指纹稳定性、换数字人/关出镜**不改**指纹、改台词/改样式/换配音/换格式**必改**指纹、命中判定(记录/产物/大小/格式)、`stage_render` 首次渲染 → 只换数字人不再调 hyperframes → 改台词重渲染 → `force` 重渲染 → 不出镜时缓存不被写坏
+
 关键设计(v2.6 项目历史):
 - **入口页 = 项目历史列表**(`GET /api/jobs`):按 `state.updated_at` 倒序,只带列表字段(不含 script);进行中的任务带 `progress`/`render_progress`,卡片上直接看"现在到哪一步";有任务进行中时前端 4 秒刷新,空闲 20 秒。路由用查询串区分:`?job=<id>` 详情页、`?new=1` 创作页、无参数 = 入口页
 - **项目标题三段来源**(`state.title` + `state.title_source`):`file`(新建时的文件名占位)→ `auto`(分析完成后 `analyze.summarize_title` 用一次小调用总结,失败回退脚本标题)→ `user`(`POST /api/jobs/{id}/rename`)。**`source=user` 是硬闸**:`_auto_title` 在设置前再查一次,用户改过就绝不覆盖。标题一律单行、≤60 字(`jobs.normalize_title`,空标题 400)
@@ -180,7 +190,7 @@ analyzed / preview / rendered / failed ──▶ building ──▶ rendering �
 | POST | /api/jobs/{id}/rename | 重命名项目(单行 ≤60 字,空标题 400;改后 title_source=user,自动总结不再覆盖) |
 | POST | /api/jobs/{id}/analyze | 重新分析(analyzing/building/rendering 期间 409) |
 | POST | /api/jobs/{id}/build | 构建(配音+组装+自动 check);默认**复用已有配音**,`?force_voice=1` 强制重新合成 |
-| POST | /api/jobs/{id}/render | 渲染成片;请求体 `{"build": true}` 即**一键出片**(先构建再渲染,不拉 Studio、不停在 preview;`build` 只认真布尔) |
+| POST | /api/jobs/{id}/render | 渲染成片;请求体 `{"build": true}` 即**一键出片**(先构建再渲染,不拉 Studio、不停在 preview;`build` 只认真布尔)。默认**复用历史纯 PPT 渲染**(脚本/样式/配音未变时只重烧数字人,见 `_ppt_render_signature`);`{"force_render": true}` 强制重渲染幻灯片(严格布尔,字符串 400) |
 | POST | /api/jobs/{id}/avatar/broadcast | 生成「数字人播报视频」(独立支线;analyzing/building/avatar_building/rendering 期间 409) |
 | GET | /api/jobs/{id}/avatar/broadcast/video | 播报视频预览/下载(支持 Range;未生成 404) |
 | DELETE | /api/jobs/{id} | 删除任务(rendered/failed 可删;building/rendering 409) |

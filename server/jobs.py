@@ -175,6 +175,50 @@ class Job:
             self.state["updated_at"] = time.time()
             self._save()
 
+    # ── 纯 PPT 渲染缓存 ──
+    # PPT 画面只由「脚本 + 风格 + 配音 + 渲染参数」决定;数字人是渲染**之后**由 ffmpeg
+    # 叠上去的。所以只换了数字人(形象/位置/大小/抠像)时,上一次的 ppt.<fmt> 原样可用,
+    # 不必再让 Chrome 逐帧重烧几分钟。这里只存**输入指纹**(算法在
+    # main._ppt_render_signature),不存画面 —— 指纹不符就当没缓存。
+    def ppt_render(self) -> dict:
+        """上次纯 PPT 渲染的指纹与产物记录;没有则空 dict。"""
+        rec = self.state.get("ppt_render")
+        return dict(rec) if isinstance(rec, dict) else {}
+
+    def record_ppt_render(self, path: Path, sig: str, fmt: str) -> None:
+        """记下这次纯 PPT 渲染的输入指纹与产物(下次同指纹可直接复用)。
+
+        只在**渲染成功且产物合格**后调用:失败的那次绝不能留下"可复用"的记录。
+        """
+        try:
+            rel = path.relative_to(self.dir).as_posix()
+        except ValueError:
+            rel = path.as_posix()
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        prev = self.ppt_render()
+        with LOCK:
+            self.state["ppt_render"] = {
+                "sig": sig, "fmt": fmt, "path": rel, "bytes": size, "at": time.time(),
+                "renders": int(prev.get("renders") or 0) + 1,
+                "reuses": int(prev.get("reuses") or 0),
+            }
+            self.state["updated_at"] = time.time()
+            self._save()
+
+    def record_ppt_reuse(self) -> None:
+        """复用了一次纯 PPT 渲染:只累加计数并留痕,不动指纹与产物时间。"""
+        rec = self.ppt_render()
+        if not rec:
+            return
+        with LOCK:
+            rec["reuses"] = int(rec.get("reuses") or 0) + 1
+            self.state["ppt_render"] = rec
+            self.state["updated_at"] = time.time()
+            self._save()
+
     def _migrate_legacy_render(self) -> bool:
         """旧任务/中断渲染的产物补录(只在 load_from_disk() 调用,GET 路径不写盘)。
 
